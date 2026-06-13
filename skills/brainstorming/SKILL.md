@@ -27,9 +27,9 @@ You MUST create a task for each of these items and complete them in order:
 4. **Propose 2-3 approaches** — with trade-offs and your recommendation
 5. **Present design** — in sections scaled to their complexity, get user approval after each section
 6. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-7. **Spec self-review** — quick inline check for placeholders, contradictions, ambiguity, scope (see below)
-8. **User reviews written spec** — ask user to review the spec file before proceeding
-9. **Transition to implementation** — invoke writing-plans skill to create implementation plan
+7. **Spec review loop (subagent)** — dispatch an independent opus subagent using `spec-document-reviewer-prompt.md`; fix ALL reported issues; loop until the subagent returns OKAY (see below — do NOT do this inline)
+8. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the review loop (step 7) until OKAY, then wait for explicit approval
+9. **Transition to implementation** — invoke writing-plans skill to create implementation plan (this is the ONLY next step; never jump straight to code)
 
 ## Process Flow
 
@@ -43,7 +43,7 @@ digraph brainstorming {
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
     "Write design doc" [shape=box];
-    "Spec self-review\n(fix inline)" [shape=box];
+    "Spec review loop\n(subagent, until OKAY)" [shape=box];
     "User reviews spec?" [shape=diamond];
     "Invoke writing-plans skill" [shape=doublecircle];
 
@@ -56,10 +56,11 @@ digraph brainstorming {
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
     "User approves design?" -> "Write design doc" [label="yes"];
-    "Write design doc" -> "Spec self-review\n(fix inline)";
-    "Spec self-review\n(fix inline)" -> "User reviews spec?";
-    "User reviews spec?" -> "Write design doc" [label="changes requested"];
-    "User reviews spec?" -> "Invoke writing-plans skill" [label="approved"];
+    "Write design doc" -> "Spec review loop\n(subagent, until OKAY)";
+    "Spec review loop\n(subagent, until OKAY)" -> "Spec review loop\n(subagent, until OKAY)" [label="issues found — fix all, re-dispatch"];
+    "Spec review loop\n(subagent, until OKAY)" -> "User reviews spec?" [label="OKAY"];
+    "User reviews spec?" -> "Spec review loop\n(subagent, until OKAY)" [label="changes requested — re-run loop"];
+    "User reviews spec?" -> "Invoke writing-plans skill" [label="explicitly approved"];
 }
 ```
 
@@ -113,27 +114,52 @@ digraph brainstorming {
 - Use elements-of-style:writing-clearly-and-concisely skill if available
 - Commit the design document to git
 
-**Spec Self-Review:**
-After writing the spec document, look at it with fresh eyes:
+**Spec Review Loop (Subagent):**
 
-1. **Placeholder scan:** Any "TBD", "TODO", incomplete sections, or vague requirements? Fix them.
-2. **Internal consistency:** Do any sections contradict each other? Does the architecture match the feature descriptions?
-3. **Scope check:** Is this focused enough for a single implementation plan, or does it need decomposition?
-4. **Ambiguity check:** Could any requirement be interpreted two different ways? If so, pick one and make it explicit.
+Do NOT perform inline self-review. After writing the spec document, you MUST dispatch an **independent review subagent** — a separately launched Agent, not a checklist you run yourself. The subagent MUST use the **opus model** (strongest reasoning). Use the template in `./spec-document-reviewer-prompt.md`, passing the spec file path and the full review criteria.
 
-Fix any issues inline. No need to re-review — just fix and move on.
+The subagent checks all four of the following:
+
+1. **Placeholder scan** — Any "TBD", "TODO", blank sections, or vague requirements.
+2. **Internal consistency** — Sections contradicting each other; architecture not matching feature descriptions.
+3. **Scope check** — Focused enough for a single implementation plan (not covering multiple independent subsystems).
+4. **Ambiguity check** — Any requirement that could be interpreted two different ways.
+
+The subagent must return a clear verdict: **OKAY**, or a list of all issues found.
+
+**Loop until OKAY — zero tolerance:**
+
+```
+while true:
+  result = dispatch_review_subagent(spec_file)   # opus model, independent Agent
+  if result.verdict == "OKAY": break
+  fix_all_issues(result.issues)                   # every issue — none may be skipped
+  # then re-dispatch for the next round
+```
+
+**Git commit discipline:** Before the first review round, commit the first version of the spec. After each round's fixes, commit again with a message noting the round (e.g. `docs(spec): fix review round 2 - resolve ambiguity in auth flow`). If the spec file is gitignored, skip the commit — NEVER use `git add -f` to force-add an ignored file.
 
 **User Review Gate:**
-After the spec review loop passes, ask the user to review the written spec before proceeding:
+
+After the spec review loop reports OKAY, ask the user to review the written spec before proceeding:
 
 > "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
 
-Wait for the user's response. If they request changes, make them and re-run the spec review loop. Only proceed once the user approves.
+Wait for the user's response. If they request changes:
+
+1. Make the requested changes.
+2. Re-run the spec review loop (independent subagent, opus model, until OKAY). If the change affects global consistency or scope, re-review the whole spec; if it only affects a single section, the review may target that section.
+3. Commit the fixes (with a round-labeled commit message).
+4. Report the changes back to the user and wait for their next reply.
+
+Only leave this gate and proceed to writing-plans once the user **explicitly approves** (e.g. "OK", "looks good", "start the plan"). Do not proceed on ambiguous or silent responses.
 
 **Implementation:**
 
-- Invoke the writing-plans skill to create a detailed implementation plan
-- Do NOT invoke any other skill. writing-plans is the next step.
+The mandatory workflow sequence is **brainstorming → spec document → writing-plans → plan document → implementation**, in strict order. Never jump from brainstorming straight to code, and never skip the spec or plan stages — even for "simple" tasks.
+
+- Invoke the writing-plans skill to create a detailed implementation plan.
+- Do NOT invoke any other skill. writing-plans is the ONLY next step after brainstorming.
 
 ## Key Principles
 

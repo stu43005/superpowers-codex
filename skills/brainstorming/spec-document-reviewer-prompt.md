@@ -6,8 +6,10 @@ Use this template when dispatching a spec document reviewer subagent.
 
 **Dispatch after:** Spec document is written to docs/superpowers/specs/
 
+**Subagent model:** Always dispatch with the **opus** model (strongest reasoning). This reviewer is an **independent subagent** — it must be launched as a separate Agent, not run as an inline checklist in the parent conversation. The caller loops: if Issues Found, fix ALL issues and re-dispatch; repeat until the subagent returns OKAY.
+
 ```
-Task tool (general-purpose):
+Task tool (general-purpose, model: opus):
   description: "Review spec document"
   prompt: |
     You are a spec document reviewer. Verify this spec is complete and ready for planning.
@@ -18,10 +20,10 @@ Task tool (general-purpose):
 
     | Category | What to Look For |
     |----------|------------------|
-    | Completeness | TODOs, placeholders, "TBD", incomplete sections |
-    | Consistency | Internal contradictions, conflicting requirements |
-    | Clarity | Requirements ambiguous enough to cause someone to build the wrong thing |
-    | Scope | Focused enough for a single plan — not covering multiple independent subsystems |
+    | Placeholder scan | "TBD", "TODO", blank sections, or vague requirements that are not actionable |
+    | Internal consistency | Sections that contradict each other; architecture descriptions that do not match feature descriptions |
+    | Scope check | Focused enough for a single implementation plan — not spanning multiple independent subsystems; if too broad, flag for decomposition |
+    | Ambiguity check | Any requirement that could be interpreted two different ways; if so, it must be made explicit |
     | YAGNI | Unrequested features, over-engineering |
 
     ## Calibration
@@ -37,7 +39,7 @@ Task tool (general-purpose):
 
     ## Spec Review
 
-    **Status:** Approved | Issues Found
+    **Status:** OKAY | Issues Found
 
     **Issues (if any):**
     - [Section X]: [specific issue] - [why it matters for planning]
@@ -46,4 +48,4 @@ Task tool (general-purpose):
     - [suggestions for improvement]
 ```
 
-**Reviewer returns:** Status, Issues (if any), Recommendations
+**Reviewer returns:** A clear verdict — either **OKAY** (no blocking issues) or **Issues Found** with a full list. The caller uses this verdict to drive the loop: OKAY means the spec passes; Issues Found means fix everything listed and re-dispatch for another round.

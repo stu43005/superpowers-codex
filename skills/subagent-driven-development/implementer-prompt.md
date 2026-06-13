@@ -2,6 +2,8 @@
 
 Use this template when dispatching an implementer subagent.
 
+**Subagent model:** sonnet — the implementer follows code already specified in the plan and does not need to produce new design.
+
 ```
 Task tool (general-purpose):
   description: "Implement Task N: [task name]"

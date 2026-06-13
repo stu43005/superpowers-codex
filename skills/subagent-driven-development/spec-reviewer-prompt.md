@@ -4,6 +4,8 @@ Use this template when dispatching a spec compliance reviewer subagent.
 
 **Purpose:** Verify implementer built what was requested (nothing more, nothing less)
 
+**Subagent model:** sonnet.
+
 ```
 Task tool (general-purpose):
   description: "Review spec compliance for Task N"
@@ -55,7 +57,14 @@ Task tool (general-purpose):
 
     **Verify by reading code, not by trusting report.**
 
+    ## Issue Reporting Requirements
+
+    > **MANDATORY — zero exceptions:** For every issue you find, you MUST provide ALL of the following. Omitting either item is a reviewer error.
+    >
+    > 1. **Precise location** — the exact file path and line number(s) where the problem occurs (e.g. `src/foo/bar.ts:42`).
+    > 2. **Concrete fix** — a complete patch or directly-applicable replacement code that resolves the issue. You MUST NOT describe what should change in prose without also supplying actual code. "This function should validate X" is forbidden; a diff or replacement snippet is required.
+
     Report:
     - ✅ Spec compliant (if everything matches after code inspection)
-    - ❌ Issues found: [list specifically what's missing or extra, with file:line references]
+    - ❌ Issues found: for each issue, provide the exact `file:line` location AND a concrete code fix (patch or replacement snippet) — never prose-only descriptions
 ```

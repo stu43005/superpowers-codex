@@ -4,6 +4,8 @@ Use this template when dispatching a code quality reviewer subagent.
 
 **Purpose:** Verify implementation is well-built (clean, tested, maintainable)
 
+**Subagent model:** sonnet.
+
 **Only dispatch after spec compliance review passes.**
 
 ````text

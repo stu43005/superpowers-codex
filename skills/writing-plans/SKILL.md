@@ -117,23 +117,73 @@ Every step must contain the actual content an engineer needs. These are **plan f
 - Exact commands with expected output
 - DRY, YAGNI, TDD, frequent commits
 
-## Self-Review
+## Mandatory Workflow Sequence
 
-After writing the complete plan, look at the spec with fresh eyes and check the plan against it. This is a checklist you run yourself — not a subagent dispatch.
+The only permitted order is:
 
-**1. Spec coverage:** Skim each section/requirement in the spec. Can you point to a task that implements it? List any gaps.
+```
+brainstorming → spec → writing-plans → plan → implementation
+```
 
-**2. Placeholder scan:** Search your plan for red flags — any of the patterns from the "No Placeholders" section above. Fix them.
+You **must** have a written, reviewed, user-approved plan before a single line of implementation code is touched. Never skip or abbreviate the plan step because the task "seems simple" or "only touches one file." If you ever catch yourself writing implementation code without a plan, **stop immediately** and return to this skill first.
 
-**3. Type consistency:** Do the types, method signatures, and property names you used in later tasks match what you defined in earlier tasks? A function called `clearLayers()` in Task 3 but `clearFullLayers()` in Task 7 is a bug.
+## Plan Review Loop (Subagents)
 
-If you find issues, fix them inline. No need to re-review — just fix and move on. If you find a spec requirement with no task, add the task.
+After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch **independent review subagents** — separately launched Agents, not a checklist you run yourself. All review subagents **must** use the **opus** model.
+
+### Per-Task Review
+
+For **each Task** in the plan, dispatch an independent review subagent using the template in `./plan-document-reviewer-prompt.md`. Each subagent reviews exactly one Task in isolation against the full spec.
+
+Loop per Task until its subagent reports **OKAY**:
+
+1. Dispatch the subagent for that Task.
+2. If the subagent returns issues, fix **every single issue** (zero tolerance — nothing may be deferred).
+3. Re-dispatch the subagent for the same Task.
+4. Repeat until the subagent returns OKAY.
+
+### Coverage Verifier
+
+In **addition** to the per-Task reviews, dispatch **one Coverage Verifier subagent** (opus) using the template in `./coverage-verifier-prompt.md`. It compares the **whole plan** against the **whole spec** — not a single Task.
+
+Loop until the Coverage Verifier reports **OKAY**:
+
+1. Dispatch the Coverage Verifier.
+2. If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Tasks, or amend the spec. If filling a gap creates a new Task or substantially changes an existing one, re-run that Task's per-Task review loop before the next Coverage Verifier round.
+3. Re-dispatch the Coverage Verifier.
+4. Repeat until OKAY.
+
+### Parallelism
+
+Per-Task review subagents and the Coverage Verifier **may be dispatched in parallel** in the same round — you do not need to wait for all Task reviews to finish before launching the Coverage Verifier. Collect all results, fix all issues together, then start the next round.
+
+**All per-Task subagents AND the Coverage Verifier must report OKAY before proceeding.** Any single failure means the whole round fails; loop again.
+
+### Git Commit Discipline
+
+- **Before the first review round:** commit the first version of the plan file.
+- **After each round's fixes:** commit again with a message that identifies the round, e.g. `docs(plan): fix review round 2 - add missing migration task`.
+- If the plan file is gitignored, skip the commit. **Never** use `git add -f` to force-add an ignored file.
+
+## User Review Gate
+
+After all per-Task subagents and the Coverage Verifier report OKAY, present the plan to the user for review.
+
+If the user requests any changes:
+
+1. Make the requested changes.
+2. Re-run the per-Task review loop for every **affected Task** (can be dispatched in parallel).
+3. Re-run the Coverage Verifier over the whole plan vs. the whole spec (edits can introduce new coverage gaps).
+4. Loop each until OKAY, following the same zero-tolerance fix rules above.
+5. Commit the fixed plan.
+6. Report the result back to the user and **wait for their next reply**.
+
+Only leave this gate once the user **explicitly approves** (e.g. "OK", "looks good", "start implementation"). Do not self-approve or assume approval from silence.
 
 ## Execution Handoff
 
-After saving the plan, hand off to execution:
+After the user explicitly approves the plan:
 
-**"Plan complete and saved to `docs/superpowers/plans/<filename>.md`."**
+**"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Ready to start implementation? (using Subagent-Driven Development)"**
 
-- **REQUIRED SUB-SKILL:** Use superpowers:subagent-driven-development
-- Fresh subagent per task + two-stage review
+On confirmation, invoke the **REQUIRED SUB-SKILL: `superpowers:subagent-driven-development`**. No alternative execution method is offered.

@@ -26,8 +26,8 @@ You MUST create a task for each of these items and complete them in order:
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to their complexity, get user approval after each section
 5. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-6. **Spec review loop (subagent)** — dispatch an independent opus subagent using `spec-document-reviewer-prompt.md`; fix ALL reported issues; loop until the subagent returns OKAY (see below — do NOT do this inline)
-7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the review loop (step 6) until OKAY, then wait for explicit approval
+6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch Reviewer 1 (`task`, structural completeness) and Reviewer 2 (`adversarial-review`, design soundness) in parallel each round; fix ALL findings; loop until Reviewer 1 returns `Status: OKAY` AND Reviewer 2 returns `Verdict: approve` in the same round (see below — do NOT do this inline)
+7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until both pass, then wait for explicit approval
 8. **Transition to implementation** — invoke writing-plans skill to create implementation plan (this is the ONLY next step; never jump straight to code)
 
 ## Process Flow
@@ -39,8 +39,8 @@ digraph brainstorming {
     "Propose 2-3 approaches" [shape=box];
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
-    "Write design doc" [shape=box];
-    "Spec review loop\n(subagent, until OKAY)" [shape=box];
+    "Write design doc\n+ capture SPEC_BASE" [shape=box];
+    "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)" [shape=box];
     "User reviews spec?" [shape=diamond];
     "Invoke writing-plans skill" [shape=doublecircle];
 
@@ -49,11 +49,11 @@ digraph brainstorming {
     "Propose 2-3 approaches" -> "Present design sections";
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
-    "User approves design?" -> "Write design doc" [label="yes"];
-    "Write design doc" -> "Spec review loop\n(subagent, until OKAY)";
-    "Spec review loop\n(subagent, until OKAY)" -> "Spec review loop\n(subagent, until OKAY)" [label="issues found — fix all, re-dispatch"];
-    "Spec review loop\n(subagent, until OKAY)" -> "User reviews spec?" [label="OKAY"];
-    "User reviews spec?" -> "Spec review loop\n(subagent, until OKAY)" [label="changes requested — re-run loop"];
+    "User approves design?" -> "Write design doc\n+ capture SPEC_BASE" [label="yes"];
+    "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)";
+    "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)" -> "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)" [label="any finding — fix all, re-dispatch both"];
+    "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)" -> "User reviews spec?" [label="both OKAY + approve"];
+    "User reviews spec?" -> "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)" [label="changes requested — re-run dual loop"];
     "User reviews spec?" -> "Invoke writing-plans skill" [label="explicitly approved"];
 }
 ```
@@ -108,41 +108,54 @@ digraph brainstorming {
 - Use elements-of-style:writing-clearly-and-concisely skill if available
 - Commit the design document to git
 
-**Spec Review Loop (Subagent):**
+**Spec Review Loop (Dual Reviewer, codex companion):**
 
-Do NOT perform inline self-review. After writing the spec document, you MUST dispatch an **independent review subagent** — a separately launched Agent, not a checklist you run yourself. The subagent MUST use the **opus model** (strongest reasoning). Use the template in `./spec-document-reviewer-prompt.md`, passing the spec file path and the full review criteria.
+Do NOT perform inline self-review. After writing and committing the spec document, dispatch **two reviewers in parallel** using the codex companion. Both reviewers examine the same spec document; both must pass before proceeding.
 
-The subagent checks all four of the following:
+**Before writing the spec file**, capture `SPEC_BASE`:
 
-1. **Placeholder scan** — Any "TBD", "TODO", blank sections, or vague requirements.
-2. **Internal consistency** — Sections contradicting each other; architecture not matching feature descriptions.
-3. **Scope check** — Focused enough for a single implementation plan (not covering multiple independent subsystems).
-4. **Ambiguity check** — Any requirement that could be interpreted two different ways.
+```bash
+SPEC_BASE="$(git rev-parse HEAD)"
+```
 
-The subagent must return a clear verdict: **OKAY**, or a list of all issues found.
+Store this value — it is the parent commit of the spec commit and must not change across rounds.
 
-**Loop until OKAY — zero tolerance:**
+**Reviewer 1 — Structural Completeness** (`task`, read-only):
+Uses `spec-document-reviewer-prompt.md`. Checks: placeholder scan, internal consistency, scope check, ambiguity check, YAGNI. Returns `Status: OKAY` or `Status: Issues Found`.
+
+**Reviewer 2 — Design Soundness** (`adversarial-review`):
+Uses `adversarial-spec-review-prompt.md`. Challenges design-level soundness: failure paths / partial failure / rollback, concurrency and ordering assumptions, boundary and empty states, compatibility / migration risk, unstated critical assumptions. Returns `Verdict: approve` or `Verdict: needs-attention`.
+
+**Parallel dispatch per round:**
+
+Both reviewers are launched simultaneously each round as separate background Bash calls (`run_in_background: true`), each running `node <companion> <subcommand> ...`. Collect both outputs before evaluating results.
+
+**Round loop — zero tolerance:**
 
 ```
 while true:
-  result = dispatch_review_subagent(spec_file)   # opus model, independent Agent
-  if result.verdict == "OKAY": break
-  fix_all_issues(result.issues)                   # every issue — none may be skipped
-  # then re-dispatch for the next round
+  [launch Reviewer 1 and Reviewer 2 in parallel, wait for both]
+  if reviewer1 == "Status: OKAY" AND reviewer2 == "Verdict: approve":
+    break  # both passed — exit loop
+  fix_all_findings(reviewer1.issues + reviewer2.findings)  # every finding — none skipped
+  # spec was edited — re-dispatch BOTH reviewers next round
+  # (both re-run together whenever any spec edit is made)
 ```
 
-**Git commit discipline:** Before the first review round, commit the first version of the spec. After each round's fixes, commit again with a message noting the round (e.g. `docs(spec): fix review round 2 - resolve ambiguity in auth flow`). If the spec file is gitignored, skip the commit — NEVER use `git add -f` to force-add an ignored file.
+Any finding from either reviewer blocks the round. Fix everything before re-dispatching.
+
+**Git commit discipline:** Before the first review round, commit the first version of the spec. After each round's fixes, commit again with a message noting the round (e.g. `docs(spec): fix review round 2 - resolve ambiguity in auth flow`). If the spec file is gitignored, skip the commit — NEVER use `git add -f` to force-add an ignored file. If the spec is gitignored, Reviewer 2 cannot diff the spec commit and must be skipped for that round (note the skip in output).
 
 **User Review Gate:**
 
-After the spec review loop reports OKAY, ask the user to review the written spec before proceeding:
+After the dual review loop reports both OKAY and approve, ask the user to review the written spec before proceeding:
 
 > "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
 
 Wait for the user's response. If they request changes:
 
 1. Make the requested changes.
-2. Re-run the spec review loop (independent subagent, opus model, until OKAY). If the change affects global consistency or scope, re-review the whole spec; if it only affects a single section, the review may target that section.
+2. Re-run the dual spec review loop (both Reviewer 1 and Reviewer 2 in parallel, until both pass). If the change affects global consistency or scope, the full spec is re-reviewed; if it only affects a single section, the review may focus there — but both reviewers still re-run.
 3. Commit the fixes (with a round-labeled commit message).
 4. Report the changes back to the user and wait for their next reply.
 

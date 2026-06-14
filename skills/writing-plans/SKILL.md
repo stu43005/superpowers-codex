@@ -135,29 +135,32 @@ After writing and saving the complete plan, do **not** perform an inline self-re
 
 For **each Task** in the plan, dispatch an independent review subagent using the template in `./plan-document-reviewer-prompt.md`. Each subagent reviews exactly one Task in isolation against the full spec.
 
-Loop per Task until its subagent reports **OKAY**:
-
-1. Dispatch the subagent for that Task.
-2. If the subagent returns issues, fix **every single issue** (zero tolerance — nothing may be deferred).
-3. Re-dispatch the subagent for the same Task.
-4. Repeat until the subagent returns OKAY.
+Every round, each Task that has not yet reported **OKAY** gets a freshly dispatched subagent. If a subagent returns issues, fix **every single issue** (zero tolerance — nothing may be deferred); that Task is reviewed again in the next round. A Task drops out of the loop once its subagent reports OKAY.
 
 ### Coverage Verifier
 
 In **addition** to the per-Task reviews, dispatch **one Coverage Verifier subagent** (opus) using the template in `./coverage-verifier-prompt.md`. It compares the **whole plan** against the **whole spec** — not a single Task.
 
-Loop until the Coverage Verifier reports **OKAY**:
+Every round, dispatch the Coverage Verifier alongside the per-Task reviewers. If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Tasks, or amend the spec. Filling a gap may add a new Task or substantially change an existing one — that Task re-enters the per-Task review in the next round. The Coverage Verifier runs again each round until it reports OKAY.
 
-1. Dispatch the Coverage Verifier.
-2. If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Tasks, or amend the spec. If filling a gap creates a new Task or substantially changes an existing one, re-run that Task's per-Task review loop before the next Coverage Verifier round.
-3. Re-dispatch the Coverage Verifier.
-4. Repeat until OKAY.
+### The Round Loop
 
-### Parallelism
-
-Per-Task review subagents and the Coverage Verifier **may be dispatched in parallel** in the same round — you do not need to wait for all Task reviews to finish before launching the Coverage Verifier. Collect all results, fix all issues together, then start the next round.
+Per-Task review subagents and the Coverage Verifier **are dispatched in parallel** within a round — you do not wait for all Task reviews to finish before launching the Coverage Verifier. Collect all results, fix all issues together, then start the next round.
 
 **All per-Task subagents AND the Coverage Verifier must report OKAY before proceeding.** Any single failure means the whole round fails; loop again.
+
+```
+# one round = all per-Task reviewers + the Coverage Verifier, dispatched in parallel
+while true:
+  results = parallel(
+    [dispatch_task_reviewer(task) for task in plan.tasks],  # opus, independent Agents
+    dispatch_coverage_verifier(spec_file, plan_file),       # opus, whole plan vs whole spec
+  )
+  if all(r.verdict == "OKAY" for r in results): break
+  fix_all_issues(results)   # every Task issue AND every coverage gap — none skipped
+  # filling a coverage gap may add or grow a Task; that Task is reviewed again next round
+  # then start the next round
+```
 
 ### Git Commit Discipline
 

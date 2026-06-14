@@ -22,6 +22,13 @@ If the spec file is gitignored and cannot be committed, skip this reviewer for t
 
 ## Invocation
 
+> **Run this block as-is — do not pre-verify the companion.** The path-resolution step
+> below already locates the companion (`ls … | sort -V | tail -1`, with a marketplace
+> fallback) and exits with a clear error if it is absent. Do NOT separately `ls`/`find`
+> for the companion, run `node "$CODEX_COMPANION" --help`, or grep the companion source
+> to confirm the subcommand or flags before dispatching — the `adversarial-review --base
+> <ref> --wait <focus>` invocation shown is canonical and verified.
+
 ```bash
 # Step 1: Resolve companion path
 CODEX_COMPANION="$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)"

@@ -25,7 +25,7 @@ companion 進入點：`node <companion> <subcommand> [args]`，與 `${CLAUDE_PLU
 |---|---|---|---|---|
 | `review [--base <ref>] [--wait\|--background] [--scope auto\|working-tree\|branch]` | git diff（working-tree；`--base` 時見下方 diff 語意） | 無 | 原生 code review | **Codex reviewer 自由格式 prose；無結構化 verdict、無 `Verdict:` 行** |
 | `adversarial-review [--base <ref>] [--wait\|--background] [focus text]` | git diff（`--base` 時見下方 diff 語意） | 接受 focus 文字注入 `USER_FOCUS` | 對抗式：挑戰設計/取捨/假設，**不需逐行** | 結構化 `review-output.schema.json` |
-| `task [--write] [--model <m>] [--effort <e>] [prompt]` | 任意（非 diff 綁定，可讀檔、可在 repo 跑 git） | 全自訂 prompt | 通用委派；不加 `--write` 即 read-only | Codex 自由格式（由 prompt 決定） |
+| `task [--write] [--model <m>] [--effort <e>] [--prompt-file <path>] [prompt]` | 任意（非 diff 綁定，可讀檔、可在 repo 跑 git） | 全自訂 prompt（positional、`--prompt-file <path>`、或 piped stdin 三擇一；大型 prompt 建議用 `--prompt-file`） | 通用委派；不加 `--write` 即 read-only | Codex 自由格式（由 prompt 決定） |
 
 **`--base <ref>` 的 diff 語意（已查證 source）**：companion 並非做字面 `git diff <ref>..HEAD` 或三點 `<ref>...HEAD`，而是先算 `mergeBase = git merge-base HEAD <ref>`，再 diff `git diff <mergeBase>..HEAD`。因此凡作為 base 傳入者，**必須是 dispatch 當下 HEAD 的直系祖先**（如此 `merge-base == base`，審到的 diff 才等於預期範圍）。§5 對每個 base 都要求在正確時點以「當下 HEAD」捕捉，即滿足此前提。
 

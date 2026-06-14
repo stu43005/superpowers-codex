@@ -1,141 +1,52 @@
-# Code Quality Reviewer Prompt Template
+# Code Quality Reviewer — Codex Native Review Dispatch
 
-Use this template when dispatching a code quality reviewer subagent.
+Run after spec compliance review (reviewer 5) passes for a task. Dispatches reviewer 6 via codex companion native `review` command with `--base <TASK_BASE>`.
 
-**Purpose:** Verify implementation is well-built (clean, tested, maintainable)
+**Purpose:** Let Codex's native reviewer assess code quality and surface bugs or correctness problems in the task's diff. No custom quality checklist — the native reviewer owns that judgment.
 
-**Subagent model:** sonnet.
+**Only dispatch after spec compliance review returns `Status: OKAY`.**
 
-**Only dispatch after spec compliance review passes.**
+---
 
-````text
-Task tool (general-purpose):
-  description: "Review code changes"
-  prompt: |
-    You are a Senior Code Reviewer with expertise in software architecture,
-    design patterns, and best practices. Your job is to review completed work
-    against its plan or requirements and identify issues before they cascade.
+## Step 1: Retrieve TASK_BASE
 
-    ## What Was Implemented
+`TASK_BASE` must have been captured (as `git rev-parse HEAD`) at the moment before the implementer for this task started. Retrieve it from your task-tracking state. This SHA must be a direct ancestor of the current HEAD.
 
-    {DESCRIPTION}
+## Step 2: Locate codex companion
 
-    ## Requirements / Plan
+```bash
+CODEX_COMPANION="$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)"
+[ -z "$CODEX_COMPANION" ] && CODEX_COMPANION="$HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs"
+if [ ! -f "$CODEX_COMPANION" ]; then
+  echo "codex plugin not found; run /codex:setup. Do NOT fall back to inline self-review." >&2
+  exit 1
+fi
+```
 
-    {PLAN_OR_REQUIREMENTS}
+## Step 3: Run native review
 
-    ## Git Range to Review
+Substitute `[TASK_BASE]` with the actual SHA captured in Step 1.
 
-    **Base:** {BASE_SHA}
-    **Head:** {HEAD_SHA}
+```bash
+node "$CODEX_COMPANION" review --base [TASK_BASE] --wait
+```
 
-    ```bash
-    git diff --stat {BASE_SHA}..{HEAD_SHA}
-    git diff {BASE_SHA}..{HEAD_SHA}
-    ```
+The `--base` flag instructs the companion to diff `git diff $(git merge-base HEAD [TASK_BASE])..HEAD`. Because `TASK_BASE` is a direct ancestor of HEAD, the merge-base equals `TASK_BASE`, so the reviewed diff is exactly the task's implementation commits.
 
-    ## What to Check
+## Step 4: Interpret the prose output (Mechanism C)
 
-    **Plan alignment:**
-    - Does the implementation match the plan / requirements?
-    - Are deviations justified improvements, or problematic departures?
-    - Is all planned functionality present?
+**Important:** The native `review` command does NOT emit a structured `Verdict:` line or `approve`/`needs-attention` output. It returns free-form prose from the Codex reviewer. Do NOT attempt to parse a `Verdict:` line here — that field only exists for `adversarial-review`.
 
-    **Code quality:**
-    - Clean separation of concerns?
-    - Proper error handling?
-    - Type safety where applicable?
-    - DRY without premature abstraction?
-    - Edge cases handled?
+You (the parent agent) interpret the prose:
 
-    **Architecture:**
-    - Sound design decisions?
-    - Reasonable scalability and performance?
-    - Security concerns?
-    - Integrates cleanly with surrounding code?
+- **If the prose reports any blocking-severity defect** — a bug, a clear correctness issue, a significant code quality problem that would prevent a confident merge — treat this as **Issues Found**:
+  1. Extract the file:line reference(s) and recommendation(s) from the prose.
+  2. Dispatch the implementer subagent with the specific findings and ask them to fix all blocking issues.
+  3. Re-run this reviewer from Step 1 after fixes are committed.
+  4. Repeat until no blocking findings remain.
 
-    **Testing:**
-    - Tests verify real behavior, not mocks?
-    - Edge cases covered?
-    - Integration tests where they matter?
-    - All tests passing?
+- **If the prose reports no significant issues** (or only minor style observations that do not affect correctness or quality) — treat this as **OKAY**: mark the code quality gate as passed and proceed to the next task (or to the final reviewer if all tasks are complete).
 
-    **Production readiness:**
-    - Migration strategy if schema changed?
-    - Backward compatibility considered?
-    - Documentation complete?
-    - No obvious bugs?
+**Severity calibration:** A "blocking" finding is one that a reasonable senior engineer would require fixed before merging — bugs, data-loss risks, broken error handling, security issues, missing critical test coverage. Style preferences and non-blocking suggestions do not trigger a re-review loop.
 
-    **Decomposition (in addition to the above):**
-    - Does each file have one clear responsibility with a well-defined interface?
-    - Are units decomposed so they can be understood and tested independently?
-    - Is the implementation following the file structure from the plan?
-    - Did this implementation create new files that are already large, or significantly grow existing files? (Don't flag pre-existing file sizes — focus on what this change contributed.)
-
-    ## Calibration
-
-    Categorize issues by actual severity. Not everything is Critical.
-    Acknowledge what was done well before listing issues — accurate praise
-    helps the implementer trust the rest of the feedback.
-
-    If you find significant deviations from the plan, flag them specifically
-    so the implementer can confirm whether the deviation was intentional.
-    If you find issues with the plan itself rather than the implementation,
-    say so.
-
-    ## Output Format
-
-    ### Strengths
-    [What's well done? Be specific.]
-
-    ### Issues
-
-    #### Critical (Must Fix)
-    [Bugs, security issues, data loss risks, broken functionality]
-
-    #### Important (Should Fix)
-    [Architecture problems, missing features, poor error handling, test gaps]
-
-    #### Minor (Nice to Have)
-    [Code style, optimization opportunities, documentation polish]
-
-    For each issue:
-    - File:line reference
-    - What's wrong
-    - Why it matters
-    - How to fix (if not obvious)
-
-    ### Recommendations
-    [Improvements for code quality, architecture, or process]
-
-    ### Assessment
-
-    **Ready to merge?** [Yes | No | With fixes]
-
-    **Reasoning:** [1-2 sentence technical assessment]
-
-    ## Critical Rules
-
-    **DO:**
-    - Categorize by actual severity
-    - Be specific (file:line, not vague)
-    - Explain WHY each issue matters
-    - Acknowledge strengths
-    - Give a clear verdict
-
-    **DON'T:**
-    - Say "looks good" without checking
-    - Mark nitpicks as Critical
-    - Give feedback on code you didn't actually read
-    - Be vague ("improve error handling")
-    - Avoid giving a clear verdict
-````
-
-**Placeholders:**
-
-- `{DESCRIPTION}` — task summary, from implementer's report
-- `{PLAN_OR_REQUIREMENTS}` — Task N from the plan file (path + task text)
-- `{BASE_SHA}` — commit before task
-- `{HEAD_SHA}` — current commit
-
-**Code reviewer returns:** Strengths, Issues (Critical / Important / Minor), Recommendations, Assessment
+**Do not ask the user** whether to re-run or proceed. This loop runs automatically until the quality gate clears.

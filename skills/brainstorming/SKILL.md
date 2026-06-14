@@ -128,7 +128,7 @@ Uses `adversarial-spec-review-prompt.md`. Challenges design-level soundness: fai
 
 **Parallel dispatch per round:**
 
-Both reviewers are launched simultaneously each round as separate background Bash calls (`run_in_background: true`), each running `node <companion> <subcommand> ...`. Collect both outputs before evaluating results.
+Both reviewers are launched simultaneously each round as separate background Bash calls (`run_in_background: true`), each running `node <companion> <subcommand> ...`. When a backgrounded dispatch finishes, Claude Code notifies you automatically — do NOT poll BashOutput in a loop or otherwise wait for the output to have a value. Wait for each reviewer's completion notification, then read that task's output once. Collect both outputs before evaluating results.
 
 The invocation blocks in the prompt templates are canonical and self-contained: each one already resolves the companion path (with a marketplace fallback) and fails loudly if it is absent. Run them as written — do NOT pre-probe the companion with `--help`, `ls`/`find`, or source greps before dispatching. In particular, `task --prompt-file <path>` is supported even though `--help` does not list it (verified in the companion source); treat it as established, not a guess.
 

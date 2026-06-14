@@ -164,7 +164,7 @@ If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Task
 
 ### The Round Loop
 
-Per-Task reviewers and the Coverage Verifier are dispatched **in parallel** within a round using separate Bash calls with `run_in_background: true`. Do not wait for all per-Task reviews to finish before launching the Coverage Verifier. Collect all results via BashOutput polling, fix all issues and gaps together, then start the next round.
+Per-Task reviewers and the Coverage Verifier are dispatched **in parallel** within a round using separate Bash calls with `run_in_background: true`. Do not wait for all per-Task reviews to finish before launching the Coverage Verifier. When a backgrounded dispatch finishes, Claude Code notifies you automatically — do NOT poll BashOutput in a loop or otherwise wait for the output to have a value. Wait for each completion notification, then read that task's output once. Once all results are in, fix all issues and gaps together, then start the next round.
 
 The invocation blocks in the prompt templates are canonical and self-contained: each one already resolves the companion path (with a marketplace fallback) and fails loudly if it is absent. Run them as written — do NOT pre-probe the companion with `--help`, `ls`/`find`, or source greps before dispatching. In particular, `task --prompt-file <path>` is supported even though `--help` does not list it (verified in the companion source); treat it as established, not a guess.
 

@@ -133,4 +133,4 @@ rm -f "$PROMPT_FILE"
 
 **Reviewer returns:** A final line of `Status: OKAY` or `Status: Issues Found`. The parent parses this line to drive the loop.
 
-**Parallel dispatch within a round:** Each per-Task reviewer for Tasks active in the current round is launched as a separate Bash call with `run_in_background: true`. Results are collected via BashOutput polling after all background calls have been dispatched.
+**Parallel dispatch within a round:** Each per-Task reviewer for Tasks active in the current round is launched as a separate Bash call with `run_in_background: true`. When a backgrounded dispatch finishes, Claude Code notifies you automatically — do NOT poll BashOutput in a loop or otherwise wait for the output to have a value. Wait for each completion notification, then read that task's output once.

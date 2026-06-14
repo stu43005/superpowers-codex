@@ -96,7 +96,7 @@ Both SHAs must be direct ancestors of HEAD at the time their respective reviewer
 
 ## Reviewer Dispatch Mechanisms
 
-All three reviewers run via the codex companion (`codex-companion.mjs`). See the prompt templates for full dispatch commands including the companion path-resolution block.
+All three reviewers run via the codex companion (`codex-companion.mjs`). See the prompt templates for full dispatch commands including the companion path-resolution block. Those invocation blocks are canonical and self-contained: each resolves the companion path (with a marketplace fallback) and fails loudly if it is absent. Run them as written — do NOT pre-probe the companion with `--help`, `ls`/`find`, or source greps before dispatching. In particular, `task --prompt-file <path>` is supported even though `--help` does not list it (verified in the companion source); treat it as established, not a guess.
 
 | Reviewer | File | Mechanism | Verdict source |
 |---|---|---|---|

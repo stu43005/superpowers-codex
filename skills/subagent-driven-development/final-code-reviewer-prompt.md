@@ -14,6 +14,13 @@ Run once, after every task has passed both its spec compliance review and code q
 
 ## Step 2: Locate codex companion
 
+> **Run this block as-is — do not pre-verify the companion.** The block below already
+> locates the companion (`ls … | sort -V | tail -1`, with a marketplace fallback) and
+> exits with a clear error if it is absent. Do NOT separately `ls`/`find` for the
+> companion, run `node "$CODEX_COMPANION" --help`, or grep the companion source to
+> confirm the subcommand or flags before dispatching — the `adversarial-review --base
+> <ref> --wait <focus>` invocation in Step 3 is canonical and verified.
+
 ```bash
 CODEX_COMPANION="$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)"
 [ -z "$CODEX_COMPANION" ] && CODEX_COMPANION="$HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs"

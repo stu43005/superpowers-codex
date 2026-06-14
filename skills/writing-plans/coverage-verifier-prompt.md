@@ -8,6 +8,15 @@ Use this template when dispatching a coverage verifier via the codex companion.
 
 ## How to Dispatch
 
+> **Run this block as-is — do not pre-verify the companion.** The path-resolution step
+> below already locates the companion (`ls … | sort -V | tail -1`, with a marketplace
+> fallback) and exits with a clear error if it is absent. Do NOT separately `ls`/`find`
+> for the companion, run `node "$CODEX_COMPANION" --help`, or grep the companion source
+> before dispatching. The `task --prompt-file <path>` flag IS supported — the companion
+> reads `options["prompt-file"]` and lists `prompt-file` among its value options — even
+> though `--help` does not document it. This is verified, not a guess, so no
+> re-verification is needed.
+
 ```bash
 # Resolve codex companion path
 CODEX_COMPANION="$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)"

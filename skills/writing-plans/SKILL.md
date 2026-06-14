@@ -166,6 +166,8 @@ If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Task
 
 Per-Task reviewers and the Coverage Verifier are dispatched **in parallel** within a round using separate Bash calls with `run_in_background: true`. Do not wait for all per-Task reviews to finish before launching the Coverage Verifier. Collect all results via BashOutput polling, fix all issues and gaps together, then start the next round.
 
+The invocation blocks in the prompt templates are canonical and self-contained: each one already resolves the companion path (with a marketplace fallback) and fails loudly if it is absent. Run them as written — do NOT pre-probe the companion with `--help`, `ls`/`find`, or source greps before dispatching. In particular, `task --prompt-file <path>` is supported even though `--help` does not list it (verified in the companion source); treat it as established, not a guess.
+
 The loop ends when, within a single round, every active Per-Task reviewer returns `Status: OKAY` and the Coverage Verifier (if still active) returns `Status: OKAY`.
 
 ```

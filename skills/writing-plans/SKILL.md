@@ -127,39 +127,77 @@ brainstorming → spec → writing-plans → plan → implementation
 
 You **must** have a written, reviewed, user-approved plan before a single line of implementation code is touched. Never skip or abbreviate the plan step because the task "seems simple" or "only touches one file." If you ever catch yourself writing implementation code without a plan, **stop immediately** and return to this skill first.
 
-## Plan Review Loop (Subagents)
+## Plan Review Loop
 
-After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch **independent review subagents** — separately launched Agents, not a checklist you run yourself. All review subagents **must** use the **opus** model.
+After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch reviewers via the **codex companion** (`codex-companion.mjs`). There are two reviewer roles:
+
+- **Per-Task reviewer (reviewer 3):** reviews one Task at a time using `plan-document-reviewer-prompt.md`, dispatched via `node <companion> task` (read-only).
+- **Coverage Verifier (reviewer 4):** reviews the whole plan against the whole spec using `coverage-verifier-prompt.md`, dispatched via `node <companion> task` (read-only).
+
+If the codex companion is not installed, stop and ask the user to run `/codex:setup`. Do not fall back to inline self-review or any other substitute.
+
+### Unified Re-run Policy
+
+Which reviewers run in each round is governed by these three principles:
+
+1. **Changed content must be re-reviewed.** Any Task that was edited this round (to fix an issue or fill a coverage gap) re-enters per-Task review in the next round. A newly added Task enters per-Task review for the first time. A Task that was not touched this round and already holds `Status: OKAY` drops out — it does not run again.
+
+2. **The Per-Task reviewer guards cross-Task seams.** When reviewing a changed Task A, the reviewer is given the full text of all sibling Tasks as context and must check whether A's changes introduced any type, naming, or integration inconsistency with those siblings. This means "a change in A could break already-passed B" is caught by A's reviewer — B does not need to be re-reviewed for that reason alone.
+
+3. **The Coverage Verifier re-runs only when its own gaps were fixed.** If the Coverage Verifier returned `Status: OKAY`, it drops out for all subsequent rounds. It does NOT re-run merely because some Task was changed — cross-Task consistency is the Per-Task reviewer's responsibility (principle 2). It re-runs only if it previously reported coverage gaps that were then addressed.
+
+Both cases of "fix A breaks B" are therefore covered:
+- If B's content was edited → B re-enters per-Task review (principle 1).
+- If B's content was not edited but A's change could break B → A's reviewer catches it (principle 2).
 
 ### Per-Task Review
 
-For **each Task** in the plan, dispatch an independent review subagent using the template in `./plan-document-reviewer-prompt.md`. Each subagent reviews exactly one Task in isolation against the full spec.
+For **each Task** in the plan, dispatch a per-Task reviewer using the template in `./plan-document-reviewer-prompt.md`. Each reviewer call receives the full text of the single Task under review plus the full text of all sibling Tasks as context.
 
-Every round, each Task that has not yet reported **OKAY** gets a freshly dispatched subagent. If a subagent returns issues, fix **every single issue** (zero tolerance — nothing may be deferred); that Task is reviewed again in the next round. A Task drops out of the loop once its subagent reports OKAY.
+A Task that has not yet received `Status: OKAY` gets a reviewer dispatched each round. A Task drops out of the loop once its reviewer reports `Status: OKAY` and its content is not edited again.
 
 ### Coverage Verifier
 
-In **addition** to the per-Task reviews, dispatch **one Coverage Verifier subagent** (opus) using the template in `./coverage-verifier-prompt.md`. It compares the **whole plan** against the **whole spec** — not a single Task.
+In **addition** to the per-Task reviews, dispatch one Coverage Verifier each round using the template in `./coverage-verifier-prompt.md`. It reads the whole plan file and whole spec file (read-only) and compares them globally.
 
-Every round, dispatch the Coverage Verifier alongside the per-Task reviewers. If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Tasks, or amend the spec. Filling a gap may add a new Task or substantially change an existing one — that Task re-enters the per-Task review in the next round. The Coverage Verifier runs again each round until it reports OKAY.
+If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Tasks, or amend the spec. Any newly added or substantially changed Task re-enters per-Task review in the next round. The Coverage Verifier re-runs next round only if gaps were fixed this round.
 
 ### The Round Loop
 
-Per-Task review subagents and the Coverage Verifier **are dispatched in parallel** within a round — you do not wait for all Task reviews to finish before launching the Coverage Verifier. Collect all results, fix all issues together, then start the next round.
+Per-Task reviewers and the Coverage Verifier are dispatched **in parallel** within a round using separate Bash calls with `run_in_background: true`. Do not wait for all per-Task reviews to finish before launching the Coverage Verifier. Collect all results via BashOutput polling, fix all issues and gaps together, then start the next round.
 
-**All per-Task subagents AND the Coverage Verifier must report OKAY before proceeding.** Any single failure means the whole round fails; loop again.
+The loop ends when, within a single round, every active Per-Task reviewer returns `Status: OKAY` and the Coverage Verifier (if still active) returns `Status: OKAY`.
 
 ```
-# one round = all per-Task reviewers + the Coverage Verifier, dispatched in parallel
-while true:
-  results = parallel(
-    [dispatch_task_reviewer(task) for task in plan.tasks],  # opus, independent Agents
-    dispatch_coverage_verifier(spec_file, plan_file),       # opus, whole plan vs whole spec
-  )
-  if all(r.verdict == "OKAY" for r in results): break
-  fix_all_issues(results)   # every Task issue AND every coverage gap — none skipped
-  # filling a coverage gap may add or grow a Task; that Task is reviewed again next round
-  # then start the next round
+# Unified re-run policy:
+#   - active_tasks: Tasks under review this round (changed or never yet OKAY)
+#   - coverage_active: True until Coverage Verifier reports OKAY with no gaps fixed this round
+active_tasks = all plan tasks   # first round: every task
+coverage_active = True
+
+while True:
+    # Dispatch in parallel
+    task_results = parallel(
+        [dispatch_task_reviewer(task, sibling_tasks=all_other_tasks) for task in active_tasks],
+        dispatch_coverage_verifier(spec_file, plan_file) if coverage_active else [],
+    )
+
+    issues = collect_issues(task_results)
+    gaps   = collect_gaps(task_results)
+
+    if not issues and not gaps:
+        break   # all active reviewers returned OKAY — done
+
+    # Fix every issue and every gap (zero tolerance — nothing deferred)
+    edited_tasks = fix_all_issues(issues)     # returns which Tasks were edited
+    gap_tasks    = fix_all_gaps(gaps)         # may add new Tasks or edit existing ones
+    coverage_had_gaps = bool(gaps)
+
+    # Determine next round's active set per unified policy
+    active_tasks = edited_tasks | gap_tasks | unresolved_tasks(task_results)
+    # Principle 3: Coverage Verifier re-runs only if it raised gaps that were just fixed
+    coverage_active = coverage_had_gaps
+    # Tasks that were OKAY and untouched are excluded from active_tasks -> drop out
 ```
 
 ### Git Commit Discipline
@@ -170,14 +208,14 @@ while true:
 
 ## User Review Gate
 
-After all per-Task subagents and the Coverage Verifier report OKAY, present the plan to the user for review.
+After all active Per-Task reviewers and the Coverage Verifier report `Status: OKAY`, present the plan to the user for review.
 
 If the user requests any changes:
 
 1. Make the requested changes.
-2. Re-run the per-Task review loop for every **affected Task** (can be dispatched in parallel).
+2. Re-run the per-Task reviewer for every **affected Task** (dispatched in parallel), passing sibling Task context.
 3. Re-run the Coverage Verifier over the whole plan vs. the whole spec (edits can introduce new coverage gaps).
-4. Loop each until OKAY, following the same zero-tolerance fix rules above.
+4. Apply the unified re-run policy: loop each reviewer until `Status: OKAY`, with zero tolerance — nothing may be deferred.
 5. Commit the fixed plan.
 6. Report the result back to the user and **wait for their next reply**.
 

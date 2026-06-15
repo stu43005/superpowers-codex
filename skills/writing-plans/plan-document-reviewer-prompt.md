@@ -16,6 +16,13 @@ Use this template when dispatching a per-Task plan document reviewer via the cod
 > reads `options["prompt-file"]` and lists `prompt-file` among its value options — even
 > though `--help` does not document it. This is verified, not a guess, so no
 > re-verification is needed.
+>
+> **`--prompt-file` takes `$PROMPT_FILE` (the temp file the block below writes) — NEVER
+> this template document.** Passing this `.md` file (or any path under `skills/`) as
+> `--prompt-file` feeds Codex these dispatch instructions instead of the reviewer prompt.
+> `task` has **no `--wait` flag** (that belongs to `review`/`adversarial-review`); the Task
+> text goes INSIDE the temp file (paste it into the heredoc body) and the spec path is
+> injected via the `sed` substitution below — never as inline arguments to `task`.
 
 ```bash
 # Resolve codex companion path
@@ -26,6 +33,9 @@ if [ ! -f "$CODEX_COMPANION" ]; then
   exit 1
 fi
 
+# Paste the Task text into the [PASTE ...] placeholders in the heredoc body below.
+# Set SPEC_FILE to the spec under review; [SPEC_FILE_PATH] is substituted with it before dispatch.
+SPEC_FILE="docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md"
 PROMPT_FILE="$(mktemp)"
 cat > "$PROMPT_FILE" <<'PROMPT'
 You are an independent plan Task reviewer executed by the codex companion. You must use
@@ -127,6 +137,8 @@ Your final line MUST be exactly one of:
 Status: OKAY
 Status: Issues Found
 PROMPT
+# Heredoc is literal (<<'PROMPT'); inject the real spec path into the temp file.
+sed -i "s#\[SPEC_FILE_PATH\]#${SPEC_FILE}#g" "$PROMPT_FILE"
 node "$CODEX_COMPANION" task --prompt-file "$PROMPT_FILE"
 rm -f "$PROMPT_FILE"
 ```

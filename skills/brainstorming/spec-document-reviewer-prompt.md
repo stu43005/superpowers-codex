@@ -18,6 +18,13 @@ Use this template when dispatching the structural completeness reviewer for a sp
 > reads `options["prompt-file"]` and lists `prompt-file` among its value options — even
 > though `--help` does not document it. This is verified, not a guess, so no
 > re-verification is needed.
+>
+> **`--prompt-file` takes `$PROMPT_FILE` (the temp file the block below writes) — NEVER
+> this template document.** Passing this `.md` file (or any path under `skills/`) as
+> `--prompt-file` feeds Codex these dispatch instructions instead of the reviewer prompt.
+> `task` has **no `--wait` flag** (that belongs to `review`/`adversarial-review`); the spec
+> path goes INSIDE the temp file via the `sed` substitution below, never as an inline
+> argument to `task`.
 
 ```bash
 # Step 1: Resolve companion path
@@ -28,7 +35,10 @@ if [ ! -f "$CODEX_COMPANION" ]; then
   exit 1
 fi
 
-# Step 2: Write the review prompt to a temp file and dispatch
+# Step 2: Write the review prompt to a temp file and dispatch.
+# Set SPEC_FILE to the committed spec under review; the [SPEC_FILE_PATH] placeholder in
+# the prompt below is substituted with it before dispatch.
+SPEC_FILE="docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md"
 PROMPT_FILE="$(mktemp)"
 cat > "$PROMPT_FILE" <<'PROMPT'
 You are a spec document reviewer. Your job is to verify that the spec document at the path given below is structurally complete and ready for implementation planning. Read the file, then apply each check in the table below.
@@ -72,6 +82,8 @@ If issues are found, list each one before the final Status line using this forma
 **Recommendations (advisory, do not block approval):**
 - [suggestions for improvement that should NOT appear in Issues]
 PROMPT
+# Heredoc is literal (<<'PROMPT'); inject the real spec path into the temp file.
+sed -i "s#\[SPEC_FILE_PATH\]#${SPEC_FILE}#g" "$PROMPT_FILE"
 node "$CODEX_COMPANION" task --prompt-file "$PROMPT_FILE"
 rm -f "$PROMPT_FILE"
 ```

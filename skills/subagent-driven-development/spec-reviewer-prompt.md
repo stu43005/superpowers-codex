@@ -22,6 +22,13 @@ Run after each implementer subagent completes a task. Dispatches reviewer 5 via 
 > companion reads `options["prompt-file"]` and lists `prompt-file` among its value
 > options — even though `--help` does not document it. This is verified, not a guess, so
 > no re-verification is needed.
+>
+> **In Step 3, `--prompt-file` takes `$PROMPT_FILE` (the temp file that block writes) —
+> NEVER this template document.** Passing this `.md` file (or any path under `skills/`) as
+> `--prompt-file` feeds Codex these dispatch instructions instead of the reviewer prompt.
+> `task` has **no `--wait` flag** (that belongs to `review`/`adversarial-review`); the task
+> text, base SHA, and report go INSIDE the temp file (substitute the placeholders in the
+> heredoc body per Step 3), never as inline arguments to `task`.
 
 ```bash
 CODEX_COMPANION="$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)"

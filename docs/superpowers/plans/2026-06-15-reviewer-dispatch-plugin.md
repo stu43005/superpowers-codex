@@ -1638,20 +1638,33 @@ isolation is already covered by `dispatch.test.sh`.
 - [ ] **Step 5: Confirm no install hook + plugin install smoke test (do before Step 6)**
 
 Confirm (already verified against docs) that `/plugin install` does NOT run the preflight —
-no `plugin.json` hook exists or is added; the README mandates the manual preflight. Then run
-these **Claude Code slash commands** (not shell — run them in Claude Code):
+no `plugin.json` hook exists or is added; the README mandates the manual preflight.
+
+**Install THIS checkout, not a stale remote.** To exercise the files built by Tasks 1-14,
+add this repo as a **local** marketplace (Claude Code accepts a local marketplace path); if
+your setup requires a remote, push the branch first and use `stu43005/superpowers-codex`. Run
+in Claude Code (slash commands, not shell):
 
 ```
-/plugin marketplace add stu43005/superpowers-codex
+/plugin marketplace add /Users/stu43005/Sources/superpowers-codex
 /plugin install superpowers-codex
 ```
 
-Then invoke the **namespaced** plugin skill `superpowers-codex:brainstorming` (use the
-namespaced name so you exercise the plugin copy, not a possibly-still-present legacy bare
-skill) and let it reach a reviewer dispatch. Confirm `${CLAUDE_PLUGIN_ROOT}` inline-expanded:
-the dispatch runs **without** the "must be installed as a plugin" guard error (the guard
-aborts only when the token did not expand). Do not look for a `dispatch.sh` path in
-`--dry-run` output — that output is the `node <companion> …` command.
+Then **verify the installed cache really is this branch's content** (shell — this is the
+deterministic check; if it fails, the smoke test is invalid):
+
+```bash
+CACHE_DS="$(ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/scripts/dispatch.sh 2>/dev/null | sort | tail -1)"
+[ -n "$CACHE_DS" ] || echo "FAIL: plugin dispatch.sh not found in cache"
+grep -q 'mk_private' "$CACHE_DS" && grep -q 'DISPATCH_COMPANION' "$CACHE_DS" \
+  && echo "OK: installed dispatch.sh matches this branch" || echo "FAIL: cache holds stale dispatch.sh"
+```
+
+Expect `OK`. Inline `${CLAUDE_PLUGIN_ROOT}` expansion is then confirmed during normal use: any
+plugin skill that reaches a reviewer dispatch (invoke the **namespaced**
+`superpowers-codex:brainstorming`, not a bare legacy copy) runs **without** the "must be
+installed as a plugin" guard error — the guard fires only when the token did not expand. (Do
+not look for a `dispatch.sh` path in `--dry-run` output — that is the `node <companion> …` command.)
 
 - [ ] **Step 6: Discovery-precedence empirical determination (operational; not in docs)**
 
@@ -1686,9 +1699,17 @@ Concrete observation: invoke the bare skill (Skill tool with `skill: writing-pla
 - the bare name is unavailable and only `superpowers-codex:writing-plans` resolves →
   namespaced-no-collision.
 
-Then `rm -rf ~/.claude/skills/writing-plans` and repeat with the copy at
-`~/.agents/skills/writing-plans` (the two locations may differ). Record **both** outcomes in
-README's migration section using this exact block:
+Then remove the first fixture and set up the second location with the same explicit commands,
+and observe again (the two locations may differ):
+
+```bash
+rm -rf ~/.claude/skills/writing-plans
+mkdir -p ~/.agents/skills/writing-plans
+printf '%s\n' '---' 'name: writing-plans' 'description: LEGACY-SENTINEL-XYZZY' '---' 'LEGACY-SENTINEL-XYZZY' > ~/.agents/skills/writing-plans/SKILL.md
+```
+
+Invoke the bare skill again and classify the same way. Record **both** outcomes in README's
+migration section using this exact block:
 
 ```markdown
 ### Skill discovery precedence (measured)

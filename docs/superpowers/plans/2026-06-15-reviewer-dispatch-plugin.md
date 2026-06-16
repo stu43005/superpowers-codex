@@ -1608,17 +1608,26 @@ wait
 p1=$(grep '^R: ' "$T/o1.$$" | grep -o 'dispatch\.[A-Za-z0-9]*' | head -1); p2=$(grep '^R: ' "$T/o2.$$" | grep -o 'dispatch\.[A-Za-z0-9]*' | head -1)
 { [ -n "$p1" ] && [ -n "$p2" ] && [ "$p1" != "$p2" ]; } && echo "parallel isolation OK" || echo "FAIL: report copies not distinct"
 rm -f "$R1" "$R2" "$PR" "$T/o1.$$" "$T/o2.$$"
-# (f) interrupt cleanup: INT/TERM route through the SAME cleanup proven on EXIT by (c)/(d).
-# A live single-PID TERM race is not portably testable here — bash defers a trap until the
-# foreground child returns, and macOS has no `setsid` for a process-group kill — so assert the
-# trap coverage statically; combined with (c)/(d) this establishes cleanup on INT/TERM too.
-grep -Eq 'trap[[:space:]]+cleanup[[:space:]]+EXIT[[:space:]]+INT[[:space:]]+TERM' scripts/dispatch.sh \
-  && echo "interrupt trap covers EXIT/INT/TERM OK" || echo "FAIL: dispatch.sh does not trap INT/TERM to cleanup"
+# (f) interrupt cleanup (dynamic + portable): start a dispatch whose companion sleeps, then
+# kill the foreground node child with pkill (mimics the foreground job being signalled on a
+# Ctrl-C). dispatch.sh's foreground call returns and its trap cleans the private temp. Killing
+# the child (not the single bash PID) sidesteps bash's deferred-trap behaviour and needs no
+# setsid, so it is portable to macOS. Also assert the trap covers INT/TERM.
+SLEEP=/tmp/fakecodex/codex/9.9.9/scripts/codex-companion.mjs; mkdir -p "$(dirname "$SLEEP")"; printf 'setTimeout(()=>{},300000);\n' >"$SLEEP"
+before=$(ls "$T"/dispatch.* 2>/dev/null | wc -l)
+DISPATCH_COMPANION="$SLEEP" bash scripts/dispatch.sh task --prompt "$CV" --set PLAN_FILE_PATH="$PLAN" --set SPEC_FILE_PATH="$SPEC" & DPID=$!
+sleep 1; pkill -TERM -P "$DPID" 2>/dev/null; wait "$DPID" 2>/dev/null
+after=$(ls "$T"/dispatch.* 2>/dev/null | wc -l); rm -rf /tmp/fakecodex
+grep -Eq 'trap[[:space:]]+cleanup[[:space:]]+EXIT[[:space:]]+INT[[:space:]]+TERM' scripts/dispatch.sh && trapok=1 || trapok=0
+{ [ "$after" -le "$before" ] && [ "$trapok" = 1 ]; } && echo "interrupt cleanup OK" || echo "FAIL: leak after interrupt, or trap missing"
+# (g) external --set file inputs are NEVER deleted by dispatch.sh (only its own mktemp files are)
+bash scripts/dispatch.sh task --prompt "$CV" --set PLAN_FILE_PATH="$PLAN" --set SPEC_FILE_PATH="$SPEC" --dry-run >/dev/null
+{ [ -f "$PLAN" ] && [ -f "$SPEC" ]; } && echo "external --set inputs preserved OK" || echo "FAIL: dispatch deleted an external input"
 ```
 
 Expected: (a) non-zero; (b) prints a matching line; (c) `normal-exit cleanup OK`;
-(d) `validation-failure cleanup OK`; (e) `parallel isolation OK`;
-(f) `interrupt trap covers EXIT/INT/TERM OK`.
+(d) `validation-failure cleanup OK`; (e) `parallel isolation OK`; (f) `interrupt cleanup OK`;
+(g) `external --set inputs preserved OK`.
 Additionally — **live foreground sync (needs the real codex companion installed)**: confirm
 a real `task` dispatch (no `--dry-run`) blocks until the full reviewer output — including the
 final `Status:` line — is printed, then returns:

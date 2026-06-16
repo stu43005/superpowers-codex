@@ -1303,7 +1303,7 @@ Run:
 ```bash
 F=skills/brainstorming/SKILL.md
 grep -c 'dispatch.sh' "$F"   # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node "?\$?CODEX|node <companion>|prompt templates are canonical|invocation block|adversarial-spec-review-prompt\.md' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node "?\$?CODEX|node <companion>|task --prompt-file|prompt templates are canonical|invocation block|adversarial-spec-review-prompt\.md' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `CLEAN`. (The `--prompt`/`--focus` paths legitimately name the sidecar files; the grep targets only stale dispatch *mechanics/phrasing*.)
@@ -1646,10 +1646,12 @@ these **Claude Code slash commands** (not shell — run them in Claude Code):
 /plugin install superpowers-codex
 ```
 
-Then invoke a bundled skill (e.g. brainstorming) and let it reach a reviewer dispatch. Confirm
-`${CLAUDE_PLUGIN_ROOT}` inline-expanded: the dispatch runs **without** the "must be installed
-as a plugin" guard error (the guard aborts only when the token did not expand). Do not look
-for a `dispatch.sh` path in `--dry-run` output — that output is the `node <companion> …` command.
+Then invoke the **namespaced** plugin skill `superpowers-codex:brainstorming` (use the
+namespaced name so you exercise the plugin copy, not a possibly-still-present legacy bare
+skill) and let it reach a reviewer dispatch. Confirm `${CLAUDE_PLUGIN_ROOT}` inline-expanded:
+the dispatch runs **without** the "must be installed as a plugin" guard error (the guard
+aborts only when the token did not expand). Do not look for a `dispatch.sh` path in
+`--dry-run` output — that output is the `node <companion> …` command.
 
 - [ ] **Step 6: Discovery-precedence empirical determination (operational; not in docs)**
 
@@ -1663,9 +1665,14 @@ locations. Record the Claude Code version (`claude --version`).
 > Step 7.** Never `rm -rf` a path you did not create here.
 
 ```bash
-# SAFETY: preserve any real user copies before using these paths as fixtures.
+# SAFETY: move any real user copies (regular dir OR symlink) into a fresh backup dir; abort if
+# a previous backup is still present so we never clobber it. Step 7 restores from BK.
+BK=/tmp/sp-fixture-backup
+[ -e "$BK" ] && { echo "backup dir $BK exists; resolve it before running these fixtures" >&2; exit 1; }
+mkdir -p "$BK"; i=0
 for d in ~/.claude/skills/writing-plans ~/.agents/skills/writing-plans; do
-  [ -e "$d" ] && mv "$d" "$d.realbak" || true
+  if [ -e "$d" ] || [ -L "$d" ]; then printf '%s\n' "$d" > "$BK/item$i.path"; mv "$d" "$BK/item$i"; fi
+  i=$((i+1))
 done
 # Sentinel legacy copy with a unique marker in the body:
 mkdir -p ~/.claude/skills/writing-plans
@@ -1706,10 +1713,13 @@ PF="$(ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/scripts/preflight-plug
 "$PF"; echo "shadow rc=$?"        # expect non-zero, naming ~/.claude/skills/writing-plans
 rm -rf ~/.claude/skills/writing-plans
 "$PF"; echo "clean rc=$?"         # expect 0
-# SAFETY: restore any real user copies preserved at the start of Step 6
-for d in ~/.claude/skills/writing-plans ~/.agents/skills/writing-plans; do
-  rm -rf "$d"; [ -e "$d.realbak" ] && mv "$d.realbak" "$d" || true
+# SAFETY: restore anything moved into the Step 6 backup dir, then remove the backup dir.
+BK=/tmp/sp-fixture-backup
+for p in "$BK"/item*.path; do
+  [ -e "$p" ] || continue
+  d="$(cat "$p")"; rm -rf "$d"; mv "${p%.path}" "$d"
 done
+rm -rf "$BK"
 ```
 
 Confirm the first run exits non-zero naming the path and the second exits 0; then confirm a

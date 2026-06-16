@@ -156,7 +156,7 @@ run task --prompt /no/such/file --dry-run
 run task --prompt "$P" --report-file /no/such --dry-run --set PLAN_FILE_PATH="$P" --set TASK_ID=t
 [ "$RC" -ne 0 ] && ok "missing report -> non-zero" || bad "missing report" "rc=$RC"
 
-# 6. nonexistent *_FILE_PATH --set value -> non-zero (spec §4.1/§4.3 path validation)
+# 6. nonexistent *_FILE_PATH --set value -> non-zero (path existence validation)
 run task --prompt "$P" --dry-run --set PLAN_FILE_PATH=/no/such/plan.md --set TASK_ID=t
 [ "$RC" -ne 0 ] && ok "nonexistent --set file path -> non-zero" || bad "nonexistent --set file path" "rc=$RC"
 
@@ -425,8 +425,15 @@ main "$@"
 
 - [ ] **Step 4: Make it executable and run static checks**
 
-Run: `chmod +x scripts/dispatch.sh && bash -n scripts/dispatch.sh && shellcheck scripts/dispatch.sh`
-Expected: no syntax errors; shellcheck clean (if `shellcheck` is unavailable, note it and rely on `bash -n` + the test runner).
+Run:
+
+```bash
+chmod +x scripts/dispatch.sh
+bash -n scripts/dispatch.sh
+if command -v shellcheck >/dev/null; then shellcheck scripts/dispatch.sh; else echo "shellcheck not installed; relying on bash -n + test runner"; fi
+```
+
+Expected: no syntax errors; shellcheck clean (its non-zero exit must surface, not be masked) — or, only if `shellcheck` is absent, the skip note.
 
 - [ ] **Step 5: Run the test runner to verify it passes**
 
@@ -555,7 +562,7 @@ Run:
 ```bash
 chmod +x scripts/preflight-plugin-install.sh
 bash -n scripts/preflight-plugin-install.sh
-command -v shellcheck >/dev/null && shellcheck scripts/preflight-plugin-install.sh || echo "shellcheck not installed; relying on bash -n + test runner"
+if command -v shellcheck >/dev/null; then shellcheck scripts/preflight-plugin-install.sh; else echo "shellcheck not installed; relying on bash -n + test runner"; fi
 bash scripts/preflight.test.sh
 ```
 
@@ -1178,8 +1185,10 @@ Per-Task reviewer — one per active Task:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
-{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
+# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
+case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/plan-document-reviewer-prompt.md" \
   --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
@@ -1191,8 +1200,10 @@ Coverage Verifier — once per round while active:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
-{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
+# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
+case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/coverage-verifier-prompt.md" \
   --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
@@ -1205,7 +1216,7 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
   - In **### Coverage Verifier**: replace "using the template in `./coverage-verifier-prompt.md`" with "using the Coverage Verifier invocation in **Dispatch mechanism** above".
   - In **### The Round Loop**: the `run_in_background`/parallel behavior is unchanged; only replace any remaining wording that implies pasting templates with a pointer to the **Dispatch mechanism** invocations.
   - In the **"Plan Review Loop"** intro / reviewer-role bullets: replace every statement that a reviewer is "dispatched via `node <companion> task`" (or similar embedded-companion wording) with "dispatched via `dispatch.sh` (see **Dispatch mechanism**)".
-  - In **"Unified Re-run Policy" principle 2**: replace "the reviewer is given the full text of all sibling Tasks as context" with "the reviewer reads the plan file and treats all sibling Tasks as context (no Task text is pasted)".
+  - In **"Unified Re-run Policy" principle 2**: replace "the reviewer is given the full text of all sibling Tasks as context" with "the reviewer reads the plan file and treats all other Tasks as sibling context (no Task text is pasted)".
 
 - [ ] **Step 3: Verify dispatch.sh is referenced and no stale dispatch mechanics / paste prose remain**
 
@@ -1214,7 +1225,7 @@ Run:
 ```bash
 F=skills/writing-plans/SKILL.md
 grep -c 'dispatch.sh' "$F"   # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|using the template|full text of (the single|all sibling)|sibling Tasks as context' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|using the template|full text of (the single|all sibling)' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `CLEAN` (no stale bash, no embedded-companion dispatch, no paste-based prose anywhere in the file — including the "Plan Review Loop" intro and "Unified Re-run Policy"). The `--prompt` paths legitimately name the `*-prompt.md` files, so the grep deliberately targets only the stale *phrasing*, not those filenames.
@@ -1248,8 +1259,10 @@ Reviewer 1 — Structural Completeness:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
-{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
+# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
+case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/spec-document-reviewer-prompt.md" \
   --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
@@ -1259,8 +1272,10 @@ Reviewer 2 — Design Soundness:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
-{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
+# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
+case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
 "$DISPATCH" adversarial \
   --base "$SPEC_BASE" \
   --focus "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/adversarial-spec-review-focus.md"
@@ -1300,6 +1315,7 @@ Replace the dispatch mechanics for reviewers 5/6/7 and add the report-file step 
   - The **"Prompt Templates"** list entries and any prose that says "see the prompt templates for full dispatch commands" or "the invocation blocks are canonical".
   - **Workflow diagram labels** and **example workflow** text that reference `task --prompt-file` / `node <companion>` dispatch.
   - Note the new reality: reviewer 6 (`code-quality-reviewer-prompt.md`) and reviewer 7 (`final-code-reviewer-prompt.md`) are **human-facing support docs** (Tasks 8/10) — reference them as docs, never as dispatch templates; reviewer 7 dispatch uses `final-code-reviewer-focus.md`.
+  - **Replacement terminology when rewriting the table / diagram / example workflow** (use exactly these so the file is internally consistent): reviewer 5 = "`dispatch.sh task` with `--report-file` (spec-reviewer sidecar)"; reviewer 6 = "`dispatch.sh review` (native review, no prompt sidecar)"; reviewer 7 = "`dispatch.sh adversarial` with `final-code-reviewer-focus.md`". Do not leave any "via codex task" / "codex native review" / "codex adversarial-review" / "prompt templates" dispatch phrasing.
 
 - [ ] **Step 1: Add the spec-compliance dispatch with the report-file step.** Where the SKILL describes dispatching reviewer 5 (spec compliance), insert:
 
@@ -1310,16 +1326,22 @@ self-contained and re-establishes the guard.
 
 Spec compliance reviewer (reviewer 5). Procedure:
 
-1. Create a unique report temp file: `REPORT_FILE="$(mktemp)"` (one per reviewer — never
-   reuse or share a path across concurrent reviewers); note the concrete path it prints.
-2. **Write the implementer subagent's returned report verbatim into that file using the
-   Write tool** (do not paste the report into the dispatch command).
-3. Dispatch (substitute the concrete `$REPORT_FILE` path):
+1. Run `REPORT_FILE="$(mktemp)"; echo "$REPORT_FILE"` and **note the concrete printed path**
+   (one per reviewer — never reuse or share a path across concurrent reviewers).
+2. **Write the implementer subagent's returned report verbatim into that concrete path using
+   the Write tool** (do not paste the report into the dispatch command).
+3. Dispatch. This block runs in its **own** background shell, so it re-binds `REPORT_FILE`
+   and `TASK_BASE` to the concrete values from earlier (the mktemp path from step 1 and the
+   captured task base SHA) — substitute them in the two marked lines:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
-{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
+# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
+case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
+REPORT_FILE="/abs/path/from/step/1"        # <- concrete mktemp path noted in step 1
+TASK_BASE="<captured task base SHA>"       # <- concrete SHA captured before the implementer
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/spec-reviewer-prompt.md" \
   --report-file "$REPORT_FILE" \
@@ -1329,7 +1351,7 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
 ```
 
 4. After this background dispatch's **completion notification**, delete the source file:
-   `rm -f "$REPORT_FILE"`.
+   `rm -f "$REPORT_FILE"` (using the same concrete path).
 
 `dispatch.sh` copies the report into its own private temp and injects that private path, so
 reviewer correctness does not depend on when step 4 runs.
@@ -1339,8 +1361,10 @@ reviewer correctness does not depend on when step 4 runs.
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
-{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
+# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
+case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
 "$DISPATCH" review --base "$TASK_BASE"
 ```
 
@@ -1348,8 +1372,10 @@ PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
-{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
+# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
+case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
 "$DISPATCH" adversarial \
   --base "$IMPL_BASE" \
   --focus "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/final-code-reviewer-focus.md"
@@ -1363,7 +1389,7 @@ Run:
 F=skills/subagent-driven-development/SKILL.md
 grep -c 'dispatch.sh' "$F"            # expect >= 1
 grep -c -- '--report-file' "$F"       # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|task --prompt-file|Reviewer Dispatch Mechanisms|prompt templates are canonical|See the prompt templates' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|node <companion>|task --prompt-file|Reviewer Dispatch Mechanisms|via codex |codex native review|codex adversarial-review|prompt templates are canonical|See the prompt templates' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `--report-file` count ≥ 1; `CLEAN`. (Note: `implementer-prompt.md` still uses its own heredoc — that file is NOT edited; the grep targets SKILL.md only. The grep deliberately targets stale dispatch *mechanics/phrasing*, not the bare `code-quality-reviewer-prompt.md` / `final-code-reviewer-prompt.md` names, which may legitimately remain as human-facing support-doc references.)
@@ -1393,16 +1419,18 @@ git commit -m "refactor(sdd): dispatch reviewers via dispatch.sh, pass report by
 > `${CLAUDE_PLUGIN_ROOT}`.
 ```
 
-- [ ] **Step 2: Add an "Install" section:**
+- [ ] **Step 2: Add an "Install" section.** The two commands are **Claude Code slash commands**, not shell — put them in a plain (unlabeled) fence and say so, so users don't paste them into a terminal:
 
-```markdown
+````markdown
 ## Install
 
-```bash
+Run these inside Claude Code (they are slash commands, not shell commands):
+
+```
 /plugin marketplace add stu43005/superpowers-codex
 /plugin install superpowers-codex
 ```
-```
+````
 
 - [ ] **Step 3: Add a "Migrating from a skills-collection install" section:**
 
@@ -1439,11 +1467,18 @@ The preflight exits non-zero and names any offending path. The shell checks abov
 the plugin copy is present in the cache and no legacy copy remains, but they do **not** prove
 Claude Code actually loads the plugin's `SKILL.md`. To confirm that (and that
 `${CLAUDE_PLUGIN_ROOT}` inline-expands), **invoke any bundled skill once** (e.g. start a
-brainstorming session and let it reach a reviewer dispatch): if it runs without the
-"must be installed as a plugin" guard error, plugin load + inline expansion are confirmed.
+brainstorming session and let it reach a reviewer dispatch). The deterministic signal: the
+skill's reviewer dispatch resolves to a `dispatch.sh` path **under the plugin cache**. Run a
+`--dry-run` dispatch through the skill and check the printed command:
+
+- a path under `~/.claude/plugins/cache/.../superpowers-codex/.../scripts/dispatch.sh` → the
+  loaded SKILL.md is the plugin copy and inline expansion works;
+- a `<companion-unresolved>` / non-cache / empty path, or the "must be installed as a plugin"
+  guard error → the plugin copy is **not** the active one (a legacy copy still shadows it, or
+  it is not installed as a plugin).
 
 Migration is complete only once the preflight passes, the post-install check prints `OK`
-with no `FAIL` lines, and a bundled skill runs without the plugin guard error.
+with no `FAIL` lines, and a skill's reviewer dispatch resolves under the plugin cache.
 ````
 
 - [ ] **Step 4: Verify**
@@ -1474,7 +1509,7 @@ hook (verified), so the preflight is manual (Task 14) — this task only confirm
 Run:
 ```bash
 bash -n scripts/dispatch.sh && bash -n scripts/preflight-plugin-install.sh
-command -v shellcheck >/dev/null && shellcheck scripts/dispatch.sh scripts/preflight-plugin-install.sh || echo "shellcheck not installed; relying on bash -n + test runners"
+if command -v shellcheck >/dev/null; then shellcheck scripts/dispatch.sh scripts/preflight-plugin-install.sh; else echo "shellcheck not installed; relying on bash -n + test runners"; fi
 bash scripts/dispatch.test.sh
 bash scripts/preflight.test.sh
 ```
@@ -1560,53 +1595,72 @@ after=$(ls "$T"/dispatch.* 2>/dev/null | wc -l); rm -rf /tmp/fakecodex
 
 Expected: (a) non-zero; (b) prints a matching line; (c) `normal-exit cleanup OK`;
 (d) `validation-failure cleanup OK`; (e) `parallel isolation OK`; (f) `interrupt cleanup OK`.
-Additionally — **live foreground sync (needs real codex)**: run one real `task` dispatch
-(no `--dry-run`) against the spec reviewer and confirm `dispatch.sh` returns only *after* the
-full reviewer output including the final `Status:` line is printed (i.e. it blocks, never
-backgrounds). Parallel isolation is already covered by `dispatch.test.sh` (each call gets its
-own `mktemp` private copy).
+Additionally — **live foreground sync (needs the real codex companion installed)**: confirm
+a real `task` dispatch (no `--dry-run`) blocks until the full reviewer output — including the
+final `Status:` line — is printed, then returns:
+
+```bash
+PLAN=docs/superpowers/plans/2026-06-15-reviewer-dispatch-plugin.md
+RF="$(mktemp)"; printf 'implementer report (smoke)\n' > "$RF"
+bash scripts/dispatch.sh task \
+  --prompt skills/subagent-driven-development/spec-reviewer-prompt.md \
+  --report-file "$RF" \
+  --set PLAN_FILE_PATH="$PLAN" --set TASK_ID="Task 2" --set TASK_BASE="$(git rev-parse HEAD)"
+echo "returned rc=$?"; rm -f "$RF"
+```
+
+Expect the command to print the reviewer's full output ending in a `Status:` line and only
+then print `returned rc=…` — it must not return early or background. Parallel private-copy
+isolation is already covered by `dispatch.test.sh`.
 
 - [ ] **Step 5: Discovery-precedence empirical determination (operational; not in docs)**
 
-Skill precedence between a plugin skill and a plain `~/.claude/skills/<name>` is undocumented,
-so determine it on the running Claude Code:
+**Prerequisite: the plugin must already be installed (do Step 6 first).** Skill precedence
+between a plugin skill and a plain legacy copy is undocumented, so determine it on the
+running Claude Code, for **both** legacy locations:
 
 ```bash
-# After installing the plugin, create a sentinel legacy copy of one skill:
+# Sentinel legacy copy in ~/.claude/skills:
 mkdir -p ~/.claude/skills/writing-plans
 printf '%s\n' '---' 'name: writing-plans' 'description: LEGACY-SENTINEL' '---' 'LEGACY' > ~/.claude/skills/writing-plans/SKILL.md
 ```
 
-Then invoke the bare `writing-plans` skill (Skill tool / `/writing-plans`) and read the
-loaded SKILL content: if it shows `LEGACY-SENTINEL`, the legacy copy wins; if it shows the
-plugin's real writing-plans content, the plugin wins; if the bare name resolves to neither
-(only `superpowers-codex:writing-plans` exists), it is namespaced-no-collision. Append the
-result to README's migration section using this exact block (fill in the observed outcome):
+Invoke the bare `writing-plans` skill (Skill tool / `/writing-plans`) and read the loaded
+SKILL content: `LEGACY-SENTINEL` → legacy wins; the plugin's real content → plugin wins; the
+bare name resolves to neither (only `superpowers-codex:writing-plans` exists) →
+namespaced-no-collision. Then `rm -rf ~/.claude/skills/writing-plans` and **repeat the same
+observation with the legacy copy in `~/.agents/skills/writing-plans`** instead (the two
+locations may differ). Record **both** outcomes. Append the result to README's migration
+section using this exact block (fill in the observed outcomes):
 
 ```markdown
 ### Skill discovery precedence (measured)
 
-On Claude Code <version>, when both a plugin skill and a plain `~/.claude/skills/<name>`
-exist, the **<plugin-wins | legacy-wins | namespaced-no-collision>** copy is loaded for the
-bare `/<name>` invocation. Therefore legacy copies MUST be removed before relying on the
-plugin (see the preflight above).
+On Claude Code <version>, when a plugin skill and a plain legacy copy of the same name
+coexist, the bare `/<name>` invocation loads:
+- legacy at `~/.claude/skills/<name>`: **<plugin-wins | legacy-wins | namespaced-no-collision>**
+- legacy at `~/.agents/skills/<name>`: **<plugin-wins | legacy-wins | namespaced-no-collision>**
+
+Therefore legacy copies in both locations MUST be removed before relying on the plugin
+(see the preflight above).
 ```
 
-Then clean up: `rm -rf ~/.claude/skills/writing-plans`.
+Then clean up: `rm -rf ~/.claude/skills/writing-plans ~/.agents/skills/writing-plans`.
 
 - [ ] **Step 6: Confirm no install hook + plugin install smoke test**
 
 Confirm (already verified against docs) that `/plugin install` does NOT run the preflight —
-no `plugin.json` hook exists or is added; the README mandates the manual preflight. Then:
+no `plugin.json` hook exists or is added; the README mandates the manual preflight. Then run
+these **Claude Code slash commands** (not shell — run them in Claude Code):
 
-```bash
+```
 /plugin marketplace add stu43005/superpowers-codex
 /plugin install superpowers-codex
 ```
 
 Invoke a skill (e.g. brainstorming) and confirm, through the installed skill, that
-`${CLAUDE_PLUGIN_ROOT}` inline-expands (the dispatch guard passes and a `--dry-run` reviewer
-dispatch prints a real plugin-cache `dispatch.sh` path).
+`${CLAUDE_PLUGIN_ROOT}` inline-expands: the dispatch guard passes and a `--dry-run` reviewer
+dispatch prints a `dispatch.sh` path under `~/.claude/plugins/cache/.../superpowers-codex/`.
 
 - [ ] **Step 7: Migration shadow smoke test**
 

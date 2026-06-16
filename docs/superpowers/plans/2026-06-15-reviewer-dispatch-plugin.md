@@ -1680,14 +1680,18 @@ locations. Record the Claude Code version (`claude --version`).
 > Step 7.** Never `rm -rf` a path you did not create here.
 
 ```bash
-# SAFETY: move any real user copies (regular dir OR symlink) into a fresh backup dir; abort if
-# a previous backup is still present so we never clobber it. Step 7 restores from BK.
+# SAFETY: move ANY real user copy of EVERY skill the preflight scans (4 names x 2 locations)
+# into a fresh backup dir — not just writing-plans — so Step 7's "clean rc=0" reflects a truly
+# clean state. Handles regular dirs and symlinks; aborts rather than clobber a prior backup.
 BK=/tmp/sp-fixture-backup
 [ -e "$BK" ] && { echo "backup dir $BK exists; resolve it before running these fixtures" >&2; exit 1; }
 mkdir -p "$BK"; i=0
-for d in ~/.claude/skills/writing-plans ~/.agents/skills/writing-plans; do
-  if [ -e "$d" ] || [ -L "$d" ]; then printf '%s\n' "$d" > "$BK/item$i.path"; mv "$d" "$BK/item$i"; fi
-  i=$((i+1))
+for base in ~/.claude/skills ~/.agents/skills; do
+  for s in brainstorming writing-plans subagent-driven-development finishing-a-development-branch; do
+    d="$base/$s"
+    if [ -e "$d" ] || [ -L "$d" ]; then printf '%s\n' "$d" > "$BK/item$i.path"; mv "$d" "$BK/item$i"; fi
+    i=$((i+1))
+  done
 done
 # Sentinel legacy copy with a unique marker in the body:
 mkdir -p ~/.claude/skills/writing-plans

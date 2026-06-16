@@ -57,7 +57,9 @@
 - Create: `.claude-plugin/plugin.json`
 - Create: `.claude-plugin/marketplace.json`
 
-- [ ] **Step 1: Write `plugin.json`**
+- [ ] **Step 1: Create the directory and write `plugin.json`**
+
+Run: `mkdir -p .claude-plugin` (the directory is new in this repo). Then write `.claude-plugin/plugin.json`:
 
 ```json
 {
@@ -103,6 +105,8 @@ git commit -m "feat: add plugin and marketplace manifests"
 ### Task 2: Shared `scripts/dispatch.sh`
 
 This is the core artifact. It must run on macOS (BSD) and Linux (GNU). TDD via `--dry-run` (which never invokes codex).
+
+> **Spec §4.2 realization.** The spec says to obtain the companion version via a "version command" and assert a minimum. Research found the companion exposes **no** version command, so this plan realizes §4.2's intent by deriving the version from the resolved `/codex/<ver>/` install-path segment (and `die`ing if it cannot be derived or is below the minimum). This is the spec's deferred "plan deliverable", not a scope change.
 
 **Files:**
 - Create: `scripts/dispatch.sh`
@@ -156,9 +160,15 @@ run task --prompt "$P" --report-file /no/such --dry-run --set PLAN_FILE_PATH="$P
 run task --prompt "$P" --dry-run --set PLAN_FILE_PATH=/no/such/plan.md --set TASK_ID=t
 [ "$RC" -ne 0 ] && ok "nonexistent --set file path -> non-zero" || bad "nonexistent --set file path" "rc=$RC"
 
-# 7. report copied to PRIVATE temp; injected path is NOT the source; placeholder gone
-run task --prompt "$P" --report-file "$R" --dry-run --set PLAN_FILE_PATH="$P" --set TASK_ID=t
-case "$OUT" in *"$R"*) bad "report private-copy (not source)" "leaked source" ;; *REPORT_FILE_PATH*) bad "report placeholder gone" "$OUT" ;; *) ok "report private-copy (not source)" ;; esac
+# 7. report: [REPORT_FILE_PATH] replaced by a PRIVATE copy path (contains "dispatch."),
+#    source path NOT leaked, placeholder gone. Uses a prompt that actually contains the token.
+PR="$tmp/withreport.md"; printf 'Plan: [PLAN_FILE_PATH]\nReport: [REPORT_FILE_PATH]\n' > "$PR"
+run task --prompt "$PR" --report-file "$R" --dry-run --set PLAN_FILE_PATH="$P"
+if printf '%s' "$OUT" | grep -q 'Report: .*dispatch\.' \
+   && ! printf '%s' "$OUT" | grep -qF "$R" \
+   && ! printf '%s' "$OUT" | grep -qF '[REPORT_FILE_PATH]'; then
+  ok "report injected as private copy (placeholder replaced, source not leaked)"
+else bad "report injected as private copy" "$OUT"; fi
 [ -f "$R" ] && ok "source report preserved" || bad "source report preserved" "deleted"
 
 # 8. unknown subcommand -> non-zero
@@ -228,8 +238,9 @@ mk_private() {
 # --- pure-bash version compare (no `sort -V`; portable to bash 3.2 / BSD) ---
 # ver_ge A B  -> exit 0 iff dotted-numeric A >= B
 ver_ge() {
-  local IFS=. ; local -a A=($1) B=($2) ; local i n=${#A[@]} x y
-  [ ${#B[@]} -gt "$n" ] && n=${#B[@]}
+  local -a A B; local i n x y
+  IFS=. read -ra A <<< "$1"; IFS=. read -ra B <<< "$2"   # split on dots (ShellCheck-clean)
+  n=${#A[@]}; [ "${#B[@]}" -gt "$n" ] && n=${#B[@]}
   for ((i=0; i<n; i++)); do
     x=${A[i]:-0}; y=${B[i]:-0}
     x=${x//[!0-9]/}; y=${y//[!0-9]/}      # drop any pre-release suffix chars
@@ -461,11 +472,23 @@ mkdir -p "$SBOX/.claude/skills" "$SBOX/.agents/skills"
 run
 [ "$RC" -eq 0 ] && ok "clean install passes" || bad "clean install passes" "rc=$RC out=$OUT"
 
-# 2. legacy shadow present -> non-zero, prints the offending path
+# 2. legacy shadow in ~/.claude/skills -> non-zero, prints the offending path
 mkdir -p "$SBOX/.claude/skills/writing-plans"
 run
 [ "$RC" -ne 0 ] && ok "legacy shadow fails" || bad "legacy shadow fails" "rc=$RC"
 case "$OUT" in *writing-plans*) ok "names the offending path" ;; *) bad "names the offending path" "$OUT" ;; esac
+
+# 3. legacy shadow in ~/.agents/skills -> non-zero
+rm -rf "$SBOX"; SBOX="$(mktemp -d)"; mkdir -p "$SBOX/.claude/skills" "$SBOX/.agents/skills/brainstorming"
+run
+[ "$RC" -ne 0 ] && ok "~/.agents legacy fails" || bad "~/.agents legacy fails" "rc=$RC"
+
+# 4. symlink legacy -> non-zero, and the symlink target is named
+rm -rf "$SBOX"; SBOX="$(mktemp -d)"; mkdir -p "$SBOX/.claude/skills" "$SBOX/.agents/skills" "$SBOX/target"
+ln -s "$SBOX/target" "$SBOX/.claude/skills/writing-plans"
+run
+[ "$RC" -ne 0 ] && ok "symlink legacy fails" || bad "symlink legacy fails" "rc=$RC"
+case "$OUT" in *"$SBOX/target"*) ok "names symlink target" ;; *) bad "names symlink target" "$OUT" ;; esac
 
 rm -rf "$SBOX"
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
@@ -499,7 +522,10 @@ found=0
 for d in "${DIRS[@]}"; do
   for s in "${SKILLS[@]}"; do
     p="$d/$s"
-    if [ -e "$p" ] || [ -L "$p" ]; then
+    if [ -L "$p" ]; then
+      printf 'legacy skill symlink would shadow the plugin: %s -> %s\n' "$p" "$(readlink "$p")" >&2
+      found=1
+    elif [ -e "$p" ]; then
       printf 'legacy skill copy would shadow the plugin: %s\n' "$p" >&2
       found=1
     fi
@@ -533,7 +559,7 @@ command -v shellcheck >/dev/null && shellcheck scripts/preflight-plugin-install.
 bash scripts/preflight.test.sh
 ```
 
-Expected: `bash -n` clean; shellcheck clean (or the skip note); test runner reports `3 passed, 0 failed` (exit 0).
+Expected: `bash -n` clean; shellcheck clean (or the skip note); test runner reports `6 passed, 0 failed` (exit 0).
 
 - [ ] **Step 5: Commit**
 
@@ -1151,8 +1177,9 @@ block below is self-contained: it re-establishes the guard before invoking dispa
 Per-Task reviewer — one per active Task:
 
 ```bash
-DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
-[ -x "$DISPATCH" ] || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable." >&2; exit 1; }
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
+# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
+{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/plan-document-reviewer-prompt.md" \
   --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
@@ -1163,8 +1190,9 @@ DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
 Coverage Verifier — once per round while active:
 
 ```bash
-DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
-[ -x "$DISPATCH" ] || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable." >&2; exit 1; }
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
+# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
+{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/coverage-verifier-prompt.md" \
   --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
@@ -1176,6 +1204,8 @@ DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
   - In **### Per-Task Review**: delete the sentence "Each reviewer call receives the full text of the single Task under review plus the full text of all sibling Tasks as context." and replace it with: "Each reviewer call passes `--set TASK_ID=\"Task N\"`; the reviewer reads the plan file, locates that Task, and treats every other Task in the file as sibling context — no Task text is pasted." Replace the phrase "dispatch a per-Task reviewer using the template in `./plan-document-reviewer-prompt.md`" with "dispatch a per-Task reviewer using the Per-Task invocation in **Dispatch mechanism** above".
   - In **### Coverage Verifier**: replace "using the template in `./coverage-verifier-prompt.md`" with "using the Coverage Verifier invocation in **Dispatch mechanism** above".
   - In **### The Round Loop**: the `run_in_background`/parallel behavior is unchanged; only replace any remaining wording that implies pasting templates with a pointer to the **Dispatch mechanism** invocations.
+  - In the **"Plan Review Loop"** intro / reviewer-role bullets: replace every statement that a reviewer is "dispatched via `node <companion> task`" (or similar embedded-companion wording) with "dispatched via `dispatch.sh` (see **Dispatch mechanism**)".
+  - In **"Unified Re-run Policy" principle 2**: replace "the reviewer is given the full text of all sibling Tasks as context" with "the reviewer reads the plan file and treats all sibling Tasks as context (no Task text is pasted)".
 
 - [ ] **Step 3: Verify dispatch.sh is referenced and no stale dispatch mechanics / paste prose remain**
 
@@ -1184,10 +1214,10 @@ Run:
 ```bash
 F=skills/writing-plans/SKILL.md
 grep -c 'dispatch.sh' "$F"   # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|using the template|full text of (the single|all sibling)|sibling Tasks as context' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|using the template|full text of (the single|all sibling)|sibling Tasks as context' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
-Expected: non-zero `dispatch.sh` count; `CLEAN` (no stale bash and no paste-based prose). The `--prompt` paths legitimately name the `*-prompt.md` files, so the grep deliberately targets only the stale *phrasing*, not those filenames.
+Expected: non-zero `dispatch.sh` count; `CLEAN` (no stale bash, no embedded-companion dispatch, no paste-based prose anywhere in the file — including the "Plan Review Loop" intro and "Unified Re-run Policy"). The `--prompt` paths legitimately name the `*-prompt.md` files, so the grep deliberately targets only the stale *phrasing*, not those filenames.
 
 - [ ] **Step 4: Commit**
 
@@ -1217,8 +1247,9 @@ block re-establishes the guard before invoking dispatch.
 Reviewer 1 — Structural Completeness:
 
 ```bash
-DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
-[ -x "$DISPATCH" ] || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable." >&2; exit 1; }
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
+# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
+{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/spec-document-reviewer-prompt.md" \
   --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
@@ -1227,8 +1258,9 @@ DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
 Reviewer 2 — Design Soundness:
 
 ```bash
-DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
-[ -x "$DISPATCH" ] || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable." >&2; exit 1; }
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
+# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
+{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
 "$DISPATCH" adversarial \
   --base "$SPEC_BASE" \
   --focus "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/adversarial-spec-review-focus.md"
@@ -1263,6 +1295,12 @@ git commit -m "refactor(brainstorming): dispatch dual spec reviewers via dispatc
 
 Replace the dispatch mechanics for reviewers 5/6/7 and add the report-file step for the spec compliance reviewer. **Read the current file before editing.**
 
+- [ ] **Step 0: Delete the stale dispatch content.** Before inserting the new blocks, remove/rewrite every part of the SKILL that still teaches the old codex-prompt-template dispatch, so nothing contradicts `dispatch.sh`:
+  - The **"Reviewer Dispatch Mechanisms"** section and any reviewer **table** rows that map reviewers 5/6/7 to `codex task` / `codex review` / `codex adversarial-review` prompt templates.
+  - The **"Prompt Templates"** list entries and any prose that says "see the prompt templates for full dispatch commands" or "the invocation blocks are canonical".
+  - **Workflow diagram labels** and **example workflow** text that reference `task --prompt-file` / `node <companion>` dispatch.
+  - Note the new reality: reviewer 6 (`code-quality-reviewer-prompt.md`) and reviewer 7 (`final-code-reviewer-prompt.md`) are **human-facing support docs** (Tasks 8/10) — reference them as docs, never as dispatch templates; reviewer 7 dispatch uses `final-code-reviewer-focus.md`.
+
 - [ ] **Step 1: Add the spec-compliance dispatch with the report-file step.** Where the SKILL describes dispatching reviewer 5 (spec compliance), insert:
 
 ````markdown
@@ -1279,8 +1317,9 @@ Spec compliance reviewer (reviewer 5). Procedure:
 3. Dispatch (substitute the concrete `$REPORT_FILE` path):
 
 ```bash
-DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
-[ -x "$DISPATCH" ] || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable." >&2; exit 1; }
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
+# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
+{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/spec-reviewer-prompt.md" \
   --report-file "$REPORT_FILE" \
@@ -1299,16 +1338,18 @@ reviewer correctness does not depend on when step 4 runs.
 - [ ] **Step 2: Replace reviewer 6 (code quality) dispatch** with (self-contained guard + call):
 
 ```bash
-DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
-[ -x "$DISPATCH" ] || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable." >&2; exit 1; }
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
+# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
+{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
 "$DISPATCH" review --base "$TASK_BASE"
 ```
 
 - [ ] **Step 3: Replace reviewer 7 (final) dispatch** with (self-contained guard + call):
 
 ```bash
-DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
-[ -x "$DISPATCH" ] || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable." >&2; exit 1; }
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
+# A non-plugin/shadowed install leaves ${CLAUDE_PLUGIN_ROOT} unexpanded -> empty PLUGIN_ROOT.
+{ [ -n "$PLUGIN_ROOT" ] && [ -x "$DISPATCH" ]; } || { echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand, or dispatch.sh is missing)." >&2; exit 1; }
 "$DISPATCH" adversarial \
   --base "$IMPL_BASE" \
   --focus "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/final-code-reviewer-focus.md"
@@ -1317,12 +1358,15 @@ DISPATCH="${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh"
 - [ ] **Step 4: Verify**
 
 Run:
+
 ```bash
-grep -c 'dispatch.sh' skills/subagent-driven-development/SKILL.md
-grep -c -- '--report-file' skills/subagent-driven-development/SKILL.md
-grep -nE 'CODEX_COMPANION|<<.?PROMPT' skills/subagent-driven-development/SKILL.md && echo "LEFTOVER" || echo "CLEAN"
+F=skills/subagent-driven-development/SKILL.md
+grep -c 'dispatch.sh' "$F"            # expect >= 1
+grep -c -- '--report-file' "$F"       # expect >= 1
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|task --prompt-file|Reviewer Dispatch Mechanisms|prompt templates are canonical|See the prompt templates' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
-Expected: non-zero `dispatch.sh` count; `--report-file` count ≥ 1; `CLEAN`. (Note: `implementer-prompt.md` still uses its own heredoc — that file is NOT edited; the `CLEAN` grep targets SKILL.md only.)
+
+Expected: non-zero `dispatch.sh` count; `--report-file` count ≥ 1; `CLEAN`. (Note: `implementer-prompt.md` still uses its own heredoc — that file is NOT edited; the grep targets SKILL.md only. The grep deliberately targets stale dispatch *mechanics/phrasing*, not the bare `code-quality-reviewer-prompt.md` / `final-code-reviewer-prompt.md` names, which may legitimately remain as human-facing support-doc references.)
 
 - [ ] **Step 5: Commit**
 
@@ -1391,8 +1435,15 @@ for s in brainstorming writing-plans subagent-driven-development finishing-a-dev
 done
 ```
 
-The preflight exits non-zero and names any offending path. Migration is complete only once
-the preflight passes and the post-install check prints `OK` with no `FAIL` lines.
+The preflight exits non-zero and names any offending path. The shell checks above confirm
+the plugin copy is present in the cache and no legacy copy remains, but they do **not** prove
+Claude Code actually loads the plugin's `SKILL.md`. To confirm that (and that
+`${CLAUDE_PLUGIN_ROOT}` inline-expands), **invoke any bundled skill once** (e.g. start a
+brainstorming session and let it reach a reviewer dispatch): if it runs without the
+"must be installed as a plugin" guard error, plugin load + inline expansion are confirmed.
+
+Migration is complete only once the preflight passes, the post-install check prints `OK`
+with no `FAIL` lines, and a bundled skill runs without the plugin guard error.
 ````
 
 - [ ] **Step 4: Verify**
@@ -1475,25 +1526,40 @@ Expected: `old rc` non-zero with a message citing `< required 1.0.4` and `/codex
 ```bash
 PLAN=docs/superpowers/plans/2026-06-15-reviewer-dispatch-plugin.md
 SPEC=docs/superpowers/specs/2026-06-15-reviewer-dispatch-plugin-design.md
-ABS="$(pwd)/scripts/dispatch.sh"
-# (a) wrong cwd makes a repo-relative --set value fail loudly
-( cd /tmp && bash "$ABS" task --prompt "$(pwd)/skills/writing-plans/coverage-verifier-prompt.md" \
+ROOT="$(pwd)"; T="${TMPDIR:-/tmp}"; CV=skills/writing-plans/coverage-verifier-prompt.md
+# (a) wrong cwd: absolute --prompt (exists) but repo-relative --set fails loudly on the --set path
+( cd /tmp && bash "$ROOT/scripts/dispatch.sh" task --prompt "$ROOT/$CV" \
     --set PLAN_FILE_PATH="$PLAN" --set SPEC_FILE_PATH="$SPEC" --dry-run ); echo "wrong-cwd rc=$?"   # expect non-zero
 # (b) metachar incl. backslash substituted literally (TASK_ID is not a *_FILE_PATH key)
 bash scripts/dispatch.sh task --prompt skills/writing-plans/plan-document-reviewer-prompt.md \
   --set PLAN_FILE_PATH="$PLAN" --set SPEC_FILE_PATH="$SPEC" --set 'TASK_ID=T \ & # [x]' --dry-run | grep -F 'T \ & # [x]'   # expect a match
-# (c) interrupt cleanup: a sleeping fake companion, killed with TERM, must leave no private temp
-T="${TMPDIR:-/tmp}"; SLEEP=/tmp/fakecodex/codex/9.9.9/scripts/codex-companion.mjs
-mkdir -p "$(dirname "$SLEEP")"; printf 'setTimeout(()=>{},10000);\n' > "$SLEEP"
+# (c) normal-exit cleanup: a successful dry-run leaves no new private temp
+b=$(ls "$T"/dispatch.* 2>/dev/null | wc -l)
+bash scripts/dispatch.sh task --prompt "$CV" --set PLAN_FILE_PATH="$PLAN" --set SPEC_FILE_PATH="$SPEC" --dry-run >/dev/null
+a=$(ls "$T"/dispatch.* 2>/dev/null | wc -l); [ "$a" -le "$b" ] && echo "normal-exit cleanup OK" || echo "FAIL: leak (normal)"
+# (d) validation-failure cleanup: a failing run (bad --set path) also leaves no new private temp
+b=$(ls "$T"/dispatch.* 2>/dev/null | wc -l)
+bash scripts/dispatch.sh task --prompt "$CV" --set PLAN_FILE_PATH=/no/such --set SPEC_FILE_PATH="$SPEC" --dry-run >/dev/null 2>&1 || true
+a=$(ls "$T"/dispatch.* 2>/dev/null | wc -l); [ "$a" -le "$b" ] && echo "validation-failure cleanup OK" || echo "FAIL: leak (validation)"
+# (e) parallel isolation: two concurrent dispatches inject DISTINCT private report copies
+R1="$(mktemp)"; printf 'R1\n' >"$R1"; R2="$(mktemp)"; printf 'R2\n' >"$R2"; PR="$T/withrep.$$.md"; printf 'R: [REPORT_FILE_PATH]\n' >"$PR"
+bash scripts/dispatch.sh task --prompt "$PR" --report-file "$R1" --dry-run >"$T/o1.$$" 2>&1 &
+bash scripts/dispatch.sh task --prompt "$PR" --report-file "$R2" --dry-run >"$T/o2.$$" 2>&1 &
+wait
+p1=$(grep -o 'dispatch\.[A-Za-z0-9]*' "$T/o1.$$" | head -1); p2=$(grep -o 'dispatch\.[A-Za-z0-9]*' "$T/o2.$$" | head -1)
+{ [ -n "$p1" ] && [ -n "$p2" ] && [ "$p1" != "$p2" ]; } && echo "parallel isolation OK" || echo "FAIL: private copies not distinct"
+rm -f "$R1" "$R2" "$PR" "$T/o1.$$" "$T/o2.$$"
+# (f) interrupt cleanup: a sleeping fake companion, killed with TERM, leaves no private temp
+SLEEP=/tmp/fakecodex/codex/9.9.9/scripts/codex-companion.mjs; mkdir -p "$(dirname "$SLEEP")"; printf 'setTimeout(()=>{},10000);\n' >"$SLEEP"
 before=$(ls "$T"/dispatch.* 2>/dev/null | wc -l)
-DISPATCH_COMPANION="$SLEEP" bash scripts/dispatch.sh task --prompt skills/writing-plans/coverage-verifier-prompt.md \
-  --set PLAN_FILE_PATH="$PLAN" --set SPEC_FILE_PATH="$SPEC" & PID=$!
+DISPATCH_COMPANION="$SLEEP" bash scripts/dispatch.sh task --prompt "$CV" --set PLAN_FILE_PATH="$PLAN" --set SPEC_FILE_PATH="$SPEC" & PID=$!
 sleep 1; kill -TERM "$PID" 2>/dev/null; wait "$PID" 2>/dev/null
 after=$(ls "$T"/dispatch.* 2>/dev/null | wc -l); rm -rf /tmp/fakecodex
-[ "$after" -le "$before" ] && echo "interrupt cleanup OK" || echo "FAIL: temp leak after TERM"
+[ "$after" -le "$before" ] && echo "interrupt cleanup OK" || echo "FAIL: leak (TERM)"
 ```
 
-Expected: (a) non-zero; (b) prints a matching line; (c) `interrupt cleanup OK`.
+Expected: (a) non-zero; (b) prints a matching line; (c) `normal-exit cleanup OK`;
+(d) `validation-failure cleanup OK`; (e) `parallel isolation OK`; (f) `interrupt cleanup OK`.
 Additionally — **live foreground sync (needs real codex)**: run one real `task` dispatch
 (no `--dry-run`) against the spec reviewer and confirm `dispatch.sh` returns only *after* the
 full reviewer output including the final `Status:` line is printed (i.e. it blocks, never
@@ -1511,10 +1577,22 @@ mkdir -p ~/.claude/skills/writing-plans
 printf '%s\n' '---' 'name: writing-plans' 'description: LEGACY-SENTINEL' '---' 'LEGACY' > ~/.claude/skills/writing-plans/SKILL.md
 ```
 
-Then invoke the bare `writing-plans` skill (or run `/plugin list`-style introspection) and
-observe whether the LEGACY-SENTINEL or the plugin copy loads. Record the result
-(plugin-wins / legacy-wins / namespaced-no-collision) in README's migration section, then
-`rm -rf ~/.claude/skills/writing-plans`.
+Then invoke the bare `writing-plans` skill (Skill tool / `/writing-plans`) and read the
+loaded SKILL content: if it shows `LEGACY-SENTINEL`, the legacy copy wins; if it shows the
+plugin's real writing-plans content, the plugin wins; if the bare name resolves to neither
+(only `superpowers-codex:writing-plans` exists), it is namespaced-no-collision. Append the
+result to README's migration section using this exact block (fill in the observed outcome):
+
+```markdown
+### Skill discovery precedence (measured)
+
+On Claude Code <version>, when both a plugin skill and a plain `~/.claude/skills/<name>`
+exist, the **<plugin-wins | legacy-wins | namespaced-no-collision>** copy is loaded for the
+bare `/<name>` invocation. Therefore legacy copies MUST be removed before relying on the
+plugin (see the preflight above).
+```
+
+Then clean up: `rm -rf ~/.claude/skills/writing-plans`.
 
 - [ ] **Step 6: Confirm no install hook + plugin install smoke test**
 
@@ -1532,10 +1610,18 @@ dispatch prints a real plugin-cache `dispatch.sh` path).
 
 - [ ] **Step 7: Migration shadow smoke test**
 
-With a legacy `~/.claude/skills/writing-plans` present, run the located preflight
-(`PF="$(ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/scripts/preflight-plugin-install.sh | sort | tail -1)"; "$PF"`)
-and confirm it exits non-zero naming the path; remove the legacy copy and confirm the
-preflight passes and a reviewer dispatch works through the plugin skill.
+Recreate a legacy copy (Step 5 removed it), then verify the preflight blocks it:
+
+```bash
+mkdir -p ~/.claude/skills/writing-plans; : > ~/.claude/skills/writing-plans/SKILL.md
+PF="$(ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/scripts/preflight-plugin-install.sh | sort | tail -1)"
+"$PF"; echo "shadow rc=$?"        # expect non-zero, naming ~/.claude/skills/writing-plans
+rm -rf ~/.claude/skills/writing-plans
+"$PF"; echo "clean rc=$?"         # expect 0
+```
+
+Confirm the first run exits non-zero naming the path and the second exits 0; then confirm a
+reviewer dispatch works through the plugin skill (Step 6).
 
 - [ ] **Step 8: Commit any recorded results**
 

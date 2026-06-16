@@ -281,11 +281,14 @@ check_companion_version() {
       ver="${companion#*/codex/}"; ver="${ver%%/*}" ;;
   esac
   case "$ver" in
-    [0-9]*) ;;                              # has a leading digit -> treat as version
-    *) die "cannot determine codex companion version from path ($companion); run /codex:setup to (re)install a versioned codex." ;;
+    [0-9]*)                                 # versioned cache path -> assert minimum
+      ver_ge "$ver" "$MIN_COMPANION_VERSION" || \
+        die "codex companion $ver < required $MIN_COMPANION_VERSION; run /codex:setup to update codex." ;;
+    *)                                      # no version segment (e.g. the marketplace fallback path):
+      # the version cannot be derived. Proceed with a warning rather than break the documented
+      # fallback companion resolution (a cache install always has a version and is asserted above).
+      err "warning: cannot determine codex companion version from path ($companion); proceeding without a version assertion (run /codex:setup to install a versioned codex)." ;;
   esac
-  ver_ge "$ver" "$MIN_COMPANION_VERSION" || \
-    die "codex companion $ver < required $MIN_COMPANION_VERSION; run /codex:setup to update codex."
 }
 
 is_file_path_key() { case "$1" in *_FILE_PATH) return 0 ;; *) return 1 ;; esac; }
@@ -1185,9 +1188,11 @@ Per-Task reviewer — one per active Task:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
 # empty (bash expanded the unset env var) or still holds the literal token. Reject both.
-case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
+# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
+case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
 [ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/plan-document-reviewer-prompt.md" \
@@ -1200,9 +1205,11 @@ Coverage Verifier — once per round while active:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
 # empty (bash expanded the unset env var) or still holds the literal token. Reject both.
-case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
+# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
+case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
 [ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/coverage-verifier-prompt.md" \
@@ -1225,7 +1232,7 @@ Run:
 ```bash
 F=skills/writing-plans/SKILL.md
 grep -c 'dispatch.sh' "$F"   # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|using the template|full text of (the single|all sibling)' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|task --prompt-file|using the template|invocation blocks.*canonical|full text of (the single|all sibling)' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `CLEAN` (no stale bash, no embedded-companion dispatch, no paste-based prose anywhere in the file — including the "Plan Review Loop" intro and "Unified Re-run Policy"). The `--prompt` paths legitimately name the `*-prompt.md` files, so the grep deliberately targets only the stale *phrasing*, not those filenames.
@@ -1259,9 +1266,11 @@ Reviewer 1 — Structural Completeness:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
 # empty (bash expanded the unset env var) or still holds the literal token. Reject both.
-case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
+# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
+case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
 [ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
 "$DISPATCH" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/spec-document-reviewer-prompt.md" \
@@ -1272,10 +1281,13 @@ Reviewer 2 — Design Soundness:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
 # empty (bash expanded the unset env var) or still holds the literal token. Reject both.
-case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
+# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
+case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
 [ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
+SPEC_BASE="<captured SPEC_BASE SHA>"   # own shell: rebind to the concrete SHA captured before the spec commit
 "$DISPATCH" adversarial \
   --base "$SPEC_BASE" \
   --focus "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/adversarial-spec-review-focus.md"
@@ -1336,9 +1348,11 @@ Spec compliance reviewer (reviewer 5). Procedure:
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
 # empty (bash expanded the unset env var) or still holds the literal token. Reject both.
-case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
+# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
+case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
 [ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
 REPORT_FILE="/abs/path/from/step/1"        # <- concrete mktemp path noted in step 1
 TASK_BASE="<captured task base SHA>"       # <- concrete SHA captured before the implementer
@@ -1361,10 +1375,13 @@ reviewer correctness does not depend on when step 4 runs.
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
 # empty (bash expanded the unset env var) or still holds the literal token. Reject both.
-case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
+# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
+case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
 [ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
+TASK_BASE="<captured task base SHA>"   # own shell: rebind to the concrete SHA captured before this task's implementer
 "$DISPATCH" review --base "$TASK_BASE"
 ```
 
@@ -1372,10 +1389,13 @@ case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex mus
 
 ```bash
 PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# Non-plugin/shadowed install: ${CLAUDE_PLUGIN_ROOT} did not inline-expand, so PLUGIN_ROOT is
+# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
 # empty (bash expanded the unset env var) or still holds the literal token. Reject both.
-case "$PLUGIN_ROOT" in ''|*'${CLAUDE_PLUGIN_ROOT}'*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (CLAUDE_PLUGIN_ROOT did not expand)." >&2; exit 1 ;; esac
+# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
+# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
+case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
 [ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
+IMPL_BASE="<captured IMPL_BASE SHA>"   # own shell: rebind to the concrete SHA captured before the first implementer
 "$DISPATCH" adversarial \
   --base "$IMPL_BASE" \
   --focus "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/final-code-reviewer-focus.md"
@@ -1463,22 +1483,20 @@ for s in brainstorming writing-plans subagent-driven-development finishing-a-dev
 done
 ```
 
-The preflight exits non-zero and names any offending path. The shell checks above confirm
-the plugin copy is present in the cache and no legacy copy remains, but they do **not** prove
-Claude Code actually loads the plugin's `SKILL.md`. To confirm that (and that
-`${CLAUDE_PLUGIN_ROOT}` inline-expands), **invoke any bundled skill once** (e.g. start a
-brainstorming session and let it reach a reviewer dispatch). The deterministic signal: the
-skill's reviewer dispatch resolves to a `dispatch.sh` path **under the plugin cache**. Run a
-`--dry-run` dispatch through the skill and check the printed command:
+The preflight exits non-zero and names any offending path. **Deterministic completion
+criterion:** the preflight passes (no legacy copy in either location) AND the plugin's skill
+directory is present under the cache (the checks above). With no legacy copy left to shadow
+them, the plugin's `SKILL.md` files are necessarily what load for these skills.
 
-- a path under `~/.claude/plugins/cache/.../superpowers-codex/.../scripts/dispatch.sh` → the
-  loaded SKILL.md is the plugin copy and inline expansion works;
-- a `<companion-unresolved>` / non-cache / empty path, or the "must be installed as a plugin"
-  guard error → the plugin copy is **not** the active one (a legacy copy still shadows it, or
-  it is not installed as a plugin).
+As a secondary check that `${CLAUDE_PLUGIN_ROOT}` inline-expands at skill-load time, **invoke
+any bundled skill once** and let it reach a reviewer dispatch. The dispatch guard aborts with
+"must be installed as a plugin" **iff** the token did not expand, so the skill reaching its
+dispatch **without that guard error** confirms expansion. (Do not try to read a `dispatch.sh`
+path out of `--dry-run` output — that output is the `node <companion> …` command, and
+`<companion-unresolved>` means codex is not set up, not that a legacy copy shadows the plugin.)
 
-Migration is complete only once the preflight passes, the post-install check prints `OK`
-with no `FAIL` lines, and a skill's reviewer dispatch resolves under the plugin cache.
+Migration is complete once the preflight passes, the cache-present / no-legacy checks pass,
+and a bundled skill reaches a reviewer dispatch without the plugin guard error.
 ````
 
 - [ ] **Step 4: Verify**
@@ -1547,14 +1565,17 @@ commands. (The installed codex 1.0.4 satisfies the version guard.)
 PLAN=docs/superpowers/plans/2026-06-15-reviewer-dispatch-plugin.md
 SPEC=docs/superpowers/specs/2026-06-15-reviewer-dispatch-plugin-design.md
 OLD=/tmp/fakecodex/codex/0.9.0/scripts/codex-companion.mjs; mkdir -p "$(dirname "$OLD")"; : > "$OLD"
-NOVER=/tmp/fakecodex/plain/codex-companion.mjs; mkdir -p "$(dirname "$NOVER")"; : > "$NOVER"
-DISPATCH_COMPANION="$OLD"   bash scripts/dispatch.sh task --prompt skills/writing-plans/coverage-verifier-prompt.md --set PLAN_FILE_PATH="$PLAN" --set SPEC_FILE_PATH="$SPEC" --dry-run; echo "old rc=$?"
-DISPATCH_COMPANION="$NOVER" bash scripts/dispatch.sh review --base HEAD --dry-run; echo "nover rc=$?"
+FB=/tmp/fakecodex/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs; mkdir -p "$(dirname "$FB")"; : > "$FB"
+DISPATCH_COMPANION="$OLD" bash scripts/dispatch.sh task --prompt skills/writing-plans/coverage-verifier-prompt.md --set PLAN_FILE_PATH="$PLAN" --set SPEC_FILE_PATH="$SPEC" --dry-run; echo "old rc=$?"
+DISPATCH_COMPANION="$FB"  bash scripts/dispatch.sh review --base HEAD --dry-run 2>&1; echo "fallback rc=$?"
 rm -rf /tmp/fakecodex
 ```
 
-Expected: `old rc` non-zero with a message citing `< required 1.0.4` and `/codex:setup`;
-`nover rc` non-zero citing "cannot determine codex companion version" and `/codex:setup`.
+Expected: `old rc` non-zero (a versioned cache path below the minimum) with a message citing
+`< required 1.0.4` and `/codex:setup`. `fallback rc` **zero** — a fallback path has no version
+segment, so the guard prints a "cannot determine codex companion version … proceeding"
+warning to stderr and continues (the documented fallback must remain usable; only versioned
+cache paths are hard-asserted).
 
 - [ ] **Step 4: §8 robustness — path validation, isolation, interrupt cleanup, foreground sync**
 
@@ -1613,41 +1634,7 @@ Expect the command to print the reviewer's full output ending in a `Status:` lin
 then print `returned rc=…` — it must not return early or background. Parallel private-copy
 isolation is already covered by `dispatch.test.sh`.
 
-- [ ] **Step 5: Discovery-precedence empirical determination (operational; not in docs)**
-
-**Prerequisite: the plugin must already be installed (do Step 6 first).** Skill precedence
-between a plugin skill and a plain legacy copy is undocumented, so determine it on the
-running Claude Code, for **both** legacy locations:
-
-```bash
-# Sentinel legacy copy in ~/.claude/skills:
-mkdir -p ~/.claude/skills/writing-plans
-printf '%s\n' '---' 'name: writing-plans' 'description: LEGACY-SENTINEL' '---' 'LEGACY' > ~/.claude/skills/writing-plans/SKILL.md
-```
-
-Invoke the bare `writing-plans` skill (Skill tool / `/writing-plans`) and read the loaded
-SKILL content: `LEGACY-SENTINEL` → legacy wins; the plugin's real content → plugin wins; the
-bare name resolves to neither (only `superpowers-codex:writing-plans` exists) →
-namespaced-no-collision. Then `rm -rf ~/.claude/skills/writing-plans` and **repeat the same
-observation with the legacy copy in `~/.agents/skills/writing-plans`** instead (the two
-locations may differ). Record **both** outcomes. Append the result to README's migration
-section using this exact block (fill in the observed outcomes):
-
-```markdown
-### Skill discovery precedence (measured)
-
-On Claude Code <version>, when a plugin skill and a plain legacy copy of the same name
-coexist, the bare `/<name>` invocation loads:
-- legacy at `~/.claude/skills/<name>`: **<plugin-wins | legacy-wins | namespaced-no-collision>**
-- legacy at `~/.agents/skills/<name>`: **<plugin-wins | legacy-wins | namespaced-no-collision>**
-
-Therefore legacy copies in both locations MUST be removed before relying on the plugin
-(see the preflight above).
-```
-
-Then clean up: `rm -rf ~/.claude/skills/writing-plans ~/.agents/skills/writing-plans`.
-
-- [ ] **Step 6: Confirm no install hook + plugin install smoke test**
+- [ ] **Step 5: Confirm no install hook + plugin install smoke test (do before Step 6)**
 
 Confirm (already verified against docs) that `/plugin install` does NOT run the preflight —
 no `plugin.json` hook exists or is added; the README mandates the manual preflight. Then run
@@ -1658,13 +1645,50 @@ these **Claude Code slash commands** (not shell — run them in Claude Code):
 /plugin install superpowers-codex
 ```
 
-Invoke a skill (e.g. brainstorming) and confirm, through the installed skill, that
-`${CLAUDE_PLUGIN_ROOT}` inline-expands: the dispatch guard passes and a `--dry-run` reviewer
-dispatch prints a `dispatch.sh` path under `~/.claude/plugins/cache/.../superpowers-codex/`.
+Then invoke a bundled skill (e.g. brainstorming) and let it reach a reviewer dispatch. Confirm
+`${CLAUDE_PLUGIN_ROOT}` inline-expanded: the dispatch runs **without** the "must be installed
+as a plugin" guard error (the guard aborts only when the token did not expand). Do not look
+for a `dispatch.sh` path in `--dry-run` output — that output is the `node <companion> …` command.
+
+- [ ] **Step 6: Discovery-precedence empirical determination (operational; not in docs)**
+
+The plugin is now installed (Step 5). Skill precedence between a plugin skill and a plain
+legacy copy is undocumented, so measure it on the running Claude Code for **both** legacy
+locations. Record the Claude Code version (`claude --version`).
+
+```bash
+# Sentinel legacy copy with a unique marker in the body:
+mkdir -p ~/.claude/skills/writing-plans
+printf '%s\n' '---' 'name: writing-plans' 'description: LEGACY-SENTINEL-XYZZY' '---' 'LEGACY-SENTINEL-XYZZY' > ~/.claude/skills/writing-plans/SKILL.md
+```
+
+Concrete observation: invoke the bare skill (Skill tool with `skill: writing-plans`, or
+`/writing-plans`) and inspect the **loaded skill text** shown in context:
+- contains `LEGACY-SENTINEL-XYZZY` → legacy wins;
+- contains the plugin's real heading ("Writing Plans") → plugin wins;
+- the bare name is unavailable and only `superpowers-codex:writing-plans` resolves →
+  namespaced-no-collision.
+
+Then `rm -rf ~/.claude/skills/writing-plans` and repeat with the copy at
+`~/.agents/skills/writing-plans` (the two locations may differ). Record **both** outcomes in
+README's migration section using this exact block:
+
+```markdown
+### Skill discovery precedence (measured)
+
+On Claude Code <version from `claude --version`>, when a plugin skill and a plain legacy copy
+of the same name coexist, the bare `/<name>` invocation loads:
+- legacy at `~/.claude/skills/<name>`: **<plugin-wins | legacy-wins | namespaced-no-collision>**
+- legacy at `~/.agents/skills/<name>`: **<plugin-wins | legacy-wins | namespaced-no-collision>**
+
+Therefore legacy copies in both locations MUST be removed before relying on the plugin.
+```
+
+Then clean up: `rm -rf ~/.claude/skills/writing-plans ~/.agents/skills/writing-plans`.
 
 - [ ] **Step 7: Migration shadow smoke test**
 
-Recreate a legacy copy (Step 5 removed it), then verify the preflight blocks it:
+Recreate a legacy copy (Step 6 removed it), then verify the preflight blocks it:
 
 ```bash
 mkdir -p ~/.claude/skills/writing-plans; : > ~/.claude/skills/writing-plans/SKILL.md

@@ -1661,21 +1661,30 @@ in Claude Code (slash commands, not shell):
 /plugin install superpowers-codex
 ```
 
-Then **verify the installed cache really is this branch's content** (shell — this is the
-deterministic check; if it fails, the smoke test is invalid):
+Then run these two deterministic checks (shell — if either fails, the smoke test is invalid):
 
 ```bash
+# (1) the installed cache holds THIS branch's dispatch.sh, and it is executable
 CACHE_DS="$(ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/scripts/dispatch.sh 2>/dev/null | sort | tail -1)"
-[ -n "$CACHE_DS" ] || echo "FAIL: plugin dispatch.sh not found in cache"
+[ -n "$CACHE_DS" ] && [ -x "$CACHE_DS" ] || echo "FAIL: plugin dispatch.sh not found/executable in cache"
 grep -q 'mk_private' "$CACHE_DS" && grep -q 'DISPATCH_COMPANION' "$CACHE_DS" \
   && echo "OK: installed dispatch.sh matches this branch" || echo "FAIL: cache holds stale dispatch.sh"
+# (2) the CACHED dispatch.sh actually runs a reviewer dispatch (proves the installed copy works)
+CACHE_ROOT="${CACHE_DS%/scripts/dispatch.sh}"
+bash "$CACHE_DS" task --prompt "$CACHE_ROOT/skills/writing-plans/coverage-verifier-prompt.md" \
+  --set PLAN_FILE_PATH="docs/superpowers/plans/2026-06-15-reviewer-dispatch-plugin.md" \
+  --set SPEC_FILE_PATH="docs/superpowers/specs/2026-06-15-reviewer-dispatch-plugin-design.md" --dry-run >/dev/null \
+  && echo "OK: cached dispatch.sh executes a reviewer dispatch" || echo "FAIL: cached dispatch.sh did not run"
 ```
 
-Expect `OK`. Inline `${CLAUDE_PLUGIN_ROOT}` expansion is then confirmed during normal use: any
-plugin skill that reaches a reviewer dispatch (invoke the **namespaced**
-`superpowers-codex:brainstorming`, not a bare legacy copy) runs **without** the "must be
-installed as a plugin" guard error — the guard fires only when the token did not expand. (Do
-not look for a `dispatch.sh` path in `--dry-run` output — that is the `node <companion> …` command.)
+Expect both `OK`. Finally, confirm **inline `${CLAUDE_PLUGIN_ROOT}` expansion at skill-load time**
+with a concrete, deterministic observation (no need to drive a full workflow to a live
+dispatch): invoke the **namespaced** `superpowers-codex:writing-plans` and read the loaded
+skill text shown in context — its **Dispatch mechanism** block must show an **absolute**
+`…/plugins/cache/…/scripts/dispatch.sh` path (expansion worked), not a literal
+`${CLAUDE_PLUGIN_ROOT}`. (Do not look for a `dispatch.sh` path in `--dry-run` *output* — that
+output is the `node <companion> …` command; the load-time check is the inline-expanded path in
+the SKILL text itself.)
 
 - [ ] **Step 6: Discovery-precedence empirical determination (operational; not in docs)**
 
@@ -1758,8 +1767,9 @@ done
 rm -rf "$BK"
 ```
 
-Confirm the first run exits non-zero naming the path and the second exits 0; then confirm a
-reviewer dispatch works through the plugin skill (Step 6).
+Confirm the first run exits non-zero naming the path and the second exits 0. (Reviewer
+dispatch through the installed plugin is proven by Step 5's cached-`dispatch.sh` dry-run and
+the inline-expansion observation — not repeated here.)
 
 - [ ] **Step 8: Commit any recorded results**
 

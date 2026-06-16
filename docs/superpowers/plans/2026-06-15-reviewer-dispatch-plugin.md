@@ -107,6 +107,8 @@ git commit -m "feat: add plugin and marketplace manifests"
 This is the core artifact. It must run on macOS (BSD) and Linux (GNU). TDD via `--dry-run` (which never invokes codex).
 
 > **Spec §4.2 realization.** The spec says to obtain the companion version via a "version command" and assert a minimum. Research found the companion exposes **no** version command, so this plan realizes §4.2's intent by deriving the version from the resolved `/codex/<ver>/` install-path segment (and `die`ing if it cannot be derived or is below the minimum). This is the spec's deferred "plan deliverable", not a scope change.
+>
+> **Fallback vs. version guard (resolving an apparent §4.2 tension).** §4.2 asks to keep the marketplace fallback *resolution* AND to exit non-zero when the version cannot be obtained. The fallback path has no `/codex/<ver>/` segment, so both clauses meet there. This plan honors the explicit hard requirement: `resolve_companion` still returns the fallback path, but `check_companion_version` `die`s on any path whose version cannot be derived (including that fallback), with a `/codex:setup` pointer. An unverifiable companion is never run; the user installs a versioned cache copy via `/codex:setup`. (Versioned cache paths — the normal case — are asserted against the minimum.)
 
 **Files:**
 - Create: `scripts/dispatch.sh`
@@ -284,10 +286,10 @@ check_companion_version() {
     [0-9]*)                                 # versioned cache path -> assert minimum
       ver_ge "$ver" "$MIN_COMPANION_VERSION" || \
         die "codex companion $ver < required $MIN_COMPANION_VERSION; run /codex:setup to update codex." ;;
-    *)                                      # no version segment (e.g. the marketplace fallback path):
-      # the version cannot be derived. Proceed with a warning rather than break the documented
-      # fallback companion resolution (a cache install always has a version and is asserted above).
-      err "warning: cannot determine codex companion version from path ($companion); proceeding without a version assertion (run /codex:setup to install a versioned codex)." ;;
+    *)                                      # version cannot be derived (e.g. the un-versioned
+      # marketplace fallback path): hard stop — never run an unverifiable companion. Resolution
+      # still keeps the fallback path, but the user must run /codex:setup for a versioned copy.
+      die "cannot determine codex companion version from ($companion); run /codex:setup to install a versioned codex." ;;
   esac
 }
 
@@ -1301,7 +1303,7 @@ Run:
 ```bash
 F=skills/brainstorming/SKILL.md
 grep -c 'dispatch.sh' "$F"   # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node "?\$?CODEX|node <companion>|prompt templates are canonical|invocation block' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node "?\$?CODEX|node <companion>|prompt templates are canonical|invocation block|adversarial-spec-review-prompt\.md' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `CLEAN`. (The `--prompt`/`--focus` paths legitimately name the sidecar files; the grep targets only stale dispatch *mechanics/phrasing*.)
@@ -1470,7 +1472,7 @@ rm -rf ~/.agents/skills/{brainstorming,writing-plans,subagent-driven-development
 
 # 2. Locate the installed preflight in the plugin cache and run it (fails if any legacy copy remains)
 PF="$(ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/scripts/preflight-plugin-install.sh 2>/dev/null | sort | tail -1)"
-[ -n "$PF" ] && "$PF" || echo "plugin not installed; run '/plugin install superpowers-codex' first"
+if [ -z "$PF" ]; then echo "plugin not installed; run '/plugin install superpowers-codex' first" >&2; else "$PF"; fi   # preserves the preflight's non-zero exit on a real shadow
 
 # 3. Deterministic post-install check: the plugin copy resolves under the plugin cache and
 #    no legacy skill dir remains
@@ -1571,11 +1573,10 @@ DISPATCH_COMPANION="$FB"  bash scripts/dispatch.sh review --base HEAD --dry-run 
 rm -rf /tmp/fakecodex
 ```
 
-Expected: `old rc` non-zero (a versioned cache path below the minimum) with a message citing
-`< required 1.0.4` and `/codex:setup`. `fallback rc` **zero** — a fallback path has no version
-segment, so the guard prints a "cannot determine codex companion version … proceeding"
-warning to stderr and continues (the documented fallback must remain usable; only versioned
-cache paths are hard-asserted).
+Expected: `old rc` non-zero (a versioned cache path below the minimum) citing `< required 1.0.4`
+and `/codex:setup`. `fallback rc` **also non-zero** — a fallback path has no version segment, so
+the guard `die`s with "cannot determine codex companion version … run /codex:setup" (an
+unverifiable companion is never run; the user installs a versioned cache copy via /codex:setup).
 
 - [ ] **Step 4: §8 robustness — path validation, isolation, interrupt cleanup, foreground sync**
 
@@ -1656,7 +1657,16 @@ The plugin is now installed (Step 5). Skill precedence between a plugin skill an
 legacy copy is undocumented, so measure it on the running Claude Code for **both** legacy
 locations. Record the Claude Code version (`claude --version`).
 
+> **SAFETY (Steps 6–7 touch real `~/.claude/skills` / `~/.agents/skills`).** The precedence
+> test needs the real Claude home (that is where Claude Code loads skills from), so a sandbox
+> `HOME` will not work. **Back up any real user copies first and restore them at the end of
+> Step 7.** Never `rm -rf` a path you did not create here.
+
 ```bash
+# SAFETY: preserve any real user copies before using these paths as fixtures.
+for d in ~/.claude/skills/writing-plans ~/.agents/skills/writing-plans; do
+  [ -e "$d" ] && mv "$d" "$d.realbak" || true
+done
 # Sentinel legacy copy with a unique marker in the body:
 mkdir -p ~/.claude/skills/writing-plans
 printf '%s\n' '---' 'name: writing-plans' 'description: LEGACY-SENTINEL-XYZZY' '---' 'LEGACY-SENTINEL-XYZZY' > ~/.claude/skills/writing-plans/SKILL.md
@@ -1696,6 +1706,10 @@ PF="$(ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/scripts/preflight-plug
 "$PF"; echo "shadow rc=$?"        # expect non-zero, naming ~/.claude/skills/writing-plans
 rm -rf ~/.claude/skills/writing-plans
 "$PF"; echo "clean rc=$?"         # expect 0
+# SAFETY: restore any real user copies preserved at the start of Step 6
+for d in ~/.claude/skills/writing-plans ~/.agents/skills/writing-plans; do
+  rm -rf "$d"; [ -e "$d.realbak" ] && mv "$d.realbak" "$d" || true
+done
 ```
 
 Confirm the first run exits non-zero naming the path and the second exits 0; then confirm a

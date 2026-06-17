@@ -129,12 +129,12 @@ You **must** have a written, reviewed, user-approved plan before a single line o
 
 ## Plan Review Loop
 
-After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch reviewers via the **codex companion** (`codex-companion.mjs`). There are two reviewer roles:
+After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch reviewers via `dispatch.sh` (see **Dispatch mechanism** below). There are two reviewer roles:
 
-- **Per-Task reviewer (reviewer 3):** reviews one Task at a time using `plan-document-reviewer-prompt.md`, dispatched via `node <companion> task` (read-only).
-- **Coverage Verifier (reviewer 4):** reviews the whole plan against the whole spec using `coverage-verifier-prompt.md`, dispatched via `node <companion> task` (read-only).
+- **Per-Task reviewer (reviewer 3):** reviews one Task at a time using `plan-document-reviewer-prompt.md`, dispatched via `dispatch.sh` (see **Dispatch mechanism**) (read-only).
+- **Coverage Verifier (reviewer 4):** reviews the whole plan against the whole spec using `coverage-verifier-prompt.md`, dispatched via `dispatch.sh` (see **Dispatch mechanism**) (read-only).
 
-If the codex companion is not installed, stop and ask the user to run `/codex:setup`. Do not fall back to inline self-review or any other substitute.
+If the superpowers-codex plugin is not installed, stop and ask the user to run `/plugin install`. Do not fall back to inline self-review or any other substitute.
 
 ### Unified Re-run Policy
 
@@ -142,7 +142,7 @@ Which reviewers run in each round is governed by these three principles:
 
 1. **Changed content must be re-reviewed.** Any Task that was edited this round (to fix an issue or fill a coverage gap) re-enters per-Task review in the next round. A newly added Task enters per-Task review for the first time. A Task that was not touched this round and already holds `Status: OKAY` drops out — it does not run again.
 
-2. **The Per-Task reviewer guards cross-Task seams.** When reviewing a changed Task A, the reviewer is given the full text of all sibling Tasks as context and must check whether A's changes introduced any type, naming, or integration inconsistency with those siblings. This means "a change in A could break already-passed B" is caught by A's reviewer — B does not need to be re-reviewed for that reason alone.
+2. **The Per-Task reviewer guards cross-Task seams.** When reviewing a changed Task A, the reviewer reads the plan file and treats all other Tasks as sibling context (no Task text is pasted) and must check whether A's changes introduced any type, naming, or integration inconsistency with those siblings. This means "a change in A could break already-passed B" is caught by A's reviewer — B does not need to be re-reviewed for that reason alone.
 
 3. **The Coverage Verifier re-runs only when its own gaps were fixed.** If the Coverage Verifier returned `Status: OKAY`, it drops out for all subsequent rounds. It does NOT re-run merely because some Task was changed — cross-Task consistency is the Per-Task reviewer's responsibility (principle 2). It re-runs only if it previously reported coverage gaps that were then addressed.
 
@@ -150,15 +150,57 @@ Both cases of "fix A breaks B" are therefore covered:
 - If B's content was edited → B re-enters per-Task review (principle 1).
 - If B's content was not edited but A's change could break B → A's reviewer catches it (principle 2).
 
+### Dispatch mechanism (shared `dispatch.sh`)
+
+All reviewers go through the plugin's shared script, **run from the repository root**.
+`${CLAUDE_PLUGIN_ROOT}` is inline-expanded inside this SKILL.md at load time, so the paths
+below become absolute plugin-cache paths; plan/spec paths stay repo-root-relative.
+
+Each reviewer is a **separate** `run_in_background: true` Bash call (its own shell), so each
+block below is self-contained: it re-establishes the guard before invoking dispatch.
+
+Per-Task reviewer — one per active Task:
+
+```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
+# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
+# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
+# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
+# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
+case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
+[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
+"$DISPATCH" task \
+  --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/plan-document-reviewer-prompt.md" \
+  --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
+  --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md \
+  --set TASK_ID="Task N"
+```
+
+Coverage Verifier — once per round while active:
+
+```bash
+PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
+# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
+# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
+# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
+# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
+case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
+[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
+"$DISPATCH" task \
+  --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/coverage-verifier-prompt.md" \
+  --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
+  --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
+```
+
 ### Per-Task Review
 
-For **each Task** in the plan, dispatch a per-Task reviewer using the template in `./plan-document-reviewer-prompt.md`. Each reviewer call receives the full text of the single Task under review plus the full text of all sibling Tasks as context.
+For **each Task** in the plan, dispatch a per-Task reviewer using the Per-Task invocation in **Dispatch mechanism** above. Each reviewer call passes `--set TASK_ID="Task N"`; the reviewer reads the plan file, locates that Task, and treats every other Task in the file as sibling context — no Task text is pasted.
 
 A Task that has not yet received `Status: OKAY` gets a reviewer dispatched each round. A Task drops out of the loop once its reviewer reports `Status: OKAY` and its content is not edited again.
 
 ### Coverage Verifier
 
-In **addition** to the per-Task reviews, dispatch one Coverage Verifier each round using the template in `./coverage-verifier-prompt.md`. It reads the whole plan file and whole spec file (read-only) and compares them globally.
+In **addition** to the per-Task reviews, dispatch one Coverage Verifier each round using the Coverage Verifier invocation in **Dispatch mechanism** above. It reads the whole plan file and whole spec file (read-only) and compares them globally.
 
 If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Tasks, or amend the spec. Any newly added or substantially changed Task re-enters per-Task review in the next round. The Coverage Verifier re-runs next round only if gaps were fixed this round.
 
@@ -166,7 +208,7 @@ If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Task
 
 Per-Task reviewers and the Coverage Verifier are dispatched **in parallel** within a round using separate Bash calls with `run_in_background: true`. Do not wait for all per-Task reviews to finish before launching the Coverage Verifier. When a backgrounded dispatch finishes, Claude Code notifies you automatically — do NOT poll BashOutput in a loop or otherwise wait for the output to have a value. Wait for each completion notification, then read that task's output once. Once all results are in, fix all issues and gaps together, then start the next round.
 
-The invocation blocks in the prompt templates are canonical and self-contained: each one already resolves the companion path (with a marketplace fallback) and fails loudly if it is absent. Run them as written — do NOT pre-probe the companion with `--help`, `ls`/`find`, or source greps before dispatching. In particular, `task --prompt-file <path>` is supported even though `--help` does not list it (verified in the companion source); treat it as established, not a guess. Here `<path>` is the temp file each template writes its reviewer prompt to — NEVER the template `.md` itself — and `task` takes no `--wait` flag (the plan/spec paths are substituted into that temp file, not passed inline).
+Use the **Dispatch mechanism** invocations above exactly as written — do NOT pre-probe dispatch.sh with `--help`, `ls`/`find`, or source greps before dispatching.
 
 The loop ends when, within a single round, every active Per-Task reviewer returns `Status: OKAY` and the Coverage Verifier (if still active) returns `Status: OKAY`.
 

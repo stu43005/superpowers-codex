@@ -1,60 +1,14 @@
-# Spec Compliance Reviewer — Codex Task Dispatch
+You are a spec compliance reviewer executed by the codex companion. You verify whether an
+implementation matches its specification. Do NOT trust the implementer's report — read the
+actual code and git history.
 
-Run after each implementer subagent completes a task. Dispatches reviewer 5 via codex companion `task` (read-only). No `--write` flag — Codex reads files and git history only.
+**Plan file:** [PLAN_FILE_PATH]
+**Task under review:** the Task whose heading matches `[TASK_ID]` in the plan file.
+**Implementer's report file:** [REPORT_FILE_PATH]
+**Task base commit:** [TASK_BASE]
 
-**Purpose:** Verify the implementer built exactly what was requested — nothing more, nothing less. Do NOT trust the implementer's report; read the actual code.
-
-**Only dispatch after implementer reports DONE or DONE_WITH_CONCERNS.**
-
----
-
-## Step 1: Resolve TASK_BASE
-
-`TASK_BASE` must have been captured (as `git rev-parse HEAD`) at the moment before the implementer for this task started. Retrieve it from your task-tracking state.
-
-## Step 2: Locate codex companion
-
-> **Run this block as-is — do not pre-verify the companion.** The block below already
-> locates the companion (`ls … | sort -V | tail -1`, with a marketplace fallback) and
-> exits with a clear error if it is absent. Do NOT separately `ls`/`find` for the
-> companion, run `node "$CODEX_COMPANION" --help`, or grep the companion source before
-> dispatching. The `task --prompt-file <path>` flag used in Step 3 IS supported — the
-> companion reads `options["prompt-file"]` and lists `prompt-file` among its value
-> options — even though `--help` does not document it. This is verified, not a guess, so
-> no re-verification is needed.
->
-> **In Step 3, `--prompt-file` takes `$PROMPT_FILE` (the temp file that block writes) —
-> NEVER this template document.** Passing this `.md` file (or any path under `skills/`) as
-> `--prompt-file` feeds Codex these dispatch instructions instead of the reviewer prompt.
-> `task` has **no `--wait` flag** (that belongs to `review`/`adversarial-review`); the task
-> text, base SHA, and report go INSIDE the temp file (substitute the placeholders in the
-> heredoc body per Step 3), never as inline arguments to `task`.
-
-```bash
-CODEX_COMPANION="$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)"
-[ -z "$CODEX_COMPANION" ] && CODEX_COMPANION="$HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs"
-if [ ! -f "$CODEX_COMPANION" ]; then
-  echo "codex plugin not found; run /codex:setup. Do NOT fall back to inline self-review." >&2
-  exit 1
-fi
-```
-
-## Step 3: Write the review prompt and dispatch
-
-Substitute `[TASK_BASE]` with the actual SHA captured in Step 1, `[FULL TEXT of task requirements]` with the verbatim task text from the plan, and `[From implementer's report]` with the implementer's summary.
-
-```bash
-PROMPT_FILE="$(mktemp)"
-cat > "$PROMPT_FILE" <<'PROMPT'
-You are reviewing whether an implementation matches its specification.
-
-## What Was Requested
-
-[FULL TEXT of task requirements]
-
-## What Implementer Claims They Built
-
-[From implementer's report]
+Read the plan file and locate the Task headed `[TASK_ID]` — that is the requirement set.
+Read the implementer's report at `[REPORT_FILE_PATH]` to see what they CLAIM they built.
 
 ## CRITICAL: Do Not Trust the Report
 
@@ -68,7 +22,7 @@ inaccurate, or optimistic. You MUST verify everything independently.
 
 **DO:**
 - Run `git diff [TASK_BASE]..HEAD` to read the actual code changes
-- Compare actual implementation to requirements line by line
+- Compare actual implementation to the Task's requirements line by line
 - Check for missing pieces they claimed to implement
 - Look for extra features they didn't mention
 
@@ -78,7 +32,8 @@ Run this git command yourself to see exactly what was changed:
 
 git diff [TASK_BASE]..HEAD
 
-This is a literal two-dot range covering all commits since that base — read every file changed and every line added or removed.
+This is a literal two-dot range covering all commits since that base — read every file
+changed and every line added or removed.
 
 ## Your Job
 
@@ -119,16 +74,3 @@ Status: Issues Found
 (followed by each issue with its exact file:line location AND a concrete code fix — never prose-only descriptions)
 
 No other final line format is accepted.
-PROMPT
-node "$CODEX_COMPANION" task --prompt-file "$PROMPT_FILE"
-rm -f "$PROMPT_FILE"
-```
-
-## Step 4: Interpret the result
-
-Parse the **last `Status:` line** in Codex's output:
-
-- `Status: OKAY` → spec compliance passes; proceed to code quality review (reviewer 6).
-- `Status: Issues Found` → collect every issue (file:line + fix patch); dispatch the implementer subagent to apply all fixes; then re-run this reviewer from Step 1. Repeat until `Status: OKAY`.
-
-**Zero tolerance:** Do not proceed to code quality review while any issue remains open.

@@ -999,19 +999,25 @@ git commit -m "refactor(sdd): slim spec-reviewer to sidecar body, read report by
 
 - [ ] **Step 1: Replace the entire file contents**
 
-```markdown
+````markdown
 # Code Quality Reviewer — `dispatch.sh review`
 
-Run after the spec compliance reviewer returns `Status: OKAY` for a task. Dispatched via
-`dispatch.sh review --base <TASK_BASE>`, which calls the codex companion's native
-`review` command. There is **no prompt sidecar** — the native reviewer owns the quality
-judgment, and `review` does not read a `--prompt-file`.
+Run after the spec compliance reviewer returns `Status: OKAY` for a task. It calls the codex
+companion's native `review` command. There is **no prompt sidecar** — the native reviewer
+owns the quality judgment, and `review` does not read a `--prompt-file`.
 
 **Purpose:** Let Codex's native reviewer assess code quality and surface bugs or
 correctness problems in the task's diff.
 
-`TASK_BASE` is the `git rev-parse HEAD` captured immediately before this task's implementer
-started; it must be a direct ancestor of HEAD. `--base` makes the companion diff
+Dispatch — **fill `<TASK_BASE>`** with the `git rev-parse HEAD` captured immediately before
+this task's implementer started; substitute the value into the command, do not run it
+verbatim:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" review --base <TASK_BASE>
+```
+
+`<TASK_BASE>` must be a direct ancestor of HEAD; `--base` makes the companion diff
 `git diff $(git merge-base HEAD <TASK_BASE>)..HEAD`, i.e. exactly this task's commits.
 
 ## Interpreting the output (prose, not a Verdict line)
@@ -1032,9 +1038,7 @@ test coverage. Style preferences do not trigger a re-review loop.
 
 **Do not ask the user** whether to re-run or proceed — the loop runs automatically until
 the quality gate clears.
-
-(The exact dispatch invocation lives in the subagent-driven-development SKILL.md.)
-```
+````
 
 - [ ] **Step 2: Verify no dispatch scaffolding remains**
 
@@ -1064,30 +1068,33 @@ Focus on design-level soundness and completeness of this not-yet-implemented spe
 
 - [ ] **Step 2: Replace the prompt doc** (`adversarial-spec-review-prompt.md`) with human-facing notes only:
 
-```markdown
+````markdown
 # Adversarial Spec Review — `dispatch.sh adversarial`
 
-Reviewer 2 of the brainstorming dual-review loop. Dispatched via
-`dispatch.sh adversarial --base <SPEC_BASE> --focus <…>/adversarial-spec-review-focus.md`,
-which calls the codex companion `adversarial-review` (focus text passed as the trailing
-positional; `--wait` is a boolean flag). The focus text lives in
+The design-soundness half of the brainstorming dual spec review. The focus text lives in
 `adversarial-spec-review-focus.md`.
 
-## Capturing SPEC_BASE
+Dispatch via the codex companion `adversarial-review` (the focus text is passed as the
+trailing positional; `--wait` is a boolean flag). **Fill `<SPEC_BASE>` with the SHA captured
+before writing/committing the spec file — HEAD at that moment (the parent of the spec commit,
+`git rev-parse HEAD`); substitute the value into the command, do not run the line verbatim:**
 
-`SPEC_BASE` must be captured **before** writing/committing the spec file — it is HEAD at
-that moment (the parent of the spec commit): `SPEC_BASE="$(git rev-parse HEAD)"`. Do NOT
-re-capture after the spec commit; it must stay the direct ancestor so the review diffs
-exactly the new spec content.
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
+  --base <SPEC_BASE> \
+  --focus "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/adversarial-spec-review-focus.md"
+```
+
+Do NOT re-capture `<SPEC_BASE>` after the spec commit; it must stay the direct ancestor so
+the review diffs exactly the new spec content.
 
 ## Verdict parsing
 
 - `Verdict: approve` → spec passes this reviewer.
-- `Verdict: needs-attention` → fix every finding, then re-run BOTH Reviewer 1 and
-  Reviewer 2 (they re-run together whenever any spec edit is made).
-
-(The exact dispatch invocation lives in the brainstorming SKILL.md.)
-```
+- `Verdict: needs-attention` → fix every finding, then re-run BOTH spec reviewers — the
+  structural-completeness reviewer and this adversarial reviewer re-run together whenever
+  any spec edit is made.
+````
 
 - [ ] **Step 3: Verify focus sidecar content matches and doc is clean**
 
@@ -1121,20 +1128,27 @@ Focus: challenge cross-task integration seams — types, interfaces, naming conv
 
 - [ ] **Step 2: Replace the prompt doc** (`final-code-reviewer-prompt.md`) with human-facing notes only:
 
-```markdown
+````markdown
 # Final Code Reviewer — `dispatch.sh adversarial`
 
-Reviewer 7. Run once, after every task has passed both its spec compliance and code
-quality reviews. Dispatched via
-`dispatch.sh adversarial --base <IMPL_BASE> --focus <…>/final-code-reviewer-focus.md`
-(codex companion `adversarial-review`; focus text is the trailing positional, `--wait` is
-boolean). The focus text lives in `final-code-reviewer-focus.md`.
+Run once, after every task has passed both its spec compliance and code quality reviews.
 
 **Purpose:** Challenge the entire implementation as a coherent whole — cross-task
-integration seams, drift from the plan's overall intent, and ship/no-ship judgment.
+integration seams, drift from the plan's overall intent, and ship/no-ship judgment. The
+focus text lives in `final-code-reviewer-focus.md`.
 
-`IMPL_BASE` is the `git rev-parse HEAD` captured before the very first implementer started
-this plan; it must be a direct ancestor of HEAD. `--base` makes the companion diff
+Dispatch via the codex companion `adversarial-review` (the focus text is passed as the
+trailing positional; `--wait` is a boolean flag). **Fill `<IMPL_BASE>` with the actual
+`git rev-parse HEAD` captured before the very first implementer started this plan —
+substitute the value into the command; do not run the line verbatim:**
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
+  --base <IMPL_BASE> \
+  --focus "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/final-code-reviewer-focus.md"
+```
+
+`<IMPL_BASE>` must be a direct ancestor of HEAD; `--base` makes the companion diff
 `git diff $(git merge-base HEAD <IMPL_BASE>)..HEAD`, covering the entire implementation.
 
 ## Verdict parsing
@@ -1142,12 +1156,10 @@ this plan; it must be a direct ancestor of HEAD. `--base` makes the companion di
 - `Verdict: approve` → passes the final gate; proceed to `superpowers:finishing-a-development-branch`.
 - `Verdict: needs-attention` → collect every finding (file, line range, recommendation),
   dispatch the implementer to fix all, then re-run from the start with the same
-  `IMPL_BASE`. Repeat until `Verdict: approve`.
+  `<IMPL_BASE>`. Repeat until `Verdict: approve`.
 
 **Zero tolerance; do not ask the user** — the loop runs automatically until the gate clears.
-
-(The exact dispatch invocation lives in the subagent-driven-development SKILL.md.)
-```
+````
 
 - [ ] **Step 3: Verify**
 
@@ -1260,12 +1272,11 @@ Reviewer 1 — Structural Completeness:
   --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
 ```
 
-Reviewer 2 — Design Soundness:
+Reviewer 2 — Design Soundness. Fill `<SPEC_BASE>` with the SHA captured before the spec commit; substitute the value, do not run verbatim:
 
 ```bash
-SPEC_BASE="<captured SPEC_BASE SHA>"   # own shell: rebind to the concrete SHA captured before the spec commit
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
-  --base "$SPEC_BASE" \
+  --base <SPEC_BASE> \
   --focus "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/adversarial-spec-review-focus.md"
 ```
 ````
@@ -1314,45 +1325,41 @@ references `${CLAUDE_PLUGIN_ROOT}` directly (the skill is assumed to be installe
 
 Spec compliance reviewer (reviewer 5). Procedure:
 
-1. Run `REPORT_FILE="$(mktemp)"; echo "$REPORT_FILE"` and **note the concrete printed path**
+1. Run `mktemp` and **note the concrete printed path**
    (one per reviewer — never reuse or share a path across concurrent reviewers).
 2. **Write the implementer subagent's returned report verbatim into that concrete path using
    the Write tool** (do not paste the report into the dispatch command).
-3. Dispatch. This block runs in its **own** background shell, so it re-binds `REPORT_FILE`
-   and `TASK_BASE` to the concrete values from earlier (the mktemp path from step 1 and the
-   captured task base SHA) — substitute them in the two marked lines:
+3. Dispatch — **fill in** the two `<…>` placeholders with the concrete values from earlier:
+   the mktemp path from step 1 → `<REPORT_FILE>`, and the captured task base SHA →
+   `<TASK_BASE>`. Substitute the actual values into the command; do not run it verbatim:
 
 ```bash
-REPORT_FILE="/abs/path/from/step/1"        # <- concrete mktemp path noted in step 1
-TASK_BASE="<captured task base SHA>"       # <- concrete SHA captured before the implementer
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/spec-reviewer-prompt.md" \
-  --report-file "$REPORT_FILE" \
+  --report-file <REPORT_FILE> \
   --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
   --set TASK_ID="Task N" \
-  --set TASK_BASE="$TASK_BASE"
+  --set TASK_BASE=<TASK_BASE>
 ```
 
 4. After this background dispatch's **completion notification**, delete the source file:
-   `rm -f "$REPORT_FILE"` (using the same concrete path).
+   `rm -f <REPORT_FILE>` (the same concrete path from step 1).
 
 `dispatch.sh` copies the report into its own private temp and injects that private path, so
 reviewer correctness does not depend on when step 4 runs.
 ````
 
-- [ ] **Step 2: Replace reviewer 6 (code quality) dispatch** with (direct call):
+- [ ] **Step 2: Replace reviewer 6 (code quality) dispatch** with (direct call). Fill `<TASK_BASE>` with the SHA captured before this task's implementer started; substitute the value, do not run verbatim:
 
 ```bash
-TASK_BASE="<captured task base SHA>"   # own shell: rebind to the concrete SHA captured before this task's implementer
-"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" review --base "$TASK_BASE"
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" review --base <TASK_BASE>
 ```
 
-- [ ] **Step 3: Replace reviewer 7 (final) dispatch** with (direct call):
+- [ ] **Step 3: Replace reviewer 7 (final) dispatch** with (direct call). Fill `<IMPL_BASE>` with the SHA captured before the first implementer started; substitute the value, do not run verbatim:
 
 ```bash
-IMPL_BASE="<captured IMPL_BASE SHA>"   # own shell: rebind to the concrete SHA captured before the first implementer
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
-  --base "$IMPL_BASE" \
+  --base <IMPL_BASE> \
   --focus "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/final-code-reviewer-focus.md"
 ```
 

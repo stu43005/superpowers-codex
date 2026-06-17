@@ -1169,7 +1169,7 @@ Run (check both the opening and the closing phrase of the focus text so a trunca
 altered sidecar fails the check, not just a single substring):
 ```bash
 F=skills/subagent-driven-development/final-code-reviewer-focus.md
-grep -q 'cross-task integration seams' "$F" && grep -q 'missing observability' "$F" && echo "focus content OK" || echo "focus content FAIL"
+grep -q 'cross-task integration seams' "$F" && grep -q 'for the integrated feature\.' "$F" && echo "focus content OK" || echo "focus content FAIL"
 grep -nE 'CODEX_COMPANION|mktemp|node "\$CODEX_COMPANION"' skills/subagent-driven-development/final-code-reviewer-prompt.md && echo "LEFTOVER" || echo "CLEAN"
 ```
 Expected: `focus content OK`, then `CLEAN`.
@@ -1348,14 +1348,17 @@ Spec compliance reviewer (reviewer 5). Procedure:
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/spec-reviewer-prompt.md" \
-  --report-file <REPORT_FILE> \
-  --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
-  --set TASK_ID="Task N" \
-  --set TASK_BASE=<TASK_BASE>
+  --report-file "<REPORT_FILE>" \
+  --set "PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md" \
+  --set "TASK_ID=Task N" \
+  --set "TASK_BASE=<TASK_BASE>"
 ```
 
+(The fill-in placeholders are **quoted** so a substituted value containing whitespace or shell
+metacharacters stays data-safe — especially the runtime `mktemp` report path.)
+
 4. After this background dispatch's **completion notification**, delete the source file:
-   `rm -f <REPORT_FILE>` (the same concrete path from step 1).
+   `rm -f "<REPORT_FILE>"` (the same concrete path from step 1).
 
 `dispatch.sh` copies the report into its own private temp and injects that private path, so
 reviewer correctness does not depend on when step 4 runs.

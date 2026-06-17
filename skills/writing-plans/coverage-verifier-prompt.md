@@ -1,50 +1,9 @@
-# Coverage Verifier Prompt Template
-
-Use this template when dispatching a coverage verifier via the codex companion.
-
-**Purpose:** Verify that the **whole plan** covers the **whole spec** — a global coverage check across all Tasks, not a per-Task review. This catches gaps that per-Task reviewers miss because they only see one Task at a time.
-
-**Dispatch:** One codex `task` call (read-only), dispatched in parallel with the per-Task reviewers in each round. The caller loops — re-dispatching the Coverage Verifier — only if it returned coverage gaps that were then fixed. If it returned `Status: OKAY`, it drops out of subsequent rounds and does not re-run merely because some Task was changed (cross-Task consistency is the Per-Task reviewer's responsibility).
-
-## How to Dispatch
-
-> **Run this block as-is — do not pre-verify the companion.** The path-resolution step
-> below already locates the companion (`ls … | sort -V | tail -1`, with a marketplace
-> fallback) and exits with a clear error if it is absent. Do NOT separately `ls`/`find`
-> for the companion, run `node "$CODEX_COMPANION" --help`, or grep the companion source
-> before dispatching. The `task --prompt-file <path>` flag IS supported — the companion
-> reads `options["prompt-file"]` and lists `prompt-file` among its value options — even
-> though `--help` does not document it. This is verified, not a guess, so no
-> re-verification is needed.
->
-> **`--prompt-file` takes `$PROMPT_FILE` (the temp file the block below writes) — NEVER
-> this template document.** Passing this `.md` file (or any path under `skills/`) as
-> `--prompt-file` feeds Codex these dispatch instructions instead of the reviewer prompt.
-> `task` has **no `--wait` flag** (that belongs to `review`/`adversarial-review`); the plan
-> and spec paths go INSIDE the temp file via the `sed` substitutions below, never as inline
-> arguments to `task`.
-
-```bash
-# Resolve codex companion path
-CODEX_COMPANION="$(ls -d ~/.claude/plugins/cache/openai-codex/codex/*/scripts/codex-companion.mjs 2>/dev/null | sort -V | tail -1)"
-[ -z "$CODEX_COMPANION" ] && CODEX_COMPANION="$HOME/.claude/plugins/marketplaces/openai-codex/plugins/codex/scripts/codex-companion.mjs"
-if [ ! -f "$CODEX_COMPANION" ]; then
-  echo "codex plugin not found; run /codex:setup. Do NOT fall back to inline self-review." >&2
-  exit 1
-fi
-
-# Set PLAN_FILE and SPEC_FILE to the files under review; the [PLAN_FILE_PATH] and
-# [SPEC_FILE_PATH] placeholders below are substituted with them before dispatch.
-PLAN_FILE="docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md"
-SPEC_FILE="docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md"
-PROMPT_FILE="$(mktemp)"
-cat > "$PROMPT_FILE" <<'PROMPT'
 You are an independent coverage verifier executed by the codex companion. You must use
 rigorous judgment. Your job is to compare the ENTIRE plan against the ENTIRE spec and
 identify anything in the spec that the plan fails to cover, silently changes, or weakens.
 
-**Plan file path:** [PLAN_FILE_PATH]
-**Spec file path:** [SPEC_FILE_PATH]
+**Plan file:** [PLAN_FILE_PATH]
+**Spec file:** [SPEC_FILE_PATH]
 
 Read both files in full before proceeding.
 
@@ -107,11 +66,3 @@ Approve only when every spec requirement and design decision is accounted for.
 Your final line MUST be exactly one of:
 Status: OKAY
 Status: Issues Found
-PROMPT
-# Heredoc is literal (<<'PROMPT'); inject the real file paths into the temp file.
-sed -i -e "s#\[PLAN_FILE_PATH\]#${PLAN_FILE}#g" -e "s#\[SPEC_FILE_PATH\]#${SPEC_FILE}#g" "$PROMPT_FILE"
-node "$CODEX_COMPANION" task --prompt-file "$PROMPT_FILE"
-rm -f "$PROMPT_FILE"
-```
-
-**Reviewer returns:** A final line of `Status: OKAY` or `Status: Issues Found`. The parent parses this line to drive the loop.

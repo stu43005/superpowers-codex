@@ -1,0 +1,6 @@
+{
+  "name": "superpowers-codex",
+  "description": "Trimmed superpowers skills (brainstorming, writing-plans, subagent-driven-development, finishing-a-development-branch) with codex-companion reviewer dispatch.",
+  "version": "0.1.0",
+  "author": { "name": "Shiaupiau" }
+}

@@ -1,0 +1,11 @@
+{
+  "name": "superpowers-codex",
+  "owner": { "name": "Shiaupiau" },
+  "plugins": [
+    {
+      "name": "superpowers-codex",
+      "source": "./",
+      "description": "Trimmed superpowers skills with codex-companion reviewer dispatch."
+    }
+  ]
+}

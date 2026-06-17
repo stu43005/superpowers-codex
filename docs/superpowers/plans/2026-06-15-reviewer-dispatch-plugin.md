@@ -37,13 +37,15 @@
 - `skills/writing-plans/coverage-verifier-prompt.md` — slim to sidecar body (Type A).
 - `skills/brainstorming/spec-document-reviewer-prompt.md` — slim to sidecar body (Type A).
 - `skills/subagent-driven-development/spec-reviewer-prompt.md` — slim to sidecar body (Type A).
-- `skills/subagent-driven-development/code-quality-reviewer-prompt.md` — convert to human-facing support doc (Type B, no sidecar).
-- `skills/brainstorming/adversarial-spec-review-prompt.md` — convert to doc + focus sidecar (Type B).
-- `skills/subagent-driven-development/final-code-reviewer-prompt.md` — convert to doc + focus sidecar (Type B).
 - `skills/writing-plans/SKILL.md` — dispatch via `dispatch.sh`.
 - `skills/brainstorming/SKILL.md` — dispatch via `dispatch.sh`.
 - `skills/subagent-driven-development/SKILL.md` — dispatch via `dispatch.sh` + `--report-file` step.
 - `README.md` — distribution form + install/migration sections.
+
+**Deleted files (Type B `-prompt.md` — redundant after the SKILL.md rewrites carry the dispatch usage + verdict parsing; not consumed by `dispatch.sh`):**
+- `skills/subagent-driven-development/code-quality-reviewer-prompt.md` — deleted; `review` takes no prompt/focus, and its prose-interpretation + severity calibration live in `subagent-driven-development/SKILL.md`.
+- `skills/brainstorming/adversarial-spec-review-prompt.md` — deleted; dispatch + verdict parsing live in `brainstorming/SKILL.md`; the focus text is in `adversarial-spec-review-focus.md`.
+- `skills/subagent-driven-development/final-code-reviewer-prompt.md` — deleted; dispatch + verdict parsing live in `subagent-driven-development/SKILL.md`; the focus text is in `final-code-reviewer-focus.md`.
 
 **Untouched (explicit non-goal):** `skills/subagent-driven-development/implementer-prompt.md`.
 
@@ -990,75 +992,43 @@ git commit -m "refactor(sdd): slim spec-reviewer to sidecar body, read report by
 
 ---
 
-### Task 8: Convert `code-quality-reviewer-prompt.md` to a human-facing support doc
+### Task 8: Delete `code-quality-reviewer-prompt.md`
 
 **Files:**
-- Modify: `skills/subagent-driven-development/code-quality-reviewer-prompt.md`
+- Delete: `skills/subagent-driven-development/code-quality-reviewer-prompt.md`
 
-`dispatch.sh review` consumes no prompt file, so this file carries no sidecar body — only human-facing notes.
+`dispatch.sh review` takes no `--prompt`/`--focus`, so nothing consumes this file. Its
+guidance — when to run, how to interpret the native `review` **prose** (not a `Verdict:`
+line), the severity calibration, and the auto-loop-without-asking rule — lives in
+`subagent-driven-development/SKILL.md` (Task 13). The standalone file is redundant.
 
-- [ ] **Step 1: Replace the entire file contents**
-
-````markdown
-# Code Quality Reviewer — `dispatch.sh review`
-
-Run after the spec compliance reviewer returns `Status: OKAY` for a task. It calls the codex
-companion's native `review` command. There is **no prompt sidecar** — the native reviewer
-owns the quality judgment, and `review` does not read a `--prompt-file`.
-
-**Purpose:** Let Codex's native reviewer assess code quality and surface bugs or
-correctness problems in the task's diff.
-
-Dispatch — **fill `<TASK_BASE>`** with the `git rev-parse HEAD` captured immediately before
-this task's implementer started; substitute the value into the command, do not run it
-verbatim:
+- [ ] **Step 1: Delete the file**
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" review --base <TASK_BASE>
+git rm skills/subagent-driven-development/code-quality-reviewer-prompt.md
 ```
 
-`<TASK_BASE>` must be a direct ancestor of HEAD; `--base` makes the companion diff
-`git diff $(git merge-base HEAD <TASK_BASE>)..HEAD`, i.e. exactly this task's commits.
+- [ ] **Step 2: Verify it is gone and unreferenced**
 
-## Interpreting the output (prose, not a Verdict line)
-
-The native `review` command returns **free-form prose**, not a structured `Verdict:` line
-(that field exists only for `adversarial-review`). The parent agent interprets it:
-
-- **Any blocking-severity defect** (a bug, a clear correctness issue, a quality problem
-  that would block a confident merge) → treat as **Issues Found**: extract file:line +
-  recommendation, dispatch the implementer to fix all blocking issues, then re-run this
-  reviewer. Repeat until no blocking findings remain.
-- **No significant issues** (or only minor style notes) → treat as **OKAY**: mark the
-  quality gate passed and proceed.
-
-**Severity calibration:** "blocking" = what a senior engineer would require fixed before
-merge — bugs, data-loss risks, broken error handling, security issues, missing critical
-test coverage. Style preferences do not trigger a re-review loop.
-
-**Do not ask the user** whether to re-run or proceed — the loop runs automatically until
-the quality gate clears.
-````
-
-- [ ] **Step 2: Verify no dispatch scaffolding remains**
-
-Run: `grep -nE 'CODEX_COMPANION|mktemp|node "\$CODEX_COMPANION"' skills/subagent-driven-development/code-quality-reviewer-prompt.md && echo "LEFTOVER" || echo "CLEAN"`
-Expected: `CLEAN`.
+```bash
+test ! -e skills/subagent-driven-development/code-quality-reviewer-prompt.md && echo "deleted" || echo "STILL PRESENT"
+grep -rn 'code-quality-reviewer-prompt' skills README.md && echo "REFERENCED" || echo "no references"
+```
+Expected: `deleted`, then `no references`.
 
 - [ ] **Step 3: Commit**
 
 ```bash
-git add skills/subagent-driven-development/code-quality-reviewer-prompt.md
-git commit -m "refactor(sdd): convert code-quality-reviewer to human-facing support doc"
+git commit -m "refactor(sdd): delete redundant code-quality-reviewer-prompt.md"
 ```
 
 ---
 
-### Task 9: `adversarial-spec-review` → focus sidecar + doc
+### Task 9: `adversarial-spec-review` → focus sidecar, delete prompt doc
 
 **Files:**
 - Create: `skills/brainstorming/adversarial-spec-review-focus.md`
-- Modify: `skills/brainstorming/adversarial-spec-review-prompt.md`
+- Delete: `skills/brainstorming/adversarial-spec-review-prompt.md`
 
 - [ ] **Step 1: Write the focus sidecar** (`adversarial-spec-review-focus.md`) — the exact focus text, no markdown framing:
 
@@ -1066,61 +1036,36 @@ git commit -m "refactor(sdd): convert code-quality-reviewer to human-facing supp
 Focus on design-level soundness and completeness of this not-yet-implemented spec. Challenge: (1) failure paths, partial failure, and rollback — what happens when any step fails mid-way; (2) concurrency and ordering assumptions — are there implicit sequencing requirements that are never stated; (3) boundary and empty states — zero items, maximum limits, empty input, first-run with no prior state; (4) compatibility and migration risk — does this design interact with existing data, APIs, or systems in ways that could break them; (5) unstated but critical assumptions — what must be true in the environment, dependencies, or caller behaviour for this design to work. Report only material design-level findings. Do not perform line-by-line wording review.
 ```
 
-- [ ] **Step 2: Replace the prompt doc** (`adversarial-spec-review-prompt.md`) with human-facing notes only:
-
-````markdown
-# Adversarial Spec Review — `dispatch.sh adversarial`
-
-The design-soundness half of the brainstorming dual spec review. The focus text lives in
-`adversarial-spec-review-focus.md`.
-
-Dispatch via the codex companion `adversarial-review` (the focus text is passed as the
-trailing positional; `--wait` is a boolean flag). **Fill `<SPEC_BASE>` with the SHA captured
-before writing/committing the spec file — HEAD at that moment (the parent of the spec commit,
-`git rev-parse HEAD`); substitute the value into the command, do not run the line verbatim:**
+- [ ] **Step 2: Delete the redundant prompt doc.** The dispatch usage (`dispatch.sh adversarial --focus …`) and verdict parsing live in `brainstorming/SKILL.md` (Task 12); nothing consumes `adversarial-spec-review-prompt.md`.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
-  --base <SPEC_BASE> \
-  --focus "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/adversarial-spec-review-focus.md"
+git rm skills/brainstorming/adversarial-spec-review-prompt.md
 ```
 
-Do NOT re-capture `<SPEC_BASE>` after the spec commit; it must stay the direct ancestor so
-the review diffs exactly the new spec content.
+- [ ] **Step 3: Verify focus content + the prompt doc is deleted and unreferenced**
 
-## Verdict parsing
-
-- `Verdict: approve` → spec passes this reviewer.
-- `Verdict: needs-attention` → fix every finding, then re-run BOTH spec reviewers — the
-  structural-completeness reviewer and this adversarial reviewer re-run together whenever
-  any spec edit is made.
-````
-
-- [ ] **Step 3: Verify focus sidecar content matches and doc is clean**
-
-Run (check both the opening and the closing sentence of the focus text so a truncated or
-altered sidecar fails the check, not just a single substring):
 ```bash
 F=skills/brainstorming/adversarial-spec-review-focus.md
 grep -q 'design-level soundness' "$F" && grep -q 'Do not perform line-by-line wording review\.' "$F" && echo "focus content OK" || echo "focus content FAIL"
-grep -nE 'CODEX_COMPANION|mktemp|node "\$CODEX_COMPANION"' skills/brainstorming/adversarial-spec-review-prompt.md && echo "LEFTOVER" || echo "CLEAN"
+test ! -e skills/brainstorming/adversarial-spec-review-prompt.md && echo "deleted" || echo "STILL PRESENT"
+grep -rn 'adversarial-spec-review-prompt' skills README.md && echo "REFERENCED" || echo "no references"
 ```
-Expected: `focus content OK`, then `CLEAN`.
+Expected: `focus content OK`, `deleted`, `no references`.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add skills/brainstorming/adversarial-spec-review-focus.md skills/brainstorming/adversarial-spec-review-prompt.md
-git commit -m "refactor(brainstorming): extract adversarial focus to sidecar"
+git add skills/brainstorming/adversarial-spec-review-focus.md
+git commit -m "refactor(brainstorming): add adversarial focus sidecar, delete redundant prompt doc"
 ```
 
 ---
 
-### Task 10: `final-code-reviewer` → focus sidecar + doc
+### Task 10: `final-code-reviewer` → focus sidecar, delete prompt doc
 
 **Files:**
 - Create: `skills/subagent-driven-development/final-code-reviewer-focus.md`
-- Modify: `skills/subagent-driven-development/final-code-reviewer-prompt.md`
+- Delete: `skills/subagent-driven-development/final-code-reviewer-prompt.md`
 
 - [ ] **Step 1: Write the focus sidecar** (`final-code-reviewer-focus.md`) — exact focus text, no framing:
 
@@ -1128,57 +1073,27 @@ git commit -m "refactor(brainstorming): extract adversarial focus to sidecar"
 Focus: challenge cross-task integration seams — types, interfaces, naming conventions, and shared state that must be consistent across task boundaries; drift from the plan's overall intent (requirements that fell through the cracks between tasks, scaffolding or TODOs left behind, dead code from the task-by-task process); and the ship/no-ship merge judgment for the implementation as a whole. Adversarially probe: auth/permissions/isolation correctness across the full change set, data-loss or corruption risks introduced by the combined changes, rollback and partial-failure behavior end-to-end, race conditions and ordering assumptions that span multiple tasks, missing observability (logging/metrics/tracing) for the integrated feature.
 ```
 
-- [ ] **Step 2: Replace the prompt doc** (`final-code-reviewer-prompt.md`) with human-facing notes only:
-
-````markdown
-# Final Code Reviewer — `dispatch.sh adversarial`
-
-Run once, after every task has passed both its spec compliance and code quality reviews.
-
-**Purpose:** Challenge the entire implementation as a coherent whole — cross-task
-integration seams, drift from the plan's overall intent, and ship/no-ship judgment. The
-focus text lives in `final-code-reviewer-focus.md`.
-
-Dispatch via the codex companion `adversarial-review` (the focus text is passed as the
-trailing positional; `--wait` is a boolean flag). **Fill `<IMPL_BASE>` with the actual
-`git rev-parse HEAD` captured before the very first implementer started this plan —
-substitute the value into the command; do not run the line verbatim:**
+- [ ] **Step 2: Delete the redundant prompt doc.** The dispatch usage (`dispatch.sh adversarial --focus …`) and verdict parsing live in `subagent-driven-development/SKILL.md` (Task 13); nothing consumes `final-code-reviewer-prompt.md`.
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
-  --base <IMPL_BASE> \
-  --focus "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/final-code-reviewer-focus.md"
+git rm skills/subagent-driven-development/final-code-reviewer-prompt.md
 ```
 
-`<IMPL_BASE>` must be a direct ancestor of HEAD; `--base` makes the companion diff
-`git diff $(git merge-base HEAD <IMPL_BASE>)..HEAD`, covering the entire implementation.
+- [ ] **Step 3: Verify focus content + the prompt doc is deleted and unreferenced**
 
-## Verdict parsing
-
-- `Verdict: approve` → passes the final gate; proceed to `superpowers:finishing-a-development-branch`.
-- `Verdict: needs-attention` → collect every finding (file, line range, recommendation),
-  dispatch the implementer to fix all, then re-run from the start with the same
-  `<IMPL_BASE>`. Repeat until `Verdict: approve`.
-
-**Zero tolerance; do not ask the user** — the loop runs automatically until the gate clears.
-````
-
-- [ ] **Step 3: Verify**
-
-Run (check both the opening and the closing phrase of the focus text so a truncated or
-altered sidecar fails the check, not just a single substring):
 ```bash
 F=skills/subagent-driven-development/final-code-reviewer-focus.md
 grep -q 'cross-task integration seams' "$F" && grep -q 'for the integrated feature\.' "$F" && echo "focus content OK" || echo "focus content FAIL"
-grep -nE 'CODEX_COMPANION|mktemp|node "\$CODEX_COMPANION"' skills/subagent-driven-development/final-code-reviewer-prompt.md && echo "LEFTOVER" || echo "CLEAN"
+test ! -e skills/subagent-driven-development/final-code-reviewer-prompt.md && echo "deleted" || echo "STILL PRESENT"
+grep -rn 'final-code-reviewer-prompt' skills README.md && echo "REFERENCED" || echo "no references"
 ```
-Expected: `focus content OK`, then `CLEAN`.
+Expected: `focus content OK`, `deleted`, `no references`.
 
 - [ ] **Step 4: Commit**
 
 ```bash
-git add skills/subagent-driven-development/final-code-reviewer-focus.md skills/subagent-driven-development/final-code-reviewer-prompt.md
-git commit -m "refactor(sdd): extract final-code-reviewer focus to sidecar"
+git add skills/subagent-driven-development/final-code-reviewer-focus.md
+git commit -m "refactor(sdd): add final-code-reviewer focus sidecar, delete redundant prompt doc"
 ```
 
 ---
@@ -1322,7 +1237,7 @@ Replace the dispatch mechanics for reviewers 5/6/7 and add the report-file step 
   - The **"Reviewer Dispatch Mechanisms"** section and any reviewer **table** rows that map reviewers 5/6/7 to `codex task` / `codex review` / `codex adversarial-review` prompt templates.
   - The **"Prompt Templates"** list entries and any prose that says "see the prompt templates for full dispatch commands" or "the invocation blocks are canonical".
   - **Workflow diagram labels** and **example workflow** text that reference `task --prompt-file` / `node <companion>` dispatch.
-  - Note the new reality: reviewer 6 (`code-quality-reviewer-prompt.md`) and reviewer 7 (`final-code-reviewer-prompt.md`) are **human-facing support docs** (Tasks 8/10) — reference them as docs, never as dispatch templates; reviewer 7 dispatch uses `final-code-reviewer-focus.md`.
+  - Note the new reality: the reviewer 6 `code-quality-reviewer-prompt.md` and reviewer 7 `final-code-reviewer-prompt.md` files are **deleted** (Tasks 8/10) — do NOT reference them anywhere. This SKILL.md must itself carry reviewer 6's prose-interpretation + severity calibration and reviewer 7's verdict parsing (the guidance that previously lived in those files). reviewer 7 dispatch uses `final-code-reviewer-focus.md`.
   - **Replacement terminology when rewriting the table / diagram / example workflow** (use exactly these so the file is internally consistent): reviewer 5 = "`dispatch.sh task` with `--report-file` (spec-reviewer sidecar)"; reviewer 6 = "`dispatch.sh review` (native review, no prompt sidecar)"; reviewer 7 = "`dispatch.sh adversarial` with `final-code-reviewer-focus.md`". Do not leave any "via codex task" / "codex native review" / "codex adversarial-review" / "prompt templates" dispatch phrasing.
 
 - [ ] **Step 1: Add the spec-compliance dispatch with the report-file step.** Where the SKILL describes dispatching reviewer 5 (spec compliance), insert:
@@ -1386,10 +1301,10 @@ Run:
 F=skills/subagent-driven-development/SKILL.md
 grep -c 'dispatch.sh' "$F"            # expect >= 1
 grep -c -- '--report-file' "$F"       # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|node <companion>|task --prompt-file|Reviewer Dispatch Mechanisms|Prompt Templates|via codex |codex native|codex adversarial|codex task|prompt templates are canonical|See the prompt templates' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|node <companion>|task --prompt-file|Reviewer Dispatch Mechanisms|Prompt Templates|via codex |codex native|codex adversarial|codex task|prompt templates are canonical|See the prompt templates|code-quality-reviewer-prompt|final-code-reviewer-prompt' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
-Expected: non-zero `dispatch.sh` count; `--report-file` count ≥ 1; `CLEAN`. (Note: `implementer-prompt.md` still uses its own heredoc — that file is NOT edited; the grep targets SKILL.md only. The grep deliberately targets stale dispatch *mechanics/phrasing*, not the bare `code-quality-reviewer-prompt.md` / `final-code-reviewer-prompt.md` names, which may legitimately remain as human-facing support-doc references.)
+Expected: non-zero `dispatch.sh` count; `--report-file` count ≥ 1; `CLEAN`. (Note: `implementer-prompt.md` still uses its own heredoc — that file is NOT edited; the grep targets SKILL.md only. The grep targets stale dispatch *mechanics/phrasing* AND any reference to the now-deleted `code-quality-reviewer-prompt.md` / `final-code-reviewer-prompt.md` files — the SKILL must not point at deleted files.)
 
 - [ ] **Step 5: Commit**
 
@@ -1760,5 +1675,5 @@ git commit -m "docs: record empirically-determined skill discovery precedence"
 - `scripts/dispatch.test.sh` and `scripts/preflight.test.sh` pass (0 failed).
 - `bash -n` (and `shellcheck` where available) clean on both scripts.
 - Every reviewer `--dry-run` produces a placeholder-free prompt and a correct companion command.
-- The seven prompt files are slimmed/converted; the two focus sidecars exist; the three SKILL.md files dispatch via `dispatch.sh`; `implementer-prompt.md` is untouched.
+- The four Type A prompt files are slimmed to sidecar bodies; the three Type B `-prompt.md` files are deleted; the two focus sidecars exist; the three SKILL.md files dispatch via `dispatch.sh`; `implementer-prompt.md` is untouched.
 - Plugin installs; `${CLAUDE_PLUGIN_ROOT}` inline-expands inside SKILL.md; the preflight blocks a shadowing legacy install; README documents install + migration with the recorded discovery-precedence result.

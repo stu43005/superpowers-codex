@@ -1098,12 +1098,14 @@ the review diffs exactly the new spec content.
 
 - [ ] **Step 3: Verify focus sidecar content matches and doc is clean**
 
-Run:
+Run (check both the opening and the closing sentence of the focus text so a truncated or
+altered sidecar fails the check, not just a single substring):
 ```bash
-grep -c 'design-level soundness' skills/brainstorming/adversarial-spec-review-focus.md
+F=skills/brainstorming/adversarial-spec-review-focus.md
+grep -q 'design-level soundness' "$F" && grep -q 'Do not perform line-by-line wording review\.' "$F" && echo "focus content OK" || echo "focus content FAIL"
 grep -nE 'CODEX_COMPANION|mktemp|node "\$CODEX_COMPANION"' skills/brainstorming/adversarial-spec-review-prompt.md && echo "LEFTOVER" || echo "CLEAN"
 ```
-Expected: `1`, then `CLEAN`.
+Expected: `focus content OK`, then `CLEAN`.
 
 - [ ] **Step 4: Commit**
 
@@ -1163,12 +1165,14 @@ substitute the value into the command; do not run the line verbatim:**
 
 - [ ] **Step 3: Verify**
 
-Run:
+Run (check both the opening and the closing phrase of the focus text so a truncated or
+altered sidecar fails the check, not just a single substring):
 ```bash
-grep -c 'cross-task integration seams' skills/subagent-driven-development/final-code-reviewer-focus.md
+F=skills/subagent-driven-development/final-code-reviewer-focus.md
+grep -q 'cross-task integration seams' "$F" && grep -q 'missing observability' "$F" && echo "focus content OK" || echo "focus content FAIL"
 grep -nE 'CODEX_COMPANION|mktemp|node "\$CODEX_COMPANION"' skills/subagent-driven-development/final-code-reviewer-prompt.md && echo "LEFTOVER" || echo "CLEAN"
 ```
-Expected: `1`, then `CLEAN`.
+Expected: `focus content OK`, then `CLEAN`.
 
 - [ ] **Step 4: Commit**
 
@@ -1254,6 +1258,11 @@ git commit -m "refactor(writing-plans): dispatch reviewers via shared dispatch.s
 
 Replace the dual-reviewer dispatch mechanics (Reviewer 1 `task`, Reviewer 2 `adversarial-review`) with `dispatch.sh`. **Read the current file before editing.**
 
+- [ ] **Step 0: Delete/rewrite the stale top-level dispatch labels.** Beyond the detailed "Spec Review Loop" block, the SKILL has higher-level references that still describe dispatch as raw companion commands — update every one so nothing contradicts `dispatch.sh` (mirrors Task 13's "replacement terminology" approach):
+  - **Checklist item 6** (and any checklist / summary line) describing Reviewer 1 as `task` and Reviewer 2 as `adversarial-review` against the companion → reword to: Reviewer 1 via "`dispatch.sh task` (spec-document-reviewer sidecar)"; Reviewer 2 via "`dispatch.sh adversarial` (`adversarial-spec-review-focus.md`)".
+  - **Process Flow diagram labels** (graph node / edge text) that reference `task` / `adversarial-review` / `node <companion>` dispatch → relabel to `dispatch.sh task` / `dispatch.sh adversarial`.
+  - Do not leave any "via codex", raw `adversarial-review` subcommand, or "Reviewer 1: `task` + Reviewer 2: `adversarial-review`" wording anywhere in the file.
+
 - [ ] **Step 1: Replace the dispatch wording** in the "Spec Review Loop (Dual Reviewer, codex companion)" section with the content below, and **delete any stale sentences** there that (a) say a reviewer "uses `spec-document-reviewer-prompt.md`/`adversarial-spec-review-prompt.md`" as a dispatch template, or (b) say "the invocation blocks in the prompt templates are canonical", or (c) embed `node <companion> …` / heredoc dispatch. Reviewer 1 reads its prompt sidecar; Reviewer 2 uses the **focus** sidecar.
 
 ````markdown
@@ -1288,7 +1297,7 @@ Run:
 ```bash
 F=skills/brainstorming/SKILL.md
 grep -c 'dispatch.sh' "$F"   # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node "?\$?CODEX|node <companion>|task --prompt-file|prompt templates are canonical|invocation block|adversarial-spec-review-prompt\.md' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node "?\$?CODEX|node <companion>|task --prompt-file|prompt templates are canonical|invocation block|adversarial-spec-review-prompt\.md|adversarial-review|via codex' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `CLEAN`. (The `--prompt`/`--focus` paths legitimately name the sidecar files; the grep targets only stale dispatch *mechanics/phrasing*.)
@@ -1329,9 +1338,12 @@ Spec compliance reviewer (reviewer 5). Procedure:
    (one per reviewer — never reuse or share a path across concurrent reviewers).
 2. **Write the implementer subagent's returned report verbatim into that concrete path using
    the Write tool** (do not paste the report into the dispatch command).
-3. Dispatch — **fill in** the two `<…>` placeholders with the concrete values from earlier:
-   the mktemp path from step 1 → `<REPORT_FILE>`, and the captured task base SHA →
-   `<TASK_BASE>`. Substitute the actual values into the command; do not run it verbatim:
+3. Dispatch — **fill in every run-specific value** in the command below; substitute the
+   actual values, do not run it verbatim:
+   - the report-file path → `<REPORT_FILE>` (the mktemp path from step 1);
+   - the plan file path → replace `docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md` with the real plan path;
+   - the task id → replace `--set TASK_ID="Task N"` with the actual Task heading;
+   - the task base SHA → `<TASK_BASE>` (captured before this task's implementer started).
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
@@ -1371,7 +1383,7 @@ Run:
 F=skills/subagent-driven-development/SKILL.md
 grep -c 'dispatch.sh' "$F"            # expect >= 1
 grep -c -- '--report-file' "$F"       # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|node <companion>|task --prompt-file|Reviewer Dispatch Mechanisms|via codex |codex native review|codex adversarial-review|prompt templates are canonical|See the prompt templates' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|node <companion>|task --prompt-file|Reviewer Dispatch Mechanisms|Prompt Templates|via codex |codex native|codex adversarial|codex task|prompt templates are canonical|See the prompt templates' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `--report-file` count ≥ 1; `CLEAN`. (Note: `implementer-prompt.md` still uses its own heredoc — that file is NOT edited; the grep targets SKILL.md only. The grep deliberately targets stale dispatch *mechanics/phrasing*, not the bare `code-quality-reviewer-prompt.md` / `final-code-reviewer-prompt.md` names, which may legitimately remain as human-facing support-doc references.)

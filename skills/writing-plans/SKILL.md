@@ -157,19 +157,13 @@ All reviewers go through the plugin's shared script, **run from the repository r
 below become absolute plugin-cache paths; plan/spec paths stay repo-root-relative.
 
 Each reviewer is a **separate** `run_in_background: true` Bash call (its own shell), so each
-block below is self-contained: it re-establishes the guard before invoking dispatch.
+block below invokes `dispatch.sh` directly via `${CLAUDE_PLUGIN_ROOT}` (the skill is assumed
+to be installed as a plugin).
 
 Per-Task reviewer — one per active Task:
 
 ```bash
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
-# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
-# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
-# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
-case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
-[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
-"$DISPATCH" task \
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/plan-document-reviewer-prompt.md" \
   --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
   --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md \
@@ -179,14 +173,7 @@ case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be 
 Coverage Verifier — once per round while active:
 
 ```bash
-PLUGIN_ROOT="${CLAUDE_PLUGIN_ROOT}"; DISPATCH="$PLUGIN_ROOT/scripts/dispatch.sh"
-# Non-plugin/shadowed install: the plugin-root token did not inline-expand, so PLUGIN_ROOT is
-# empty (bash expanded the unset env var) or still holds the literal token. Reject both.
-# NOTE: the pattern uses the BARE word (no ${...}) so Claude Code's inline expansion does not
-# rewrite it — a real expanded cache path never contains the substring "CLAUDE_PLUGIN_ROOT".
-case "$PLUGIN_ROOT" in ''|*CLAUDE_PLUGIN_ROOT*) echo "superpowers-codex must be installed as a plugin (run /plugin install); reviewer dispatch is unavailable (plugin root did not expand)." >&2; exit 1 ;; esac
-[ -x "$DISPATCH" ] || { echo "superpowers-codex dispatch.sh is missing or not executable; reinstall the plugin (/plugin install)." >&2; exit 1; }
-"$DISPATCH" task \
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
   --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/coverage-verifier-prompt.md" \
   --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
   --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md

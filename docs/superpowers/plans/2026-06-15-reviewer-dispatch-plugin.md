@@ -1142,7 +1142,7 @@ Coverage Verifier — once per round while active:
   - In **### Per-Task Review**: delete the sentence "Each reviewer call receives the full text of the single Task under review plus the full text of all sibling Tasks as context." and replace it with: "Each reviewer call passes `--set TASK_ID=\"Task N\"`; the reviewer reads the plan file, locates that Task, and treats every other Task in the file as sibling context — no Task text is pasted." Replace the phrase "dispatch a per-Task reviewer using the template in `./plan-document-reviewer-prompt.md`" with "dispatch a per-Task reviewer using the Per-Task invocation in **Dispatch mechanism** above".
   - In **### Coverage Verifier**: replace "using the template in `./coverage-verifier-prompt.md`" with "using the Coverage Verifier invocation in **Dispatch mechanism** above".
   - In **### The Round Loop**: the `run_in_background`/parallel behavior is unchanged; only replace any remaining wording that implies pasting templates with a pointer to the **Dispatch mechanism** invocations.
-  - In the **"Plan Review Loop"** intro / reviewer-role bullets: replace every statement that a reviewer is "dispatched via `node <companion> task`" (or similar embedded-companion wording) with "dispatched via `dispatch.sh` (see **Dispatch mechanism**)".
+  - In the **"Plan Review Loop"** intro / reviewer-role bullets: replace every statement that a reviewer is "dispatched via `node <companion> task`" (or similar embedded-companion wording) with "dispatched via `dispatch.sh` (see **Dispatch mechanism**)". Also **drop the "(reviewer 3)" / "(reviewer 4)" numbering** from those bullets — use the role names only ("per-Task reviewer" / "Coverage Verifier"), never a reviewer number.
   - In **"Unified Re-run Policy" principle 2**: replace "the reviewer is given the full text of all sibling Tasks as context" with "the reviewer reads the plan file and treats all other Tasks as sibling context (no Task text is pasted)".
 
 - [ ] **Step 3: Verify dispatch.sh is referenced and no stale dispatch mechanics / paste prose remain**
@@ -1152,7 +1152,7 @@ Run:
 ```bash
 F=skills/writing-plans/SKILL.md
 grep -c 'dispatch.sh' "$F"   # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|task --prompt-file|using the template|invocation blocks.*canonical|full text of (the single|all sibling)' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nEi 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|task --prompt-file|using the template|invocation blocks.*canonical|full text of (the single|all sibling)|reviewer [34]' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `CLEAN` (no stale bash, no embedded-companion dispatch, no paste-based prose anywhere in the file — including the "Plan Review Loop" intro and "Unified Re-run Policy"). The `--prompt` paths legitimately name the `*-prompt.md` files, so the grep deliberately targets only the stale *phrasing*, not those filenames.
@@ -1171,14 +1171,15 @@ git commit -m "refactor(writing-plans): dispatch reviewers via shared dispatch.s
 **Files:**
 - Modify: `skills/brainstorming/SKILL.md`
 
-Replace the dual-reviewer dispatch mechanics (Reviewer 1 `task`, Reviewer 2 `adversarial-review`) with `dispatch.sh`. **Read the current file before editing.**
+Replace the dual-reviewer dispatch mechanics (the structural-completeness reviewer via `task`, the design-soundness reviewer via `adversarial-review`) with `dispatch.sh`. Refer to reviewers by **role name**, never by number. **Read the current file before editing.**
 
-- [ ] **Step 0: Delete/rewrite the stale top-level dispatch labels.** Beyond the detailed "Spec Review Loop" block, the SKILL has higher-level references that still describe dispatch as raw companion commands — update every one so nothing contradicts `dispatch.sh` (mirrors Task 13's "replacement terminology" approach):
-  - **Checklist item 6** (and any checklist / summary line) describing Reviewer 1 as `task` and Reviewer 2 as `adversarial-review` against the companion → reword to: Reviewer 1 via "`dispatch.sh task` (spec-document-reviewer sidecar)"; Reviewer 2 via "`dispatch.sh adversarial` (`adversarial-spec-review-focus.md`)".
-  - **Process Flow diagram labels** (graph node / edge text) that reference `task` / `adversarial-review` / `node <companion>` dispatch → relabel to `dispatch.sh task` / `dispatch.sh adversarial`.
-  - Do not leave any "via codex", raw `adversarial-review` subcommand, or "Reviewer 1: `task` + Reviewer 2: `adversarial-review`" wording anywhere in the file.
+- [ ] **Step 0: Delete/rewrite the stale top-level dispatch labels AND drop reviewer numbering.** Beyond the detailed "Spec Review Loop" block, the SKILL has higher-level references that still describe dispatch as raw companion commands and number the reviewers — update every one so nothing contradicts `dispatch.sh` and no "Reviewer 1/2" numbering remains (mirrors Task 13's "replacement terminology" approach):
+  - **Checklist item 6** (and any checklist / summary line) describing the reviewers as `task` / `adversarial-review` against the companion → reword to: the structural-completeness reviewer via "`dispatch.sh task` (spec-document-reviewer sidecar)"; the design-soundness reviewer via "`dispatch.sh adversarial` (`adversarial-spec-review-focus.md`)".
+  - **Process Flow diagram labels** (graph node / edge text) → relabel to role names + `dispatch.sh task` / `dispatch.sh adversarial`; no `task` / `adversarial-review` raw companion subcommands, no `node <companion>`.
+  - **Prose headers** in the "Spec Review Loop" section (e.g. "**Reviewer 1 — Structural Completeness**", "**Reviewer 2 — Design Soundness**") → rename to role-only headers ("**Structural Completeness reviewer**", "**Design Soundness reviewer**") and any round-loop pseudocode variables (`reviewer1`/`reviewer2`) to role-based names.
+  - Do not leave any "via codex", raw `adversarial-review` subcommand, or **"Reviewer 1" / "Reviewer 2" numbering** anywhere in the file (use role names: structural-completeness reviewer / design-soundness reviewer).
 
-- [ ] **Step 1: Replace the dispatch wording** in the "Spec Review Loop (Dual Reviewer, codex companion)" section with the content below, and **delete any stale sentences** there that (a) say a reviewer "uses `spec-document-reviewer-prompt.md`/`adversarial-spec-review-prompt.md`" as a dispatch template, or (b) say "the invocation blocks in the prompt templates are canonical", or (c) embed `node <companion> …` / heredoc dispatch. Reviewer 1 reads its prompt sidecar; Reviewer 2 uses the **focus** sidecar.
+- [ ] **Step 1: Replace the dispatch wording** in the "Spec Review Loop (Dual Reviewer, codex companion)" section with the content below, and **delete any stale sentences** there that (a) say a reviewer "uses `spec-document-reviewer-prompt.md`/`adversarial-spec-review-prompt.md`" as a dispatch template, or (b) say "the invocation blocks in the prompt templates are canonical", or (c) embed `node <companion> …` / heredoc dispatch. The structural-completeness reviewer reads its prompt sidecar; the design-soundness reviewer uses the **focus** sidecar.
 
 ````markdown
 **Dispatch mechanism (shared `dispatch.sh`, run from repo root).** `${CLAUDE_PLUGIN_ROOT}`
@@ -1188,7 +1189,7 @@ Each reviewer is a **separate** `run_in_background: true` Bash call (its own she
 block invokes `dispatch.sh` directly via `${CLAUDE_PLUGIN_ROOT}` (the skill is assumed to be
 installed as a plugin).
 
-Reviewer 1 — Structural Completeness:
+Structural Completeness reviewer:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
@@ -1196,7 +1197,7 @@ Reviewer 1 — Structural Completeness:
   --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
 ```
 
-Reviewer 2 — Design Soundness. Fill `<SPEC_BASE>` with the SHA captured before the spec commit; substitute the value, do not run verbatim:
+Design Soundness reviewer. Fill `<SPEC_BASE>` with the SHA captured before the spec commit; substitute the value, do not run verbatim:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
@@ -1212,7 +1213,7 @@ Run:
 ```bash
 F=skills/brainstorming/SKILL.md
 grep -c 'dispatch.sh' "$F"   # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node "?\$?CODEX|node <companion>|task --prompt-file|prompt templates are canonical|invocation block|adversarial-spec-review-prompt\.md|adversarial-review|via codex' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nE 'CODEX_COMPANION|<<.?PROMPT|mktemp|node "?\$?CODEX|node <companion>|task --prompt-file|prompt templates are canonical|invocation block|adversarial-spec-review-prompt\.md|adversarial-review|via codex|Reviewer [12]' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `CLEAN`. (The `--prompt`/`--focus` paths legitimately name the sidecar files; the grep targets only stale dispatch *mechanics/phrasing*.)
@@ -1231,23 +1232,23 @@ git commit -m "refactor(brainstorming): dispatch dual spec reviewers via dispatc
 **Files:**
 - Modify: `skills/subagent-driven-development/SKILL.md`
 
-Replace the dispatch mechanics for reviewers 5/6/7 and add the report-file step for the spec compliance reviewer. **Read the current file before editing.**
+Replace the dispatch mechanics for all three reviewers (spec-compliance, code-quality, final adversarial) and add the report-file step for the spec-compliance reviewer. Refer to reviewers by **role name**, never by number. **Read the current file before editing.**
 
 - [ ] **Step 0: Delete the stale dispatch content.** Before inserting the new blocks, remove/rewrite every part of the SKILL that still teaches the old codex-prompt-template dispatch, so nothing contradicts `dispatch.sh`:
-  - The **"Reviewer Dispatch Mechanisms"** section and any reviewer **table** rows that map reviewers 5/6/7 to `codex task` / `codex review` / `codex adversarial-review` prompt templates.
+  - The **"Reviewer Dispatch Mechanisms"** section and any reviewer **table** rows that map the spec-compliance / code-quality / final adversarial reviewers to `codex task` / `codex review` / `codex adversarial-review` prompt templates. (Drop any "reviewer 5/6/7" numbering — use role names.)
   - The **"Prompt Templates"** list entries and any prose that says "see the prompt templates for full dispatch commands" or "the invocation blocks are canonical".
   - **Workflow diagram labels** and **example workflow** text that reference `task --prompt-file` / `node <companion>` dispatch.
-  - Note the new reality: the reviewer 6 `code-quality-reviewer-prompt.md` and reviewer 7 `final-code-reviewer-prompt.md` files are **deleted** (Tasks 8/10) — do NOT reference them anywhere. This SKILL.md must itself carry reviewer 6's prose-interpretation + severity calibration and reviewer 7's verdict parsing (the guidance that previously lived in those files). reviewer 7 dispatch uses `final-code-reviewer-focus.md`.
-  - **Replacement terminology when rewriting the table / diagram / example workflow** (use exactly these so the file is internally consistent): reviewer 5 = "`dispatch.sh task` with `--report-file` (spec-reviewer sidecar)"; reviewer 6 = "`dispatch.sh review` (native review, no prompt sidecar)"; reviewer 7 = "`dispatch.sh adversarial` with `final-code-reviewer-focus.md`". Do not leave any "via codex task" / "codex native review" / "codex adversarial-review" / "prompt templates" dispatch phrasing.
+  - Note the new reality: the `code-quality-reviewer-prompt.md` and `final-code-reviewer-prompt.md` files are **deleted** (Tasks 8/10) — do NOT reference them anywhere. This SKILL.md must itself carry the code-quality reviewer's prose-interpretation + severity calibration and the final adversarial reviewer's verdict parsing (the guidance that previously lived in those files). The final adversarial reviewer dispatch uses `final-code-reviewer-focus.md`.
+  - **Replacement terminology when rewriting the table / diagram / example workflow** (use exactly these role names — no reviewer numbers — so the file is internally consistent): spec-compliance reviewer = "`dispatch.sh task` with `--report-file` (spec-reviewer sidecar)"; code-quality reviewer = "`dispatch.sh review` (native review, no prompt sidecar)"; final adversarial reviewer = "`dispatch.sh adversarial` with `final-code-reviewer-focus.md`". Do not leave any "via codex task" / "codex native review" / "codex adversarial-review" / "prompt templates" dispatch phrasing, and do not leave any "reviewer 5/6/7" numbering.
 
-- [ ] **Step 1: Add the spec-compliance dispatch with the report-file step.** Where the SKILL describes dispatching reviewer 5 (spec compliance), insert:
+- [ ] **Step 1: Add the spec-compliance dispatch with the report-file step.** Where the SKILL describes dispatching the spec-compliance reviewer, insert:
 
 ````markdown
 **Dispatch mechanism (shared `dispatch.sh`, run from repo root).** Each reviewer is a
 separate `run_in_background: true` Bash call (its own shell); every dispatch block below
 references `${CLAUDE_PLUGIN_ROOT}` directly (the skill is assumed to be installed as a plugin).
 
-Spec compliance reviewer (reviewer 5). Procedure:
+Spec-compliance reviewer. Procedure:
 
 1. Run `mktemp` and **note the concrete printed path**
    (one per reviewer — never reuse or share a path across concurrent reviewers).
@@ -1279,13 +1280,13 @@ metacharacters stays data-safe — especially the runtime `mktemp` report path.)
 reviewer correctness does not depend on when step 4 runs.
 ````
 
-- [ ] **Step 2: Replace reviewer 6 (code quality) dispatch** with (direct call). Fill `<TASK_BASE>` with the SHA captured before this task's implementer started; substitute the value, do not run verbatim:
+- [ ] **Step 2: Replace the code-quality reviewer dispatch** with (direct call). Fill `<TASK_BASE>` with the SHA captured before this task's implementer started; substitute the value, do not run verbatim:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" review --base <TASK_BASE>
 ```
 
-- [ ] **Step 3: Replace reviewer 7 (final) dispatch** with (direct call). Fill `<IMPL_BASE>` with the SHA captured before the first implementer started; substitute the value, do not run verbatim:
+- [ ] **Step 3: Replace the final adversarial reviewer dispatch** with (direct call). Fill `<IMPL_BASE>` with the SHA captured before the first implementer started; substitute the value, do not run verbatim:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
@@ -1301,7 +1302,7 @@ Run:
 F=skills/subagent-driven-development/SKILL.md
 grep -c 'dispatch.sh' "$F"            # expect >= 1
 grep -c -- '--report-file' "$F"       # expect >= 1
-grep -nE 'CODEX_COMPANION|<<.?PROMPT|node <companion>|task --prompt-file|Reviewer Dispatch Mechanisms|Prompt Templates|via codex |codex native|codex adversarial|codex task|prompt templates are canonical|See the prompt templates|code-quality-reviewer-prompt|final-code-reviewer-prompt' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nEi 'CODEX_COMPANION|<<.?PROMPT|node <companion>|task --prompt-file|Reviewer Dispatch Mechanisms|Prompt Templates|via codex |codex native|codex adversarial|codex task|prompt templates are canonical|See the prompt templates|code-quality-reviewer-prompt|final-code-reviewer-prompt|reviewer [567]' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `--report-file` count ≥ 1; `CLEAN`. (Note: `implementer-prompt.md` still uses its own heredoc — that file is NOT edited; the grep targets SKILL.md only. The grep targets stale dispatch *mechanics/phrasing* AND any reference to the now-deleted `code-quality-reviewer-prompt.md` / `final-code-reviewer-prompt.md` files — the SKILL must not point at deleted files.)

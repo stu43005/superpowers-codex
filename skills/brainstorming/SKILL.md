@@ -26,7 +26,7 @@ You MUST create a task for each of these items and complete them in order:
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to their complexity, get user approval after each section
 5. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch Reviewer 1 (`task`, structural completeness) and Reviewer 2 (`adversarial-review`, design soundness) in parallel each round; fix ALL findings; loop until Reviewer 1 returns `Status: OKAY` AND Reviewer 2 returns `Verdict: approve` in the same round (see below — do NOT do this inline)
+6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch Reviewer 1 (`dispatch.sh task`, structural completeness) and Reviewer 2 (`dispatch.sh adversarial`, design soundness) in parallel each round; fix ALL findings; loop until Reviewer 1 returns `Status: OKAY` AND Reviewer 2 returns `Verdict: approve` in the same round (see below — do NOT do this inline)
 7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until both pass, then wait for explicit approval
 8. **Transition to implementation** — invoke writing-plans skill to create implementation plan (this is the ONLY next step; never jump straight to code)
 
@@ -40,7 +40,7 @@ digraph brainstorming {
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
     "Write design doc\n+ capture SPEC_BASE" [shape=box];
-    "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)" [shape=box];
+    "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)" [shape=box];
     "User reviews spec?" [shape=diamond];
     "Invoke writing-plans skill" [shape=doublecircle];
 
@@ -50,10 +50,10 @@ digraph brainstorming {
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
     "User approves design?" -> "Write design doc\n+ capture SPEC_BASE" [label="yes"];
-    "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)";
-    "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)" -> "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)" [label="any finding — fix all, re-dispatch both"];
-    "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)" -> "User reviews spec?" [label="both OKAY + approve"];
-    "User reviews spec?" -> "Spec review loop\n(Reviewer 1: task + Reviewer 2: adversarial-review\nboth parallel, both must pass)" [label="changes requested — re-run dual loop"];
+    "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)";
+    "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)" -> "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)" [label="any finding — fix all, re-dispatch both"];
+    "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)" -> "User reviews spec?" [label="both OKAY + approve"];
+    "User reviews spec?" -> "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)" [label="changes requested — re-run dual loop"];
     "User reviews spec?" -> "Invoke writing-plans skill" [label="explicitly approved"];
 }
 ```
@@ -120,17 +120,38 @@ SPEC_BASE="$(git rev-parse HEAD)"
 
 Store this value — it is the parent commit of the spec commit and must not change across rounds.
 
-**Reviewer 1 — Structural Completeness** (`task`, read-only):
-Uses `spec-document-reviewer-prompt.md`. Checks: placeholder scan, internal consistency, scope check, ambiguity check, YAGNI. Returns `Status: OKAY` or `Status: Issues Found`.
+**Reviewer 1 — Structural Completeness** (`dispatch.sh task`, read-only):
+Checks: placeholder scan, internal consistency, scope check, ambiguity check, YAGNI. Returns `Status: OKAY` or `Status: Issues Found`.
 
-**Reviewer 2 — Design Soundness** (`adversarial-review`):
-Uses `adversarial-spec-review-prompt.md`. Challenges design-level soundness: failure paths / partial failure / rollback, concurrency and ordering assumptions, boundary and empty states, compatibility / migration risk, unstated critical assumptions. Returns `Verdict: approve` or `Verdict: needs-attention`.
+**Reviewer 2 — Design Soundness** (`dispatch.sh adversarial`):
+Challenges design-level soundness: failure paths / partial failure / rollback, concurrency and ordering assumptions, boundary and empty states, compatibility / migration risk, unstated critical assumptions. Returns `Verdict: approve` or `Verdict: needs-attention`.
 
 **Parallel dispatch per round:**
 
-Both reviewers are launched simultaneously each round as separate background Bash calls (`run_in_background: true`), each running `node <companion> <subcommand> ...`. When a backgrounded dispatch finishes, Claude Code notifies you automatically — do NOT poll BashOutput in a loop or otherwise wait for the output to have a value. Wait for each reviewer's completion notification, then read that task's output once. Collect both outputs before evaluating results.
+Both reviewers are launched simultaneously each round as separate background Bash calls (`run_in_background: true`). When a backgrounded dispatch finishes, Claude Code notifies you automatically — do NOT poll BashOutput in a loop or otherwise wait for the output to have a value. Wait for each reviewer's completion notification, then read that task's output once. Collect both outputs before evaluating results.
 
-The invocation blocks in the prompt templates are canonical and self-contained: each one already resolves the companion path (with a marketplace fallback) and fails loudly if it is absent. Run them as written — do NOT pre-probe the companion with `--help`, `ls`/`find`, or source greps before dispatching. In particular, `task --prompt-file <path>` is supported even though `--help` does not list it (verified in the companion source); treat it as established, not a guess. Here `<path>` is the temp file each template writes its reviewer prompt to — NEVER the template `.md` itself — and `task` takes no `--wait` flag (the spec path is substituted into that temp file, not passed inline).
+**Dispatch mechanism (shared `dispatch.sh`, run from repo root).** `${CLAUDE_PLUGIN_ROOT}`
+is inline-expanded inside this SKILL.md at load time; the spec path is repo-root-relative.
+
+Each reviewer is a **separate** `run_in_background: true` Bash call (its own shell), so each
+block invokes `dispatch.sh` directly via `${CLAUDE_PLUGIN_ROOT}` (the skill is assumed to be
+installed as a plugin).
+
+Reviewer 1 — Structural Completeness:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
+  --prompt "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/spec-document-reviewer-prompt.md" \
+  --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
+```
+
+Reviewer 2 — Design Soundness. Fill `<SPEC_BASE>` with the SHA captured before the spec commit; substitute the value, do not run verbatim:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
+  --base <SPEC_BASE> \
+  --focus "${CLAUDE_PLUGIN_ROOT}/skills/brainstorming/adversarial-spec-review-focus.md"
+```
 
 **Round loop — zero tolerance:**
 

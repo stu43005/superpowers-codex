@@ -86,6 +86,22 @@ check_companion_version() {
   esac
 }
 
+# Run the codex companion, dropping its '[codex] ' progress lines (the companion writes those
+# to stderr; see tracked-jobs.mjs) — the agent only needs the reviewer result, not the noise.
+# stdout (the reviewer result) is left untouched and streamed; genuine non-'[codex]' stderr is
+# preserved; the companion's own exit code is propagated (NOT grep's).
+run_companion() {
+  local rc
+  set +e
+  # fd3 = caller stdout. The companion's stdout -> fd3 (untouched); its stderr -> the pipe ->
+  # grep -> stderr. grep exiting 1 (everything filtered) must not mask the companion's status,
+  # so read it from PIPESTATUS[0].
+  { "$@" 2>&1 1>&3 | grep -v '^\[codex\] ' >&2; } 3>&1
+  rc=${PIPESTATUS[0]}
+  set -e
+  return "$rc"
+}
+
 is_file_path_key() { case "$1" in *_FILE_PATH) return 0 ;; *) return 1 ;; esac; }
 
 # --- data-safe literal substitution: [KEY] -> VALUE (no regex/sed metachar hazard) ---
@@ -164,7 +180,7 @@ cmd_task() {
   local companion; companion="$(require_companion)"
   check_companion_version "$companion"
   # Runs in the foreground (no '&', no detach flag) so temp files outlive the reviewer.
-  node "$companion" task --prompt-file "$work"
+  run_companion node "$companion" task --prompt-file "$work"
 }
 
 cmd_review() {
@@ -182,7 +198,7 @@ cmd_review() {
     printf 'node %q review --base %q --wait\n' "${c:-<companion-unresolved>}" "$base"; return 0
   fi
   local companion; companion="$(require_companion)"; check_companion_version "$companion"
-  node "$companion" review --base "$base" --wait
+  run_companion node "$companion" review --base "$base" --wait
 }
 
 cmd_adversarial() {
@@ -205,7 +221,7 @@ cmd_adversarial() {
     printf 'node %q adversarial-review --base %q --wait %q\n' "${c:-<companion-unresolved>}" "$base" "$focus_text"; return 0
   fi
   local companion; companion="$(require_companion)"; check_companion_version "$companion"
-  node "$companion" adversarial-review --base "$base" --wait "$focus_text"
+  run_companion node "$companion" adversarial-review --base "$base" --wait "$focus_text"
 }
 
 main() {

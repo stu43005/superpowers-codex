@@ -71,6 +71,36 @@ OUT="$(DISPATCH_COMPANION="$NEWC" "$D" task --prompt "$P" --dry-run --set PLAN_F
 # 12. dispatch.sh never backgrounds the companion (check the node invocation lines only)
 grep -Eq 'node .*--background|node .*&[[:space:]]*$' "$D" && bad "no background companion call" "found background node call" || ok "no background companion call"
 
+# 13. companion '[codex] ' progress noise (written to stderr) is filtered out, while the
+#     reviewer result on stdout survives and a zero exit code is preserved.
+FC="$tmp/codex/2.0.0/scripts/codex-companion.mjs"; mkdir -p "$(dirname "$FC")"
+printf '%s\n' 'process.stderr.write("[codex] starting noise\n");' \
+              'process.stderr.write("[codex] more progress noise\n");' \
+              'process.stdout.write("Status: OKAY\n");' > "$FC"
+OUT="$(DISPATCH_COMPANION="$FC" "$D" task --prompt "$P" --set PLAN_FILE_PATH="$P" --set TASK_ID=t 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -qF 'Status: OKAY' && ! printf '%s' "$OUT" | grep -q '\[codex\]'; then
+  ok "codex progress noise filtered, result + zero rc preserved"
+else bad "codex progress noise filtered" "rc=$RC out=$OUT"; fi
+
+# 14. a NON-zero companion exit code is preserved through the filter (stdout still kept).
+FCE="$tmp/codex/2.1.0/scripts/codex-companion.mjs"; mkdir -p "$(dirname "$FCE")"
+printf '%s\n' 'process.stderr.write("[codex] noise before failure\n");' \
+              'process.stdout.write("partial result\n");' \
+              'process.exitCode = 3;' > "$FCE"
+OUT="$(DISPATCH_COMPANION="$FCE" "$D" review --base HEAD 2>&1)"; RC=$?
+if [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -qF 'partial result' && ! printf '%s' "$OUT" | grep -q '\[codex\]'; then
+  ok "non-zero companion exit code preserved through filter"
+else bad "non-zero companion exit code preserved" "rc=$RC out=$OUT"; fi
+
+# 15. genuine stderr that is NOT a [codex] progress line is preserved (not swallowed).
+FCS="$tmp/codex/2.2.0/scripts/codex-companion.mjs"; mkdir -p "$(dirname "$FCS")"
+printf '%s\n' 'process.stderr.write("[codex] progress noise\n");' \
+              'process.stderr.write("real error: boom\n");' > "$FCS"
+OUT="$(DISPATCH_COMPANION="$FCS" "$D" review --base HEAD 2>&1)"; RC=$?
+if printf '%s' "$OUT" | grep -qF 'real error: boom' && ! printf '%s' "$OUT" | grep -q '\[codex\]'; then
+  ok "non-[codex] stderr preserved while progress noise filtered"
+else bad "non-[codex] stderr preserved" "rc=$RC out=$OUT"; fi
+
 rm -rf "$tmp"
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

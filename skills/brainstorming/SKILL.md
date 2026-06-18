@@ -26,7 +26,7 @@ You MUST create a task for each of these items and complete them in order:
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to their complexity, get user approval after each section
 5. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch Reviewer 1 (`dispatch.sh task`, structural completeness) and Reviewer 2 (`dispatch.sh adversarial`, design soundness) in parallel each round; fix ALL findings; loop until Reviewer 1 returns `Status: OKAY` AND Reviewer 2 returns `Verdict: approve` in the same round (see below — do NOT do this inline)
+6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch the structural-completeness reviewer (`dispatch.sh task`, spec-document-reviewer sidecar) and the design-soundness reviewer (`dispatch.sh adversarial`, `adversarial-spec-review-focus.md`) in parallel each round; fix ALL findings; loop until the structural-completeness reviewer returns `Status: OKAY` AND the design-soundness reviewer returns `Verdict: approve` in the same round (see below — do NOT do this inline)
 7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until both pass, then wait for explicit approval
 8. **Transition to implementation** — invoke writing-plans skill to create implementation plan (this is the ONLY next step; never jump straight to code)
 
@@ -40,7 +40,7 @@ digraph brainstorming {
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
     "Write design doc\n+ capture SPEC_BASE" [shape=box];
-    "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)" [shape=box];
+    "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)" [shape=box];
     "User reviews spec?" [shape=diamond];
     "Invoke writing-plans skill" [shape=doublecircle];
 
@@ -50,10 +50,10 @@ digraph brainstorming {
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
     "User approves design?" -> "Write design doc\n+ capture SPEC_BASE" [label="yes"];
-    "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)";
-    "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)" -> "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)" [label="any finding — fix all, re-dispatch both"];
-    "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)" -> "User reviews spec?" [label="both OKAY + approve"];
-    "User reviews spec?" -> "Spec review loop\n(Reviewer 1: dispatch.sh task + Reviewer 2: dispatch.sh adversarial\nboth parallel, both must pass)" [label="changes requested — re-run dual loop"];
+    "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)";
+    "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)" -> "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)" [label="any finding — fix all, re-dispatch both"];
+    "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)" -> "User reviews spec?" [label="both OKAY + approve"];
+    "User reviews spec?" -> "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)" [label="changes requested — re-run dual loop"];
     "User reviews spec?" -> "Invoke writing-plans skill" [label="explicitly approved"];
 }
 ```
@@ -120,10 +120,10 @@ SPEC_BASE="$(git rev-parse HEAD)"
 
 Store this value — it is the parent commit of the spec commit and must not change across rounds.
 
-**Reviewer 1 — Structural Completeness** (`dispatch.sh task`, read-only):
+**Structural Completeness reviewer** (`dispatch.sh task`, read-only):
 Checks: placeholder scan, internal consistency, scope check, ambiguity check, YAGNI. Returns `Status: OKAY` or `Status: Issues Found`.
 
-**Reviewer 2 — Design Soundness** (`dispatch.sh adversarial`):
+**Design Soundness reviewer** (`dispatch.sh adversarial`):
 Challenges design-level soundness: failure paths / partial failure / rollback, concurrency and ordering assumptions, boundary and empty states, compatibility / migration risk, unstated critical assumptions. Returns `Verdict: approve` or `Verdict: needs-attention`.
 
 **Parallel dispatch per round:**
@@ -137,7 +137,7 @@ Each reviewer is a **separate** `run_in_background: true` Bash call (its own she
 block invokes `dispatch.sh` directly via `${CLAUDE_PLUGIN_ROOT}` (the skill is assumed to be
 installed as a plugin).
 
-Reviewer 1 — Structural Completeness:
+Structural Completeness reviewer:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
@@ -145,7 +145,7 @@ Reviewer 1 — Structural Completeness:
   --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
 ```
 
-Reviewer 2 — Design Soundness. Fill `<SPEC_BASE>` with the SHA captured before the spec commit; substitute the value, do not run verbatim:
+Design Soundness reviewer. Fill `<SPEC_BASE>` with the SHA captured before the spec commit; substitute the value, do not run verbatim:
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
@@ -157,17 +157,17 @@ Reviewer 2 — Design Soundness. Fill `<SPEC_BASE>` with the SHA captured before
 
 ```
 while true:
-  [launch Reviewer 1 and Reviewer 2 in parallel, wait for both]
-  if reviewer1 == "Status: OKAY" AND reviewer2 == "Verdict: approve":
+  [launch the structural-completeness and design-soundness reviewers in parallel, wait for both]
+  if structural_completeness == "Status: OKAY" AND design_soundness == "Verdict: approve":
     break  # both passed — exit loop
-  fix_all_findings(reviewer1.issues + reviewer2.findings)  # every finding — none skipped
+  fix_all_findings(structural_completeness.issues + design_soundness.findings)  # every finding — none skipped
   # spec was edited — re-dispatch BOTH reviewers next round
   # (both re-run together whenever any spec edit is made)
 ```
 
 Any finding from either reviewer blocks the round. Fix everything before re-dispatching.
 
-**Git commit discipline:** Before the first review round, commit the first version of the spec. After each round's fixes, commit again with a message noting the round (e.g. `docs(spec): fix review round 2 - resolve ambiguity in auth flow`). If the spec file is gitignored, skip the commit — NEVER use `git add -f` to force-add an ignored file. If the spec is gitignored, Reviewer 2 cannot diff the spec commit and must be skipped for that round (note the skip in output).
+**Git commit discipline:** Before the first review round, commit the first version of the spec. After each round's fixes, commit again with a message noting the round (e.g. `docs(spec): fix review round 2 - resolve ambiguity in auth flow`). If the spec file is gitignored, skip the commit — NEVER use `git add -f` to force-add an ignored file. If the spec is gitignored, the design-soundness reviewer cannot diff the spec commit and must be skipped for that round (note the skip in output).
 
 **User Review Gate:**
 
@@ -178,7 +178,7 @@ After the dual review loop reports both OKAY and approve, ask the user to review
 Wait for the user's response. If they request changes:
 
 1. Make the requested changes.
-2. Re-run the dual spec review loop (both Reviewer 1 and Reviewer 2 in parallel, until both pass). If the change affects global consistency or scope, the full spec is re-reviewed; if it only affects a single section, the review may focus there — but both reviewers still re-run.
+2. Re-run the dual spec review loop (both the structural-completeness and design-soundness reviewers in parallel, until both pass). If the change affects global consistency or scope, the full spec is re-reviewed; if it only affects a single section, the review may focus there — but both reviewers still re-run.
 3. Commit the fixes (with a round-labeled commit message).
 4. Report the changes back to the user and wait for their next reply.
 

@@ -131,8 +131,8 @@ You **must** have a written, reviewed, user-approved plan before a single line o
 
 After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch reviewers via `dispatch.sh` (see **Dispatch mechanism** below). There are two reviewer roles:
 
-- **Per-Task reviewer (reviewer 3):** reviews one Task at a time using `plan-document-reviewer-prompt.md`, dispatched via `dispatch.sh` (see **Dispatch mechanism**) (read-only).
-- **Coverage Verifier (reviewer 4):** reviews the whole plan against the whole spec using `coverage-verifier-prompt.md`, dispatched via `dispatch.sh` (see **Dispatch mechanism**) (read-only).
+- **Per-Task reviewer:** reviews one Task at a time using `plan-document-reviewer-prompt.md`, dispatched via `dispatch.sh` (see **Dispatch mechanism**) (read-only).
+- **Coverage Verifier:** reviews the whole plan against the whole spec using `coverage-verifier-prompt.md`, dispatched via `dispatch.sh` (see **Dispatch mechanism**) (read-only).
 
 If the superpowers-codex plugin is not installed, stop and ask the user to run `/plugin install`. Do not fall back to inline self-review or any other substitute.
 
@@ -209,7 +209,8 @@ coverage_active = True
 while True:
     # Dispatch in parallel
     task_results = parallel(
-        [dispatch_task_reviewer(task, sibling_tasks=all_other_tasks) for task in active_tasks],
+        # reviewer reads the plan file itself for sibling-Task context (no Task text pasted)
+        [dispatch_task_reviewer(task) for task in active_tasks],
         dispatch_coverage_verifier(spec_file, plan_file) if coverage_active else [],
     )
 

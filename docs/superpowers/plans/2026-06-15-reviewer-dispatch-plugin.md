@@ -1141,7 +1141,7 @@ Coverage Verifier — once per round while active:
 - [ ] **Step 2: Remove the stale paste-based dispatch prose** in the existing "### Per-Task Review", "### Coverage Verifier", and "### The Round Loop" subsections, and point them at the invocations from Step 1. Make these exact edits:
   - In **### Per-Task Review**: delete the sentence "Each reviewer call receives the full text of the single Task under review plus the full text of all sibling Tasks as context." and replace it with: "Each reviewer call passes `--set TASK_ID=\"Task N\"`; the reviewer reads the plan file, locates that Task, and treats every other Task in the file as sibling context — no Task text is pasted." Replace the phrase "dispatch a per-Task reviewer using the template in `./plan-document-reviewer-prompt.md`" with "dispatch a per-Task reviewer using the Per-Task invocation in **Dispatch mechanism** above".
   - In **### Coverage Verifier**: replace "using the template in `./coverage-verifier-prompt.md`" with "using the Coverage Verifier invocation in **Dispatch mechanism** above".
-  - In **### The Round Loop**: the `run_in_background`/parallel behavior is unchanged; only replace any remaining wording that implies pasting templates with a pointer to the **Dispatch mechanism** invocations.
+  - In **### The Round Loop**: the `run_in_background`/parallel behavior is unchanged; only replace any remaining wording that implies pasting templates with a pointer to the **Dispatch mechanism** invocations. **Also update the round-loop pseudocode**: any `dispatch_task_reviewer(task, sibling_tasks=all_other_tasks)` (or similar `sibling_tasks=`/`all_other_tasks` argument) must drop the pasted-sibling-text argument — the reviewer is dispatched with only `--set TASK_ID` and reads the plan file (treating sibling Tasks as context) itself. Reword to e.g. `dispatch_task_reviewer(task)` with a comment that the reviewer reads the plan file for sibling context.
   - In the **"Plan Review Loop"** intro / reviewer-role bullets: replace every statement that a reviewer is "dispatched via `node <companion> task`" (or similar embedded-companion wording) with "dispatched via `dispatch.sh` (see **Dispatch mechanism**)". Also **drop the "(reviewer 3)" / "(reviewer 4)" numbering** from those bullets — use the role names only ("per-Task reviewer" / "Coverage Verifier"), never a reviewer number.
   - In **"Unified Re-run Policy" principle 2**: replace "the reviewer is given the full text of all sibling Tasks as context" with "the reviewer reads the plan file and treats all other Tasks as sibling context (no Task text is pasted)".
 
@@ -1152,7 +1152,7 @@ Run:
 ```bash
 F=skills/writing-plans/SKILL.md
 grep -c 'dispatch.sh' "$F"   # expect >= 1
-grep -nEi 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|task --prompt-file|using the template|invocation blocks.*canonical|full text of (the single|all sibling)|reviewer [34]' "$F" && echo "LEFTOVER" || echo "CLEAN"
+grep -nEi 'CODEX_COMPANION|<<.?PROMPT|mktemp|node <companion>|task --prompt-file|using the template|invocation blocks.*canonical|full text of (the single|all sibling)|reviewer [34]|sibling_tasks=|all_other_tasks' "$F" && echo "LEFTOVER" || echo "CLEAN"
 ```
 
 Expected: non-zero `dispatch.sh` count; `CLEAN` (no stale bash, no embedded-companion dispatch, no paste-based prose anywhere in the file — including the "Plan Review Loop" intro and "Unified Re-run Policy"). The `--prompt` paths legitimately name the `*-prompt.md` files, so the grep deliberately targets only the stale *phrasing*, not those filenames.
@@ -1286,6 +1286,26 @@ reviewer correctness does not depend on when step 4 runs.
 "${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" review --base <TASK_BASE>
 ```
 
+  Because `code-quality-reviewer-prompt.md` is deleted, the SKILL must carry its interpretation guidance. Insert this verbatim next to the code-quality dispatch:
+
+````markdown
+**Interpreting the output (prose, not a `Verdict:` line):** the native `review` returns
+free-form prose, NOT a structured `Verdict:` line (that field exists only for the adversarial
+reviewer). The parent agent interprets it:
+
+- Any **blocking-severity** defect (a bug, a clear correctness issue, a quality problem that
+  would block a confident merge) → treat as **Issues Found**: extract file:line +
+  recommendation, dispatch the implementer to fix, then re-run the code-quality reviewer;
+  repeat until no blocking findings remain.
+- No significant issues (or only minor style notes) → treat as **OKAY**: pass the quality
+  gate and proceed.
+
+**Severity calibration:** "blocking" = what a senior engineer would require fixed before
+merge — bugs, data-loss risks, broken error handling, security issues, missing critical test
+coverage. Style preferences do not trigger a re-review loop. **Do not ask the user** — the
+loop runs automatically until the quality gate clears.
+````
+
 - [ ] **Step 3: Replace the final adversarial reviewer dispatch** with (direct call). Fill `<IMPL_BASE>` with the SHA captured before the first implementer started; substitute the value, do not run verbatim:
 
 ```bash
@@ -1293,6 +1313,19 @@ reviewer correctness does not depend on when step 4 runs.
   --base <IMPL_BASE> \
   --focus "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/final-code-reviewer-focus.md"
 ```
+
+  Because `final-code-reviewer-prompt.md` is deleted, the SKILL must carry its verdict-parsing guidance. Insert this verbatim next to the final adversarial dispatch:
+
+````markdown
+**Verdict parsing:** the adversarial reviewer emits a structured `Verdict:` line.
+
+- `Verdict: approve` → passes the final gate; proceed to `superpowers:finishing-a-development-branch`.
+- `Verdict: needs-attention` → collect every finding (file, line range, recommendation),
+  dispatch the implementer to fix all, then re-run from the start with the same `<IMPL_BASE>`;
+  repeat until `Verdict: approve`.
+
+**Zero tolerance; do not ask the user** — the loop runs automatically until the gate clears.
+````
 
 - [ ] **Step 4: Verify**
 

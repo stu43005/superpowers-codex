@@ -5,7 +5,7 @@ description: Use when executing implementation plans with independent tasks in t
 
 # Subagent-Driven Development
 
-Execute plan by dispatching fresh subagent per task, with two-stage review after each: spec compliance review first (reviewer 5, via codex `task`), then code quality review (reviewer 6, via codex native `review`). After all tasks pass, a single final adversarial review (reviewer 7, via codex `adversarial-review`) gates the merge.
+Execute plan by dispatching fresh subagent per task, with two-stage review after each: the spec-compliance reviewer first (`dispatch.sh task` with `--report-file`), then the code-quality reviewer (`dispatch.sh review`). After all tasks pass, a single final adversarial reviewer (`dispatch.sh adversarial`) gates the merge.
 
 **Why subagents:** You delegate tasks to specialized agents with isolated context. By precisely crafting their instructions and context, you ensure they stay focused and succeed at their task. They should never inherit your session's context or history — you construct exactly what they need. This also preserves your own context for coordination work.
 
@@ -42,10 +42,10 @@ digraph process {
         "Implementer subagent asks questions?" [shape=diamond];
         "Answer questions, provide context" [shape=box];
         "Implementer subagent implements, tests, commits, self-reviews" [shape=box];
-        "Dispatch spec reviewer via codex task (./spec-reviewer-prompt.md)" [shape=box];
+        "Dispatch spec-compliance reviewer (dispatch.sh task, --report-file)" [shape=box];
         "Status: OKAY?" [shape=diamond];
         "Implementer fixes spec gaps, re-commit" [shape=box];
-        "Dispatch code quality reviewer via codex review (./code-quality-reviewer-prompt.md)" [shape=box];
+        "Dispatch code-quality reviewer (dispatch.sh review)" [shape=box];
         "Prose: any blocking finding?" [shape=diamond];
         "Implementer fixes quality issues, re-commit" [shape=box];
         "Mark task complete in TodoWrite" [shape=box];
@@ -54,7 +54,7 @@ digraph process {
     "Capture IMPL_BASE (git rev-parse HEAD)" [shape=box];
     "Read plan, extract all tasks with full text, note context, create TodoWrite" [shape=box];
     "More tasks remain?" [shape=diamond];
-    "Dispatch final adversarial reviewer via codex adversarial-review (./final-code-reviewer-prompt.md)" [shape=box];
+    "Dispatch final adversarial reviewer (dispatch.sh adversarial, final-code-reviewer-focus.md)" [shape=box];
     "Verdict: approve?" [shape=diamond];
     "Implementer fixes adversarial findings, re-commit" [shape=box];
     "Use superpowers:finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
@@ -66,21 +66,21 @@ digraph process {
     "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
     "Answer questions, provide context" -> "Dispatch implementer subagent (./implementer-prompt.md)";
     "Implementer subagent asks questions?" -> "Implementer subagent implements, tests, commits, self-reviews" [label="no"];
-    "Implementer subagent implements, tests, commits, self-reviews" -> "Dispatch spec reviewer via codex task (./spec-reviewer-prompt.md)";
-    "Dispatch spec reviewer via codex task (./spec-reviewer-prompt.md)" -> "Status: OKAY?";
+    "Implementer subagent implements, tests, commits, self-reviews" -> "Dispatch spec-compliance reviewer (dispatch.sh task, --report-file)";
+    "Dispatch spec-compliance reviewer (dispatch.sh task, --report-file)" -> "Status: OKAY?";
     "Status: OKAY?" -> "Implementer fixes spec gaps, re-commit" [label="no"];
-    "Implementer fixes spec gaps, re-commit" -> "Dispatch spec reviewer via codex task (./spec-reviewer-prompt.md)" [label="re-review"];
-    "Status: OKAY?" -> "Dispatch code quality reviewer via codex review (./code-quality-reviewer-prompt.md)" [label="yes"];
-    "Dispatch code quality reviewer via codex review (./code-quality-reviewer-prompt.md)" -> "Prose: any blocking finding?";
+    "Implementer fixes spec gaps, re-commit" -> "Dispatch spec-compliance reviewer (dispatch.sh task, --report-file)" [label="re-review"];
+    "Status: OKAY?" -> "Dispatch code-quality reviewer (dispatch.sh review)" [label="yes"];
+    "Dispatch code-quality reviewer (dispatch.sh review)" -> "Prose: any blocking finding?";
     "Prose: any blocking finding?" -> "Implementer fixes quality issues, re-commit" [label="yes"];
-    "Implementer fixes quality issues, re-commit" -> "Dispatch code quality reviewer via codex review (./code-quality-reviewer-prompt.md)" [label="re-review"];
+    "Implementer fixes quality issues, re-commit" -> "Dispatch code-quality reviewer (dispatch.sh review)" [label="re-review"];
     "Prose: any blocking finding?" -> "Mark task complete in TodoWrite" [label="no"];
     "Mark task complete in TodoWrite" -> "More tasks remain?";
     "More tasks remain?" -> "Capture TASK_BASE (git rev-parse HEAD)" [label="yes"];
-    "More tasks remain?" -> "Dispatch final adversarial reviewer via codex adversarial-review (./final-code-reviewer-prompt.md)" [label="no"];
-    "Dispatch final adversarial reviewer via codex adversarial-review (./final-code-reviewer-prompt.md)" -> "Verdict: approve?";
+    "More tasks remain?" -> "Dispatch final adversarial reviewer (dispatch.sh adversarial, final-code-reviewer-focus.md)" [label="no"];
+    "Dispatch final adversarial reviewer (dispatch.sh adversarial, final-code-reviewer-focus.md)" -> "Verdict: approve?";
     "Verdict: approve?" -> "Implementer fixes adversarial findings, re-commit" [label="no (needs-attention)"];
-    "Implementer fixes adversarial findings, re-commit" -> "Dispatch final adversarial reviewer via codex adversarial-review (./final-code-reviewer-prompt.md)" [label="re-review"];
+    "Implementer fixes adversarial findings, re-commit" -> "Dispatch final adversarial reviewer (dispatch.sh adversarial, final-code-reviewer-focus.md)" [label="re-review"];
     "Verdict: approve?" -> "Use superpowers:finishing-a-development-branch" [label="yes"];
 }
 ```
@@ -89,22 +89,100 @@ digraph process {
 
 You must capture two SHAs at specific moments and keep them in your task-tracking state:
 
-- **`IMPL_BASE`** — run `git rev-parse HEAD` once, before any implementer starts. This is the merge point for reviewer 7's `adversarial-review --base`.
-- **`TASK_BASE`** — run `git rev-parse HEAD` immediately before dispatching each task's implementer. Reset for each task. This is the base for reviewer 5's `git diff <TASK_BASE>..HEAD` (which Codex runs itself) and for reviewer 6's `review --base <TASK_BASE>`.
+- **`IMPL_BASE`** — run `git rev-parse HEAD` once, before any implementer starts. This is the merge point for the final adversarial reviewer's `dispatch.sh adversarial --base`.
+- **`TASK_BASE`** — run `git rev-parse HEAD` immediately before dispatching each task's implementer. Reset for each task. This is the base for the spec-compliance reviewer's `git diff <TASK_BASE>..HEAD` (which Codex runs itself) and for the code-quality reviewer's `dispatch.sh review --base <TASK_BASE>`.
 
 Both SHAs must be direct ancestors of HEAD at the time their respective reviewer runs, so capture them at the right moment — not after the fact.
 
-## Reviewer Dispatch Mechanisms
+## Reviewer Dispatch
 
-All three reviewers run via the codex companion (`codex-companion.mjs`). See the prompt templates for full dispatch commands including the companion path-resolution block. Those invocation blocks are canonical and self-contained: each resolves the companion path (with a marketplace fallback) and fails loudly if it is absent. Run them as written — do NOT pre-probe the companion with `--help`, `ls`/`find`, or source greps before dispatching. In particular, `task --prompt-file <path>` is supported even though `--help` does not list it (verified in the companion source); treat it as established, not a guess.
+All reviewers go through the plugin's shared `dispatch.sh`, **run from the repository root**.
+Run the dispatch blocks as written — do NOT pre-probe `dispatch.sh` with `--help`, `ls`/`find`,
+or source greps before dispatching.
 
-| Reviewer | File | Mechanism | Verdict source |
-|---|---|---|---|
-| 5 — Spec Compliance | `./spec-reviewer-prompt.md` | `codex task` (read-only, custom prompt) | Final `Status: OKAY` or `Status: Issues Found` line in Codex output |
-| 6 — Code Quality | `./code-quality-reviewer-prompt.md` | `codex review --base <TASK_BASE>` (native, no custom prompt) | Free-form prose — you interpret: blocking finding -> Issues Found; no blocking -> OKAY |
-| 7 — Final Adversarial | `./final-code-reviewer-prompt.md` | `codex adversarial-review --base <IMPL_BASE>` + focus text | Structured `Verdict:` line: `approve` -> pass; `needs-attention` -> fix and re-run |
+### Spec-compliance reviewer
 
-**Reviewer 6 note:** The native `review` command does NOT emit a `Verdict:` line or `approve`/`needs-attention` output. Do not attempt to parse one. You read the prose and decide whether any blocking-severity finding exists.
+**Dispatch mechanism (shared `dispatch.sh`, run from repo root).** Each reviewer is a
+separate `run_in_background: true` Bash call (its own shell); every dispatch block below
+references `${CLAUDE_PLUGIN_ROOT}` directly (the skill is assumed to be installed as a plugin).
+
+Spec-compliance reviewer. Procedure:
+
+1. Run `mktemp` and **note the concrete printed path**
+   (one per reviewer — never reuse or share a path across concurrent reviewers).
+2. **Write the implementer subagent's returned report verbatim into that concrete path using
+   the Write tool** (do not paste the report into the dispatch command).
+3. Dispatch — **fill in every run-specific value** in the command below; substitute the
+   actual values, do not run it verbatim:
+   - the report-file path → `<REPORT_FILE>` (the mktemp path from step 1);
+   - the plan file path → replace `docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md` with the real plan path;
+   - the task id → replace `--set TASK_ID="Task N"` with the actual Task heading;
+   - the task base SHA → `<TASK_BASE>` (captured before this task's implementer started).
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
+  --prompt "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/spec-reviewer-prompt.md" \
+  --report-file "<REPORT_FILE>" \
+  --set "PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md" \
+  --set "TASK_ID=Task N" \
+  --set "TASK_BASE=<TASK_BASE>"
+```
+
+(The fill-in placeholders are **quoted** so a substituted value containing whitespace or shell
+metacharacters stays data-safe — especially the runtime `mktemp` report path.)
+
+4. After this background dispatch's **completion notification**, delete the source file:
+   `rm -f "<REPORT_FILE>"` (the same concrete path from step 1).
+
+`dispatch.sh` copies the report into its own private temp and injects that private path, so
+reviewer correctness does not depend on when step 4 runs.
+
+The spec-compliance reviewer's final output line is `Status: OKAY` or `Status: Issues Found`.
+
+### Code-quality reviewer
+
+Direct call. Fill `<TASK_BASE>` with the SHA captured before this task's implementer started;
+substitute the value, do not run verbatim:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" review --base <TASK_BASE>
+```
+
+**Interpreting the output (prose, not a `Verdict:` line):** the native `review` returns
+free-form prose, NOT a structured `Verdict:` line (that field exists only for the adversarial
+reviewer). The parent agent interprets it:
+
+- Any **blocking-severity** defect (a bug, a clear correctness issue, a quality problem that
+  would block a confident merge) → treat as **Issues Found**: extract file:line +
+  recommendation, dispatch the implementer to fix, then re-run the code-quality reviewer;
+  repeat until no blocking findings remain.
+- No significant issues (or only minor style notes) → treat as **OKAY**: pass the quality
+  gate and proceed.
+
+**Severity calibration:** "blocking" = what a senior engineer would require fixed before
+merge — bugs, data-loss risks, broken error handling, security issues, missing critical test
+coverage. Style preferences do not trigger a re-review loop. **Do not ask the user** — the
+loop runs automatically until the quality gate clears.
+
+### Final adversarial reviewer
+
+Direct call. Fill `<IMPL_BASE>` with the SHA captured before the first implementer started;
+substitute the value, do not run verbatim:
+
+```bash
+"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" adversarial \
+  --base <IMPL_BASE> \
+  --focus "${CLAUDE_PLUGIN_ROOT}/skills/subagent-driven-development/final-code-reviewer-focus.md"
+```
+
+**Verdict parsing:** the adversarial reviewer emits a structured `Verdict:` line.
+
+- `Verdict: approve` → passes the final gate; proceed to `superpowers:finishing-a-development-branch`.
+- `Verdict: needs-attention` → collect every finding (file, line range, recommendation),
+  dispatch the implementer to fix all, then re-run from the start with the same `<IMPL_BASE>`;
+  repeat until `Verdict: approve`.
+
+**Zero tolerance; do not ask the user** — the loop runs automatically until the gate clears.
 
 ## Model Selection
 
@@ -140,12 +218,13 @@ Implementer subagents report one of four statuses. Handle each appropriately:
 
 **Never** ignore an escalation or force the same model to retry without changes. If the implementer said it's stuck, something needs to change.
 
-## Prompt Templates
+## Sidecar files
 
-- `./implementer-prompt.md` — Dispatch implementer subagent (unchanged)
-- `./spec-reviewer-prompt.md` — Reviewer 5: spec compliance via codex `task` (read-only); parses `Status: OKAY | Issues Found`
-- `./code-quality-reviewer-prompt.md` — Reviewer 6: code quality via codex native `review --base <TASK_BASE>`; parent interprets prose
-- `./final-code-reviewer-prompt.md` — Reviewer 7: final adversarial gate via codex `adversarial-review --base <IMPL_BASE>`; reads `Verdict: approve | needs-attention`
+- `./implementer-prompt.md` — implementer subagent prompt (you fill and dispatch it, unchanged)
+- `./spec-reviewer-prompt.md` — spec-compliance reviewer prompt, dispatched via `dispatch.sh task --report-file`; parses `Status: OKAY | Issues Found`
+- `./final-code-reviewer-focus.md` — focus text for the final adversarial reviewer (`dispatch.sh adversarial --focus`); reads `Verdict: approve | needs-attention`
+
+The code-quality reviewer uses the native `dispatch.sh review` and has no prompt sidecar.
 
 ## Example Workflow
 
@@ -173,10 +252,10 @@ Implementer: "Got it. Implementing now..."
   - Self-review: Found I missed --force flag, added it
   - Committed
 
-[Dispatch spec compliance reviewer via codex task (TASK_BASE=abc1234)]
+[Dispatch spec-compliance reviewer: dispatch.sh task --report-file (TASK_BASE=abc1234)]
 Spec reviewer: Status: OKAY
 
-[Dispatch code quality reviewer via codex review --base abc1234]
+[Dispatch code-quality reviewer: dispatch.sh review --base abc1234]
 Code reviewer prose: Clean implementation. No blocking issues found.
 [No blocking findings -> quality gate passes]
 
@@ -194,7 +273,7 @@ Implementer:
   - Self-review: All good
   - Committed
 
-[Dispatch spec compliance reviewer via codex task (TASK_BASE=def5678)]
+[Dispatch spec-compliance reviewer: dispatch.sh task --report-file (TASK_BASE=def5678)]
 Spec reviewer: Status: Issues Found
   - src/recovery.ts:47 — Missing progress reporting (spec says "report every 100 items")
     Fix: [concrete patch provided]
@@ -206,7 +285,7 @@ Spec reviewer: Status: Issues Found
 [Spec reviewer reviews again]
 Spec reviewer: Status: OKAY
 
-[Dispatch code quality reviewer via codex review --base def5678]
+[Dispatch code-quality reviewer: dispatch.sh review --base def5678]
 Code reviewer prose: src/recovery.ts:47 uses magic number 100 — should be a named constant.
 [Blocking finding: dispatch implementer to fix]
 
@@ -221,7 +300,7 @@ Code reviewer prose: Clean. No issues.
 ...
 
 [After all tasks complete]
-[Dispatch final adversarial reviewer via codex adversarial-review --base abc1234]
+[Dispatch final adversarial reviewer: dispatch.sh adversarial --base abc1234]
 Final reviewer: Verdict: approve
 
 Done — proceed to superpowers:finishing-a-development-branch
@@ -243,8 +322,8 @@ Done — proceed to superpowers:finishing-a-development-branch
 
 **Quality gates:**
 - Self-review catches issues before handoff
-- Two-stage review: spec compliance (codex task), then code quality (codex native review)
-- Final adversarial gate (codex adversarial-review) catches cross-task integration problems
+- Two-stage review: spec compliance (`dispatch.sh task`), then code quality (`dispatch.sh review`)
+- Final adversarial gate (`dispatch.sh adversarial`) catches cross-task integration problems
 - Review loops ensure fixes actually work
 - Spec compliance prevents over/under-building
 - Code quality ensures implementation is well-built
@@ -272,8 +351,8 @@ Done — proceed to superpowers:finishing-a-development-branch
 - Move to next task while either review has open issues
 - **Forget to capture `TASK_BASE` before dispatching each task's implementer** (base SHA will be wrong)
 - **Forget to capture `IMPL_BASE` before the first implementer starts** (final reviewer diff will be wrong)
-- **Parse a `Verdict:` line from reviewer 6 (native review)** — it does not emit one; interpret the prose instead
-- Fall back to inline self-review if codex companion is not found — stop and prompt the user to run `/codex:setup`
+- **Parse a `Verdict:` line from the code-quality reviewer (native review)** — it does not emit one; interpret the prose instead
+- Fall back to inline self-review if `dispatch.sh` is not found — the superpowers-codex plugin is not installed; stop and prompt the user to install it
 
 **If subagent asks questions:**
 - Answer clearly and completely

@@ -245,7 +245,7 @@ After all active Per-Task reviewers and the Coverage Verifier report `Status: OK
 If the user requests any changes:
 
 1. Make the requested changes.
-2. Re-run the per-Task reviewer for every **affected Task** (dispatched in parallel), passing sibling Task context.
+2. Re-run the per-Task reviewer for every **affected Task** using the Per-Task invocation in **Dispatch mechanism** above; pass only `--set TASK_ID="Task N"` so the reviewer reads sibling Task context from the plan file.
 3. Re-run the Coverage Verifier over the whole plan vs. the whole spec (edits can introduce new coverage gaps).
 4. Apply the unified re-run policy: loop each reviewer until `Status: OKAY`, with zero tolerance — nothing may be deferred.
 5. Commit the fixed plan.

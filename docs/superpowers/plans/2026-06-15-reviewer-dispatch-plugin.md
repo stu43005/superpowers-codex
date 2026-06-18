@@ -493,7 +493,7 @@ Expected: no syntax errors; shellcheck clean (its non-zero exit must surface, no
 - [ ] **Step 5: Run the test runner to verify it passes**
 
 Run: `bash scripts/dispatch.test.sh`
-Expected: `14 passed, 0 failed` (exit 0).
+Expected: `17 passed, 0 failed` (exit 0).
 
 - [ ] **Step 6: Commit**
 

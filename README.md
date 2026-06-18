@@ -4,9 +4,62 @@ A trimmed set of skills cherry-picked from [obra/superpowers](https://github.com
 with local customizations (e.g. removing worktree / executing-plans steps), kept in sync
 with upstream over time.
 
-> Distribution form: a plain skills collection (not a Claude Code plugin, no
-> `.claude-plugin/` manifest). The repo only contains the chosen subset of skills,
-> not the entire upstream tree.
+> Distribution form: a Claude Code **plugin** (with `.claude-plugin/plugin.json` and a
+> `.claude-plugin/marketplace.json`). Skills under `skills/<name>/` are auto-discovered;
+> reviewers are dispatched through the bundled `scripts/dispatch.sh` via
+> `${CLAUDE_PLUGIN_ROOT}`.
+
+## Install
+
+Run these inside Claude Code (they are slash commands, not shell commands):
+
+```
+/plugin marketplace add stu43005/superpowers-codex
+/plugin install superpowers-codex
+```
+
+## Migrating from a skills-collection install
+
+Earlier versions were dropped into `~/.claude/skills/`. A leftover copy can **shadow** the
+plugin, so its `SKILL.md` (and the dispatch invocations inside it) would never load. Claude Code
+has **no install-time hook**, so the plugin cannot run this for you — you MUST do it manually
+after `/plugin install`. (`${CLAUDE_PLUGIN_ROOT}` is only expanded inside loaded SKILL.md
+content, **not** in your shell, so locate the bundled script by path.)
+
+```bash
+# 1. Remove legacy copies AND any ~/.agents/skills symlink targets
+rm -rf ~/.claude/skills/{brainstorming,writing-plans,subagent-driven-development,finishing-a-development-branch}
+rm -rf ~/.agents/skills/{brainstorming,writing-plans,subagent-driven-development,finishing-a-development-branch}
+
+# 2. Locate the installed preflight in the plugin cache and run it (fails if any legacy copy remains)
+PF="$(ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/scripts/preflight-plugin-install.sh 2>/dev/null | sort | tail -1)"
+if [ -z "$PF" ]; then echo "plugin not installed; run '/plugin install superpowers-codex' first" >&2; else "$PF"; fi   # preserves the preflight's non-zero exit on a real shadow
+
+# 3. Deterministic post-install check: the plugin copy resolves under the plugin cache and
+#    no legacy skill dir remains
+ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/skills/writing-plans >/dev/null 2>&1 \
+  && echo "OK: plugin skill present" || echo "FAIL: plugin skill not found in cache"
+for s in brainstorming writing-plans subagent-driven-development finishing-a-development-branch; do
+  for d in ~/.claude/skills/$s ~/.agents/skills/$s; do
+    [ -e "$d" ] || [ -L "$d" ] && echo "FAIL: legacy copy still present: $d"
+  done
+done
+```
+
+The preflight exits non-zero and names any offending path. **Deterministic completion
+criterion:** the preflight passes (no legacy copy in either location) AND the plugin's skill
+directory is present under the cache (the checks above). With no legacy copy left to shadow
+them, the plugin's `SKILL.md` files are necessarily what load for these skills.
+
+As a secondary check that `${CLAUDE_PLUGIN_ROOT}` inline-expands at skill-load time, **invoke
+any bundled skill once** and read the loaded skill text shown in context: its **Dispatch
+mechanism** block must show an **absolute** `…/plugins/cache/…/scripts/dispatch.sh` path
+(expansion worked), not a literal `${CLAUDE_PLUGIN_ROOT}`. (Do not try to read a `dispatch.sh`
+path out of `--dry-run` output — that output is the `node <companion> …` command, and
+`<companion-unresolved>` means codex is not set up, not that a legacy copy shadows the plugin.)
+
+Migration is complete once the preflight passes, the cache-present / no-legacy checks pass,
+and a bundled skill's loaded Dispatch mechanism block shows the inline-expanded absolute path.
 
 ## Vendored skills
 

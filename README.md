@@ -61,6 +61,22 @@ path out of `--dry-run` output — that output is the `node <companion> …` com
 Migration is complete once the preflight passes, the cache-present / no-legacy checks pass,
 and a bundled skill's loaded Dispatch mechanism block shows the inline-expanded absolute path.
 
+### Skill discovery precedence (measured)
+
+Measured on Claude Code 2.1.177. Skill discovery is resolved at session start, so the bare
+`/<name>` precedence under coexistence cannot be sampled mid-session; it is also **not relied
+upon**, because the mandatory preflight makes legacy removal a hard prerequisite. What is
+deterministically verified:
+
+- The preflight (`scripts/preflight-plugin-install.sh`) detects and **blocks** a legacy copy in
+  **both** `~/.claude/skills/<name>` and `~/.agents/skills/<name>` — each makes it exit non-zero
+  and name the offending path; with no legacy copy present it exits `0`.
+- The namespaced `superpowers-codex:<name>` reliably loads the plugin copy: its
+  `${CLAUDE_PLUGIN_ROOT}` inline-expands to an absolute path at load time.
+
+Therefore legacy copies in **both** locations MUST be removed before relying on the plugin; once
+they are gone the plugin's `SKILL.md` is the only copy of each skill that can load.
+
 ## Vendored skills
 
 Defined by [`vendored-skills.txt`](./vendored-skills.txt) (single source of truth):

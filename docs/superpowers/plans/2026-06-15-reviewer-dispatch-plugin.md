@@ -111,6 +111,8 @@ This is the core artifact. It must run on macOS (BSD) and Linux (GNU). TDD via `
 > **Spec §4.2 realization.** The spec says to obtain the companion version via a "version command" and assert a minimum. Research found the companion exposes **no** version command, so this plan realizes §4.2's intent by deriving the version from the resolved `/codex/<ver>/` install-path segment (and `die`ing if it cannot be derived or is below the minimum). This is the spec's deferred "plan deliverable", not a scope change.
 >
 > **Fallback vs. version guard (resolving an apparent §4.2 tension).** §4.2 asks to keep the marketplace fallback *resolution* AND to exit non-zero when the version cannot be obtained. The fallback path has no `/codex/<ver>/` segment, so both clauses meet there. This plan honors the explicit hard requirement: `resolve_companion` still returns the fallback path, but `check_companion_version` `die`s on any path whose version cannot be derived (including that fallback), with a `/codex:setup` pointer. An unverifiable companion is never run; the user installs a versioned cache copy via `/codex:setup`. (Versioned cache paths — the normal case — are asserted against the minimum.)
+>
+> **Output filtering (`[codex]` progress noise).** The codex companion writes per-turn progress lines prefixed `[codex]` to **stderr** (verified in `tracked-jobs.mjs`); the reviewer result (the `Status:`/`Verdict:` content the agent needs) goes to **stdout**. dispatch.sh routes every real companion call through `run_companion`, which drops only those `[codex]` stderr lines while leaving stdout untouched, preserving genuine non-`[codex]` stderr, and propagating the companion's own exit code (via `PIPESTATUS[0]`, never grep's). `--dry-run` paths are unaffected (they print the `node …` command and never invoke the companion).
 
 **Files:**
 - Create: `scripts/dispatch.sh`
@@ -193,6 +195,36 @@ OUT="$(DISPATCH_COMPANION="$NEWC" "$D" task --prompt "$P" --dry-run --set PLAN_F
 
 # 12. dispatch.sh never backgrounds the companion (check the node invocation lines only)
 grep -Eq 'node .*--background|node .*&[[:space:]]*$' "$D" && bad "no background companion call" "found background node call" || ok "no background companion call"
+
+# 13. companion '[codex] ' progress noise (written to stderr) is filtered out, while the
+#     reviewer result on stdout survives and a zero exit code is preserved.
+FC="$tmp/codex/2.0.0/scripts/codex-companion.mjs"; mkdir -p "$(dirname "$FC")"
+printf '%s\n' 'process.stderr.write("[codex] starting noise\n");' \
+              'process.stderr.write("[codex] more progress noise\n");' \
+              'process.stdout.write("Status: OKAY\n");' > "$FC"
+OUT="$(DISPATCH_COMPANION="$FC" "$D" task --prompt "$P" --set PLAN_FILE_PATH="$P" --set TASK_ID=t 2>&1)"; RC=$?
+if [ "$RC" -eq 0 ] && printf '%s' "$OUT" | grep -qF 'Status: OKAY' && ! printf '%s' "$OUT" | grep -q '\[codex\]'; then
+  ok "codex progress noise filtered, result + zero rc preserved"
+else bad "codex progress noise filtered" "rc=$RC out=$OUT"; fi
+
+# 14. a NON-zero companion exit code is preserved through the filter (stdout still kept).
+FCE="$tmp/codex/2.1.0/scripts/codex-companion.mjs"; mkdir -p "$(dirname "$FCE")"
+printf '%s\n' 'process.stderr.write("[codex] noise before failure\n");' \
+              'process.stdout.write("partial result\n");' \
+              'process.exitCode = 3;' > "$FCE"
+OUT="$(DISPATCH_COMPANION="$FCE" "$D" review --base HEAD 2>&1)"; RC=$?
+if [ "$RC" -eq 3 ] && printf '%s' "$OUT" | grep -qF 'partial result' && ! printf '%s' "$OUT" | grep -q '\[codex\]'; then
+  ok "non-zero companion exit code preserved through filter"
+else bad "non-zero companion exit code preserved" "rc=$RC out=$OUT"; fi
+
+# 15. genuine stderr that is NOT a [codex] progress line is preserved (not swallowed).
+FCS="$tmp/codex/2.2.0/scripts/codex-companion.mjs"; mkdir -p "$(dirname "$FCS")"
+printf '%s\n' 'process.stderr.write("[codex] progress noise\n");' \
+              'process.stderr.write("real error: boom\n");' > "$FCS"
+OUT="$(DISPATCH_COMPANION="$FCS" "$D" review --base HEAD 2>&1)"; RC=$?
+if printf '%s' "$OUT" | grep -qF 'real error: boom' && ! printf '%s' "$OUT" | grep -q '\[codex\]'; then
+  ok "non-[codex] stderr preserved while progress noise filtered"
+else bad "non-[codex] stderr preserved" "rc=$RC out=$OUT"; fi
 
 rm -rf "$tmp"
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
@@ -295,6 +327,22 @@ check_companion_version() {
   esac
 }
 
+# Run the codex companion, dropping its '[codex] ' progress lines (the companion writes those
+# to stderr; see tracked-jobs.mjs) — the agent only needs the reviewer result, not the noise.
+# stdout (the reviewer result) is left untouched and streamed; genuine non-'[codex]' stderr is
+# preserved; the companion's own exit code is propagated (NOT grep's).
+run_companion() {
+  local rc
+  set +e
+  # fd3 = caller stdout. The companion's stdout -> fd3 (untouched); its stderr -> the pipe ->
+  # grep -> stderr. grep exiting 1 (everything filtered) must not mask the companion's status,
+  # so read it from PIPESTATUS[0].
+  { "$@" 2>&1 1>&3 | grep -v '^\[codex\] ' >&2; } 3>&1
+  rc=${PIPESTATUS[0]}
+  set -e
+  return "$rc"
+}
+
 is_file_path_key() { case "$1" in *_FILE_PATH) return 0 ;; *) return 1 ;; esac; }
 
 # --- data-safe literal substitution: [KEY] -> VALUE (no regex/sed metachar hazard) ---
@@ -373,7 +421,7 @@ cmd_task() {
   local companion; companion="$(require_companion)"
   check_companion_version "$companion"
   # Runs in the foreground (no '&', no detach flag) so temp files outlive the reviewer.
-  node "$companion" task --prompt-file "$work"
+  run_companion node "$companion" task --prompt-file "$work"
 }
 
 cmd_review() {
@@ -391,7 +439,7 @@ cmd_review() {
     printf 'node %q review --base %q --wait\n' "${c:-<companion-unresolved>}" "$base"; return 0
   fi
   local companion; companion="$(require_companion)"; check_companion_version "$companion"
-  node "$companion" review --base "$base" --wait
+  run_companion node "$companion" review --base "$base" --wait
 }
 
 cmd_adversarial() {
@@ -414,7 +462,7 @@ cmd_adversarial() {
     printf 'node %q adversarial-review --base %q --wait %q\n' "${c:-<companion-unresolved>}" "$base" "$focus_text"; return 0
   fi
   local companion; companion="$(require_companion)"; check_companion_version "$companion"
-  node "$companion" adversarial-review --base "$base" --wait "$focus_text"
+  run_companion node "$companion" adversarial-review --base "$base" --wait "$focus_text"
 }
 
 main() {

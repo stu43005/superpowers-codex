@@ -40,14 +40,17 @@ scripts/
 
 ## 3. `dispatch.sh` 不變
 
-本案**不修改** `dispatch.sh`。引擎對每個 job 的調用形式固定為：
+本案**不修改** `dispatch.sh`。引擎對每個 job 的調用形式固定為（stdout/stderr 先導向
+本次私有暫存檔，之後依 §4.3「先彙整後發佈」原子 `mv` 到最終中繼檔）：
 
 ```
-dispatch.sh <subcommand> <args...>   > <output 中繼檔>   2> <stderr 暫存>
+dispatch.sh <subcommand> <args...>   > <私有 stdout 暫存>   2> <私有 stderr 暫存>
 ```
 
-引擎不需要從 dispatch.sh 取得 prompt 文字（中繼檔不再保存 prompt，見 §6），因此
-不需要對 dispatch.sh 新增任何旗標。
+引擎不需要從 dispatch.sh 取得 prompt 文字（中繼檔不再保存 prompt，見 §6）。
+spec-compliance 改傳 `--set TASK_HEAD=<sha>`（見 §5.3）只是多一個 `--set` 鍵值，
+dispatch.sh 既有的 `--set` 機制已支援，**仍無需對 dispatch.sh 新增任何旗標**。
+§4.6 的 HEAD 斷言、§9 的發佈互斥鎖皆在引擎層，與 dispatch.sh 無關。
 
 ## 4. 共用引擎 `review-batch-lib.sh`
 
@@ -87,18 +90,19 @@ review 目錄：`$PWD/.claude/superpowers/review/<spec name>/`（不存在時 `m
 
 `<label>` 經檔名安全化：非英數字元壓成單一 `-`（例如 `Task 1` → `Task-1`）。
 
-**原子寫入與本次擁有權（避免並行/重跑互相污染）**：每個 job 的 stdout 先寫入該
-job 專屬的**私有暫存檔**（與其 stderr 暫存一起，置於本次 `batch_run` 建立的私有暫存
-目錄），job 完成後再以**原子 `mv`** 改名到最終的 `<label>.<round>.output.md`。如此：
+**暫存檔生命週期（明確順序：先彙整、後發佈）**。為同時滿足「原子落地」與「彙整只讀
+自己的輸出」且不自相矛盾，`batch_run` 嚴格依下列順序進行：
 
-- 讀者永遠不會看到寫到一半的檔；最終檔一旦出現即為完整輸出。
-- 即使另一個批次事後覆寫同一最終路徑，落地的也永遠是某一次完整輸出，不會是兩次
-  交錯的混合檔。
-- **`batch_run` 的 stdout 彙整只讀取本次 invocation 自己建立的那些私有暫存檔**（路徑
-  存於內部陣列），**不靠 glob 掃描 review 目錄**。因此別的批次同時/事後對最終路徑的
-  覆寫，不會污染本次回傳的彙整結果。
+1. **私有暫存**：`batch_run` 建立一個本次專屬的私有暫存目錄；每個 job 的 stdout 與
+   stderr 各寫入該目錄下的私有暫存檔。job 的最終路徑於登記時即算好並存入內部陣列。
+2. **彙整（讀私有暫存）**：所有 job 結束後，`batch_run` **讀取這些私有暫存檔**組裝
+   §4.4 的 stdout（全文 + Summary）。彙整來源是私有暫存、不靠 glob 掃描 review 目錄，
+   因此別的批次對最終路徑的並行/事後覆寫**不會污染本次回傳結果**。
+3. **發佈（原子 `mv`）**：彙整完成**之後**，再把每個私有暫存檔以**原子 `mv`** 改名到
+   最終的 `<label>.<round>.output.md`。發佈在彙整之後，故步驟 2 讀取時暫存檔必然仍在。
 
-並行/重跑的整體假設與邊界見 §9。
+如此：讀者（含本引擎與外部）永遠不會看到寫到一半的檔；最終檔一旦出現即為某一次的
+完整輸出，不會是兩次交錯的混合檔。並行/重跑的整體假設、發佈期的互斥鎖與邊界見 §9。
 
 ### 4.4 stdout 彙整格式
 
@@ -143,6 +147,22 @@ job 專屬的**私有暫存檔**（與其 stderr 暫存一起，置於本次 `ba
 - ERROR 項的處置：companion 失敗（環境/版本/暫時性錯誤）由 caller 重跑該輪批次處理，
   與「reviewer 回報 findings」是不同性質——前者是工具失敗、後者是審查結果。
 
+### 4.6 HEAD 快照一致性（diff 型 reviewer 的凍結保證）
+
+diff 型 reviewer（code-quality 的 `review --base`、design-soundness 的
+`adversarial --base`、spec-compliance 的 `git diff` 等）在 companion 內部各自對 `HEAD`
+取 diff。若批次執行期間 `HEAD` 移動，兩個 reviewer 可能描述不同的 diff，卻被 caller
+當成同一個原子閘——破壞 §5.3 的 invalidation 契約。引擎以下列方式凍結並偵測漂移：
+
+1. **caller 契約**：`review-*.sh` 是**阻塞式單次呼叫**；caller（SKILL.md）在 wrapper
+   執行期間**不得推進 `HEAD`**（不得提交/rebase/checkout）。
+2. **引擎斷言**：若在 git repo 內，`batch_run` 於**開始時**記錄 `HEAD_AT_START=$(git rev-parse HEAD)`，
+   於**所有 job 結束、彙整前**再讀一次 `HEAD`；若不一致 → 整個批次標為**無效**
+   （非零退出，且 Summary 加一行 `BATCH INVALID: HEAD moved during run (<a>→<b>) — rerun`），
+   要求 caller 重跑。這即使無法在 companion 內釘住 diff 終點，也能可靠偵測違反契約。
+3. **顯式釘住（可釘的部分）**：能以參數釘住 diff 終點的 reviewer 一律釘成不可變的
+   commit pair，而非 `..HEAD`——見 §5.3 的 spec-compliance（透過 `--set TASK_HEAD`）。
+
 ## 5. 三個 wrapper 的 CLI
 
 所有 wrapper 共通：
@@ -151,7 +171,10 @@ job 專屬的**私有暫存檔**（與其 stderr 暫存一起，置於本次 `ba
 - `--name <spec>`（選填）：覆寫 `<spec name>`；未給時由各 wrapper 的**主要文件檔名**
   推導——去掉前綴 `YYYY-MM-DD-`、去掉副檔名與 `-design`/`-plan` 後綴。例：
   `2026-06-22-parallel-reviewer-batch-dispatch-design.md` → `parallel-reviewer-batch-dispatch`。
-- `--max-parallel N`（選填，預設 5）。
+- `--max-parallel N`（選填，預設 5）。**在建立 FIFO token bucket 前嚴格驗證**：只接受
+  正十進位整數（`^[1-9][0-9]*$`）；`0`、空值、非數字一律 **fail fast** 報錯退出（避免
+  token 數為 0 時 job 永遠等不到 token 而死鎖）。並設一個有文件記載的安全上限（預設
+  上限 16），超過則夾到上限並提示。
 
 **各 wrapper 的 `<spec name>` 預設來源（明確指定，避免歧義）**：
 
@@ -211,9 +234,15 @@ review-impl.sh --plan <plan.md> --task "Task N" --task-base <TASK_BASE> \
   --round N [--name X] [--max-parallel 5]
 ```
 
+review-impl.sh 於**開始時**擷取 `TASK_HEAD=$(git rev-parse HEAD)`，把這個不可變 SHA
+釘給 spec-compliance（讓其 `git diff` 用固定的 `[TASK_BASE]..[TASK_HEAD]` commit pair，
+而非 `..HEAD`）。code-quality 的 `review --base` 在 companion 內部取 `..HEAD`，無參數可
+釘終點，但由 §4.6 的引擎 HEAD 斷言保證「批次期間 HEAD 未移動」，故其 `HEAD` 等同
+`TASK_HEAD`。
+
 | label             | dispatch 呼叫 |
 | ----------------- | ------------- |
-| `spec-compliance` | `task --prompt <root>/skills/subagent-driven-development/spec-reviewer-prompt.md --set PLAN_FILE_PATH=<plan> --set TASK_ID="Task N" --set TASK_BASE=<TASK_BASE>` |
+| `spec-compliance` | `task --prompt <root>/skills/subagent-driven-development/spec-reviewer-prompt.md --set PLAN_FILE_PATH=<plan> --set TASK_ID="Task N" --set TASK_BASE=<TASK_BASE> --set TASK_HEAD=<TASK_HEAD>` |
 | `code-quality`    | `review --base <TASK_BASE>` |
 
 subagent-driven-development 的**最終 adversarial 合併閘**仍維持單一
@@ -262,10 +291,14 @@ review-impl 不再傳 `--report-file`。spec-compliance 的真正驗證是
 的預期結果描述之**（例如「執行 X 後應產生 Y、Y 的內容應滿足 Z」），讓 reviewer 能據 plan
 Task 需求 + diff 驗證，而非依賴 implementer 的自述。這本就是 plan 驅動審查的既有方式。
 
-**`spec-reviewer-prompt.md` 變更**：移除 `[REPORT_FILE_PATH]` 佔位符（第 7 行）與
-「讀取 implementer report 看其 CLAIM」段落（第 11 行）及「不信任 report」框架中對 report
-的引用；保留並強化「以 plan Task 需求 ↔ `git diff(TASK_BASE..HEAD)` 獨立驗證」的核心。
-Output Contract（`Status: OKAY` / `Status: Issues Found`）不變。
+**`spec-reviewer-prompt.md` 變更**：
+- 移除 `[REPORT_FILE_PATH]` 佔位符（第 7 行）與「讀取 implementer report 看其 CLAIM」
+  段落（第 11 行）及「不信任 report」框架中對 report 的引用；保留並強化「以 plan Task
+  需求 ↔ git diff 獨立驗證」的核心。
+- **把 diff 範圍由 `git diff [TASK_BASE]..HEAD` 改為釘住的 `git diff [TASK_BASE]..[TASK_HEAD]`**
+  （新增 `[TASK_HEAD]` 佔位符，由 review-impl.sh 以 `--set TASK_HEAD` 注入；見 §4.6 / §5.3
+  的 HEAD 凍結）。
+- Output Contract（`Status: OKAY` / `Status: Issues Found`）不變。
 
 **相容性／遷移盤點（已查證現有 footprint）**：
 
@@ -310,11 +343,22 @@ stdout 一次取得全部結果。
 - review 目錄不存在時自動 `mkdir -p`。
 - **同一 `<label>.<round>.output.md` 已存在（同輪重跑）→ 以 §4.3 的原子 `mv` 覆寫**。
   最終檔永遠是某一次完整輸出，不會是兩次交錯的混合檔。
-- **並行/重跑隔離假設**：預設模型是「同一 `<spec name>` 同時只有一個審查迴圈在跑」
-  （單一 agent 循序推進輪次，`--round` 對每個邏輯輪次唯一）。在此模型下，§4.3 的
-  「彙整只讀本次 invocation 自己的私有暫存檔」已足以保證本次回傳結果不被污染。
-  若需對「同一主題同時有多個 agent 並行審查」做更強隔離，由 caller 傳入不同
-  `--name` 將輸出分流到不同目錄——本案不在引擎內建跨 agent 鎖。
+- **發佈期互斥鎖（避免靜默覆寫毀掉證據）**：`batch_run` 在進入「發佈（原子 `mv`）」
+  階段前，先以**原子 `mkdir`** 取得 `<review 目錄>/.batch.lock` 作為 per-`<spec name>`
+  互斥鎖（lock 目錄內記錄持有者 PID 與 round），發佈完成後於 trap 中移除。
+  - `mkdir` 在 POSIX 上是原子操作，bash 3.2 / BSD 可攜（不依賴 `flock`，後者 macOS
+    預設無）。
+  - 取鎖失敗（另一批次正持有）→ **fail fast**，印出可行動訊息（「`<spec name>` 已有
+    審查批次在跑；請改傳不同 `--name`，或移除殘留的 `.batch.lock`」），**不**靜默覆寫
+    對方的最終檔。如此即使兩個 agent 同名同 round 並行，也不會「最後一個 `mv` 贏、
+    抹掉另一次的持久證據」。
+  - 殘留鎖（持有者已死）：訊息明確指引手動移除；引擎不自動猜測 PID 存活以免誤判。
+  - 彙整（§4.3 步驟 2）讀私有暫存、不受此鎖影響；鎖只保護「發佈」這段對共享最終
+    路徑的寫入。
+- **並行/重跑隔離假設**：預設模型仍是「同一 `<spec name>` 同時只有一個審查迴圈」
+  （單一 agent 循序推進輪次，`--round` 對每個邏輯輪次唯一）。上面的互斥鎖把「違反此
+  假設」從「靜默毀證據」變成「fail fast 報錯」。要真正並行同一主題，由 caller 傳不同
+  `--name` 分流到不同目錄。
 
 ## 10. 驗證策略
 
@@ -333,6 +377,14 @@ stdout 一次取得全部結果。
 - **原子寫入與本次擁有權**：驗證最終檔由原子 `mv` 落地（無半寫狀態）；且預先在 review
   目錄塞入一個別人的舊 `<label>.<round>.output.md`，確認本次 `batch_run` 的 Summary
   只反映自己這次的輸出、不被既有檔污染（§4.3）。
+- **先彙整後發佈順序**：驗證彙整在 `mv` 之前完成（私有暫存於彙整時仍存在），最終檔在
+  彙整後才出現（§4.3 步驟順序）。
+- **HEAD 漂移偵測**：在批次執行中讓 `HEAD` 變動，驗證引擎偵測到並把批次標 `BATCH
+  INVALID`、非零退出（§4.6）；HEAD 不動時正常通過。
+- **發佈互斥鎖**：預先建立 `.batch.lock` 模擬另一批次持鎖，驗證本次 fail fast 報出
+  可行動訊息、且**不覆寫**既有最終檔（§9）。
+- **`--max-parallel` 驗證**：`0`/空/非數字 → fail fast；超過上限 → 夾到上限；正整數 →
+  通過（§5 共通參數）。
 - **各 wrapper 名稱推導**：`review-brainstorm.sh` 由 `--spec` 去 `-design`、
   `review-plan.sh` 與 `review-impl.sh` 由 `--plan` 去 `-plan`，同主題三者得到一致
   `<spec name>`；`--name` 覆寫生效。
@@ -357,6 +409,14 @@ stdout 一次取得全部結果。
   「stdout 任何退出碼都完整」的 harness 行為為前提，非零碼僅作注意訊號。
 - **並行 impl reviewer 的 invalidation 契約**（vs 保留循序閘）：以「任一修改使雙方失效、
   同一無修改批次雙方皆過才收斂」消除「一過一敗後修改使過時通過」的競態。
+- **HEAD 凍結＝顯式釘住 + 引擎斷言**（vs 只傳 base 任 reviewer 各自取 HEAD）：能釘的
+  reviewer 釘成 commit pair，不能釘的（`review --base`）由引擎偵測 HEAD 漂移補強，兩者
+  皆不需改 dispatch.sh/companion。
+- **發佈期 `mkdir` 互斥鎖**（vs 在檔名加 run-id / 不防護）：保留使用者指定的
+  `<reviewer>.<round>.output.md` 檔名格式，同時把「並行靜默覆寫毀證據」轉為 fail fast；
+  用 `mkdir` 原子性而非 `flock`（macOS 無）以維持 bash 3.2/BSD 可攜。
+- **`--max-parallel` 嚴格驗證 + 安全上限**：把 0/空/非數字導致的 FIFO 死鎖轉為 fail
+  fast 的可行動錯誤。
 
 ## 12. 非目標
 

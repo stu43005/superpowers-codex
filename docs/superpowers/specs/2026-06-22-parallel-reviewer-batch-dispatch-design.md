@@ -90,21 +90,38 @@ review 目錄：`$PWD/.claude/superpowers/review/<spec name>/`（不存在時 `m
 
 `<label>` 經檔名安全化：非英數字元壓成單一 `-`（例如 `Task 1` → `Task-1`）。
 
-**暫存檔生命週期（明確順序：先彙整、後發佈）**。為同時滿足「原子落地」與「彙整只讀
-自己的輸出」且不自相矛盾，`batch_run` 嚴格依下列順序進行：
+**stdout/stderr 分工**：canonical 中繼檔 `<label>.<round>.output.md` **只含該 job 的
+stdout**（reviewer 結果本體）。stderr **不**落地成 canonical 檔——它只留在私有暫存，供
+§4.4 組裝 ERROR 摘要用，隨私有暫存目錄一併清理。
 
-1. **私有暫存**：`batch_run` 建立一個本次專屬的私有暫存目錄；每個 job 的 stdout 與
-   stderr 各寫入該目錄下的私有暫存檔。job 的最終路徑於登記時即算好並存入內部陣列。
-2. **彙整（讀私有暫存）**：所有 job 結束後，`batch_run` **讀取這些私有暫存檔**組裝
-   §4.4 的 stdout（全文 + Summary）。彙整來源是私有暫存、不靠 glob 掃描 review 目錄，
-   因此別的批次對最終路徑的並行/事後覆寫**不會污染本次回傳結果**。
-3. **發佈（原子 `mv`，僅在批次有效時）**：彙整完成**之後**，**且批次未被 §4.6 判為
-   無效**時，再把每個私有暫存檔以**原子 `mv`** 改名到最終的
-   `<label>.<round>.output.md`。發佈在彙整之後，故步驟 2 讀取時暫存檔必然仍在；批次
-   無效時跳過本步驟，不留下任何 canonical 檔。
+**交易式生命週期（私有暫存在 review 命名空間外；全有全無發佈；全路徑清理）**。為同時
+滿足「原子落地」「彙整只讀自己的輸出」「invalid/中斷/部分失敗不留殘骸」，`batch_run`
+嚴格依下列交易進行：
 
-如此：讀者（含本引擎與外部）永遠不會看到寫到一半的檔；最終檔一旦出現即為某一次的
-完整輸出，不會是兩次交錯的混合檔。並行/重跑的整體假設、發佈期的互斥鎖與邊界見 §9。
+1. **私有暫存（在 review 命名空間外）**：`batch_run` 以 `mktemp -d`（置於 `$TMPDIR`，
+   **不在** `.claude/superpowers/review/` 底下）建立本次專屬私有暫存目錄；每個 job 的
+   stdout、stderr 各寫入該目錄下的私有暫存檔。各 job 的最終 canonical 路徑於登記時即算好
+   並存入內部陣列。**進場即裝 `trap ... EXIT INT TERM`**，在**任一退出路徑**
+   （成功／HEAD 無效／job 失敗／訊號中斷／發佈中途失敗）都 `rm -rf` 此私有暫存目錄——
+   故 review 命名空間外**不會**遺留任何完整審查殘骸。
+2. **彙整（讀私有暫存）**：所有 job 結束後，`batch_run` **讀取私有暫存中的 stdout 檔**
+   組裝 §4.4 的 stdout（全文 + Summary）；ERROR 摘要取自對應的私有 stderr 檔。彙整來源
+   是私有暫存、不靠 glob 掃描 review 目錄，故別的批次對最終路徑的並行/事後覆寫**不會
+   污染本次回傳結果**。
+3. **發佈（全有全無，僅在批次有效時）**：彙整完成**之後**、**且批次未被 §4.6 判為無效**
+   時才發佈：
+   - 依序把每個 job 的 stdout 暫存檔以**原子 `mv`** 改名到 `<label>.<round>.output.md`；
+   - 全部成功後，**最後**寫入一個本輪 **manifest marker** `<round>.manifest.md`（列出本輪
+     已發佈的所有 label）作為「本輪 canonical 證據集完整」的權威信號。讀者僅在 manifest
+     存在時，才把該輪 canonical 檔視為完整有效集。
+   - **發佈中途某個 `mv` 失敗** → **不寫 manifest**、對本輪已 `mv` 成功的 canonical 檔做
+     **best-effort 回滾移除**（引擎知道已移動清單）、以非零退出回報。manifest 不存在即代表
+     該輪不完整，讀者不採信半套狀態。
+   - 批次無效（§4.6）時整個步驟 3 跳過：不寫任何 canonical 檔、不寫 manifest。
+
+如此：讀者永遠不會看到寫到一半的檔；最終檔一旦出現即為某一次完整 stdout；invalid 或
+中斷的執行不在 review 命名空間留下任何證據（私有暫存由 trap 清掉），半套發佈因缺
+manifest 而可被偵測。並行/重跑假設、發佈期互斥鎖與邊界見 §9。
 
 ### 4.4 stdout 彙整格式
 
@@ -113,7 +130,7 @@ review 目錄：`$PWD/.claude/superpowers/review/<spec name>/`（不存在時 `m
 
 ```
 ## <label> (round <N>)
-<該 job output 中繼檔全文>
+<該 job 的 stdout 全文（取自私有暫存，等同稍後發佈的 canonical 檔內容）>
 
 ## <label-2> (round <N>)
 <...>
@@ -261,8 +278,10 @@ subagent-driven-development 的**最終 adversarial 合併閘**仍維持單一
 解讀。改為並行後，必須明定以下契約，否則會出現「一個過、一個敗，修完又使先前的過
 失效」的競態：
 
-1. **同一 snapshot**：同一次 `review-impl.sh` 呼叫中，spec-compliance 與 code-quality
-   都針對**同一個 diff 快照** `git diff <TASK_BASE>..HEAD` 進行（兩者讀同一個 HEAD）。
+1. **同一 snapshot**：同一次 `review-impl.sh` 呼叫中，spec-compliance 用釘住的
+   `git diff <TASK_BASE>..<TASK_HEAD>`、code-quality 的 `review --base <TASK_BASE>` 在
+   companion 內取 `..HEAD`；由 §4.6 保證批次期間 `HEAD == TASK_HEAD`（漂移即整批無效），
+   故兩者實際針對**同一個不可變 commit pair**。
 2. **任一修改使雙方結果一起失效**：只要該 task 在本輪後有任何修正提交（HEAD 前進），
    spec-compliance 與 code-quality 的**先前結果全部作廢**——不得保留「上一輪某一方已
    通過」的狀態。
@@ -356,8 +375,12 @@ stdout 一次取得全部結果。
   ERROR 路徑（引擎不重複做版本檢查）。
 - 並行度上限預設 5，可由 `--max-parallel` 調整；FIFO token-bucket 真正節流。
 - review 目錄不存在時自動 `mkdir -p`。
-- **同一 `<label>.<round>.output.md` 已存在（同輪重跑）→ 以 §4.3 的原子 `mv` 覆寫**。
-  最終檔永遠是某一次完整輸出，不會是兩次交錯的混合檔。
+- **私有暫存目錄置於 review 命名空間外**（`mktemp -d` 於 `$TMPDIR`），由 `trap`
+  在所有退出路徑 `rm -rf`；故 invalid/中斷/失敗都不會在 review 目錄留下審查殘骸（§4.3）。
+- **發佈全有全無**：成功批次最後寫 `<round>.manifest.md` 作為完整性信號；半套發佈
+  （某 `mv` 失敗）→ 不寫 manifest + 回滾已移動的 canonical 檔（§4.3 步驟 3）。
+- **同一 `<label>.<round>.output.md` 已存在（同輪重跑）→ 以 §4.3 的原子 `mv` 覆寫**，
+  並重寫該輪 manifest。最終檔永遠是某一次完整輸出，不會是兩次交錯的混合檔。
 - **互斥鎖在啟動任何 job 前取得（fail fast，避免輸家白跑全程）**：`batch_run`
   **在登記後、啟動任何 reviewer job 之前**，先以**原子 `mkdir`** 取得
   `<review 目錄>/.batch.lock` 作為 per-`<spec name>` 互斥鎖（lock 目錄內記錄持有者 PID
@@ -395,9 +418,17 @@ stdout 一次取得全部結果。
   只反映自己這次的輸出、不被既有檔污染（§4.3）。
 - **先彙整後發佈順序**：驗證彙整在 `mv` 之前完成（私有暫存於彙整時仍存在），最終檔在
   彙整後才出現（§4.3 步驟順序）。
-- **HEAD 漂移偵測 + 不發佈**：在批次執行中讓 `HEAD` 變動，驗證引擎標 `BATCH INVALID`、
-  非零退出，**且不產生任何 canonical `<label>.<round>.output.md`**（§4.6 發佈前閘）；
-  HEAD 不動時正常發佈。
+- **HEAD 漂移偵測 + 不發佈 + temp 清理**：在批次執行中讓 `HEAD` 變動，驗證引擎標
+  `BATCH INVALID`、非零退出，**且不產生任何 canonical 檔或 manifest**，**且私有暫存目錄
+  被 trap 清掉**（review 命名空間外無殘骸）（§4.3 / §4.6）；HEAD 不動時正常發佈。
+- **canonical 僅含 stdout**：job 同時有 stdout 與 stderr 時，驗證 `<label>.<round>.output.md`
+  只含 stdout，stderr 僅出現在彙整的 ERROR 摘要、且不落地成 canonical 檔（§4.3 stdout/stderr
+  分工）。
+- **訊號中斷清理**：對 `batch_run` 送 INT/TERM，驗證私有暫存目錄被 trap 清除、不留審查殘骸。
+- **半套發佈失敗回滾**：注入某個 `mv` 失敗，驗證**不寫 manifest**、本輪已 `mv` 的 canonical
+  檔被 best-effort 回滾移除、非零退出；讀者以「manifest 不存在」判定該輪不完整（§4.3 步驟 3）。
+- **manifest 完整性信號**：成功批次最後寫出 `<round>.manifest.md` 且列出全部 label；無
+  manifest 的輪次不被視為完整有效集。
 - **互斥鎖在 job 啟動前 fail fast**：預先建立 `.batch.lock` 模擬另一批次持鎖，驗證本次
   **在啟動任何 reviewer job 之前**就 fail fast、報出可行動訊息、且**不覆寫**既有最終檔、
   也不花費 reviewer 成本（§9）。
@@ -434,6 +465,10 @@ stdout 一次取得全部結果。
 - **發佈期 `mkdir` 互斥鎖**（vs 在檔名加 run-id / 不防護）：保留使用者指定的
   `<reviewer>.<round>.output.md` 檔名格式，同時把「並行靜默覆寫毀證據」轉為 fail fast；
   用 `mkdir` 原子性而非 `flock`（macOS 無）以維持 bash 3.2/BSD 可攜。
+- **交易式發佈：私有暫存在 review 外 + trap 全路徑清理 + manifest 完整性信號 + 半套回滾**
+  （vs 直接寫最終路徑、失敗不清理）：確保 invalid/中斷/部分失敗都不在 review 命名空間
+  留下會被誤當有效證據的殘骸，且半套發佈可被「缺 manifest」偵測。canonical 僅含 stdout、
+  stderr 留私有，避免污染證據檔。
 - **`--max-parallel` 嚴格驗證 + 安全上限**：把 0/空/非數字導致的 FIFO 死鎖轉為 fail
   fast 的可行動錯誤。
 

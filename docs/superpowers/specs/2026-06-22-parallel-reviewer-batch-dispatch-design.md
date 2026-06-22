@@ -86,7 +86,19 @@ review 目錄：`$PWD/.claude/superpowers/review/<spec name>/`（不存在時 `m
 ```
 
 `<label>` 經檔名安全化：非英數字元壓成單一 `-`（例如 `Task 1` → `Task-1`）。
-每個 job 的 stdout 直接重導向到該檔；stderr 另存暫存供 ERROR 摘要使用。
+
+**原子寫入與本次擁有權（避免並行/重跑互相污染）**：每個 job 的 stdout 先寫入該
+job 專屬的**私有暫存檔**（與其 stderr 暫存一起，置於本次 `batch_run` 建立的私有暫存
+目錄），job 完成後再以**原子 `mv`** 改名到最終的 `<label>.<round>.output.md`。如此：
+
+- 讀者永遠不會看到寫到一半的檔；最終檔一旦出現即為完整輸出。
+- 即使另一個批次事後覆寫同一最終路徑，落地的也永遠是某一次完整輸出，不會是兩次
+  交錯的混合檔。
+- **`batch_run` 的 stdout 彙整只讀取本次 invocation 自己建立的那些私有暫存檔**（路徑
+  存於內部陣列），**不靠 glob 掃描 review 目錄**。因此別的批次同時/事後對最終路徑的
+  覆寫，不會污染本次回傳的彙整結果。
+
+並行/重跑的整體假設與邊界見 §9。
 
 ### 4.4 stdout 彙整格式
 
@@ -113,20 +125,47 @@ review 目錄：`$PWD/.claude/superpowers/review/<spec name>/`（不存在時 `m
 3. 若退出碼為零但無此類狀態行（例如 code-quality reviewer 是 prose）→
    `(prose — 見全文)`。
 
-### 4.5 退出碼
+### 4.5 退出碼與 partial-failure caller contract
 
 任一 job 退出碼非零 → `batch_run` 以非零退出（其餘 job 仍全部跑完並落地）。全部
 成功 → 退出 0。
+
+**caller contract（必須在 SKILL.md 呼叫端落實）**：
+
+- wrapper 的 **stdout 在任何退出碼下都是完整且權威的**——§4.4 的全文與 Summary 區段
+  在「有 job 失敗」時仍照常輸出，非零退出**不會**截斷或丟棄 stdout。
+- 非零退出碼是給 caller 的**注意訊號**（「本輪至少一個 reviewer 失敗，需處理 ERROR
+  項」），**不是**「丟棄輸出」訊號。
+- 三個技能的 SKILL.md 呼叫端**必須在任何退出碼下都讀取並解析 wrapper 的 stdout**
+  （即 Summary 區段），據以判斷各 reviewer 是 OKAY / needs-attention / prose / ERROR；
+  **不得**因為非零退出就略過 stdout。Claude Code 的 Bash 工具在指令非零退出時仍會
+  完整回傳 stdout 並附帶退出碼註記，故此契約在本 harness 可成立。
+- ERROR 項的處置：companion 失敗（環境/版本/暫時性錯誤）由 caller 重跑該輪批次處理，
+  與「reviewer 回報 findings」是不同性質——前者是工具失敗、後者是審查結果。
 
 ## 5. 三個 wrapper 的 CLI
 
 所有 wrapper 共通：
 
 - `--round N`（必填）：由 agent 顯式傳入，作為中繼檔的 `<round>`。
-- `--name <spec>`（選填）：覆寫 `<spec name>`；預設由主要文件檔名推導——去掉前綴
-  `YYYY-MM-DD-`、去掉副檔名與 `-design`/`-plan` 後綴。例：
+- `--name <spec>`（選填）：覆寫 `<spec name>`；未給時由各 wrapper 的**主要文件檔名**
+  推導——去掉前綴 `YYYY-MM-DD-`、去掉副檔名與 `-design`/`-plan` 後綴。例：
   `2026-06-22-parallel-reviewer-batch-dispatch-design.md` → `parallel-reviewer-batch-dispatch`。
 - `--max-parallel N`（選填，預設 5）。
+
+**各 wrapper 的 `<spec name>` 預設來源（明確指定，避免歧義）**：
+
+| wrapper                | 推導來源       | 去除的後綴 |
+| ---------------------- | -------------- | ---------- |
+| `review-brainstorm.sh` | `--spec`       | `-design`  |
+| `review-plan.sh`       | `--plan`       | `-plan`    |
+| `review-impl.sh`       | `--plan`       | `-plan`    |
+
+設計意圖：同一主題的 design 與 plan 檔共用相同 topic stem（`2026-06-22-<topic>-design.md`
+與 `2026-06-22-<topic>-plan.md` 去後綴後皆為 `<topic>`），因此三個技能在**同一主題**的
+所有審查輪次都落在**同一個 `<spec name>` 目錄**下，便於彙整該主題的全部 reviewer 證據。
+review-impl 雖只收 `--plan`，仍能由 plan 檔名得到與 brainstorming/writing-plans 一致的
+`<spec name>`，無需額外傳 spec 路徑；任何技能要覆寫時用 `--name`。
 
 wrapper 從自身所在路徑推導 plugin root（`dispatch.sh` 與各 prompt sidecar 的位置），
 不依賴 `CLAUDE_PLUGIN_ROOT` 環境變數是否設定：`SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)`，
@@ -180,6 +219,27 @@ review-impl.sh --plan <plan.md> --task "Task N" --task-base <TASK_BASE> \
 subagent-driven-development 的**最終 adversarial 合併閘**仍維持單一
 `dispatch.sh adversarial` 直呼，不納入批次（單一 reviewer 無並行需求）。
 
+**並行化的 snapshot / invalidation / rerun 契約（取代原本的循序閘）**：
+
+原本「先 spec OKAY，再跑 code-quality」是**循序閘**——code-quality 只在 spec 通過後才
+解讀。改為並行後，必須明定以下契約，否則會出現「一個過、一個敗，修完又使先前的過
+失效」的競態：
+
+1. **同一 snapshot**：同一次 `review-impl.sh` 呼叫中，spec-compliance 與 code-quality
+   都針對**同一個 diff 快照** `git diff <TASK_BASE>..HEAD` 進行（兩者讀同一個 HEAD）。
+2. **任一修改使雙方結果一起失效**：只要該 task 在本輪後有任何修正提交（HEAD 前進），
+   spec-compliance 與 code-quality 的**先前結果全部作廢**——不得保留「上一輪某一方已
+   通過」的狀態。
+3. **修完整批重跑**：implementer 必須**一次修完兩個 reviewer 本輪的全部 blocking
+   findings**，再以同一個 `<TASK_BASE>`、新的 HEAD **重跑整個 `review-impl.sh` 批次**
+   （兩個 reviewer 都重跑）。
+4. **收斂條件**：該 task 只有在**單一次批次呼叫內、且其後無任何修改**的情況下，
+   spec-compliance 回 `Status: OKAY` **且** code-quality 無 blocking finding，才算通過、
+   進入下一個 task。
+5. **「一過一敗」的處理**：一方過、另一方有 blocking → 仍須修，修改觸發第 2 點使
+   先前「過」的一方作廢，第 4 點要求兩者在無修改的同一批次都過才收斂，故不會接受
+   過時的通過。
+
 ## 6. 不保存 prompt 中繼檔的決定
 
 中繼檔僅保存 `output`，**不保存** prompt。prompt 對 `task` 子命令只是
@@ -196,10 +256,30 @@ review-impl 不再傳 `--report-file`。spec-compliance 的真正驗證是
 而只要該需求本在 plan Task 內，比對 plan↔diff 一樣會抓到缺失。移除 report 可省去 agent
 管理暫存 report 檔與完成後清理的複雜度。
 
-**`spec-reviewer-prompt.md` 變更**：移除 `[REPORT_FILE_PATH]` 佔位符與所有「讀取／引用
-implementer report」的段落（保留並強化「以 plan Task 需求 ↔ `git diff(TASK_BASE..HEAD)`
-獨立驗證」的核心）。其餘 prompt 的 Output Contract（`Status: OKAY` / `Status: Issues Found`）
-不變。
+**證據完整性要求（取代 report 作為證據來源）**：移除 report 後，spec-compliance 的可審
+證據**一律以 `git diff <TASK_BASE>..HEAD` 為事實來源**。對於 diff 不能直接呈現的產物
+（生成檔、移動/改名、被 gitignore 的檔、git 外部副作用），**plan 的該 Task 必須以可驗證
+的預期結果描述之**（例如「執行 X 後應產生 Y、Y 的內容應滿足 Z」），讓 reviewer 能據 plan
+Task 需求 + diff 驗證，而非依賴 implementer 的自述。這本就是 plan 驅動審查的既有方式。
+
+**`spec-reviewer-prompt.md` 變更**：移除 `[REPORT_FILE_PATH]` 佔位符（第 7 行）與
+「讀取 implementer report 看其 CLAIM」段落（第 11 行）及「不信任 report」框架中對 report
+的引用；保留並強化「以 plan Task 需求 ↔ `git diff(TASK_BASE..HEAD)` 獨立驗證」的核心。
+Output Contract（`Status: OKAY` / `Status: Issues Found`）不變。
+
+**相容性／遷移盤點（已查證現有 footprint）**：
+
+| 位置 | 現況 | 處置 |
+| ---- | ---- | ---- |
+| `spec-reviewer-prompt.md` | 含 `[REPORT_FILE_PATH]` 佔位符 | 移除（如上） |
+| `subagent-driven-development/SKILL.md` | 建立 report mktemp → `--report-file` 傳入 → 完成後 `rm`，並有對應流程圖/範例/檔案清單描述 | 全部移除這套接線，改為 §8 的 `review-impl.sh` 單一呼叫 |
+| `implementer-prompt.md` | 要求 implementer 回報 Status/實作/測試/自審（§"Report Format"） | **不改**——該 report 是 subagent **回傳給父 agent 的訊息**、非磁碟檔；移除後它仍是給父 agent 的有用上下文，不是 dead path |
+| `dispatch.sh` | `cmd_task` 仍支援 `--report-file` 通用選項 | **不改**——僅「review-impl 不再使用」，非死碼；保留供未來其他用途 |
+| `dispatch.test.sh` | 測試 `--report-file` 行為 | **不改**——dispatch.sh 該選項仍在，測試仍有效 |
+
+要點：除了 prompt 佔位符與 subagent SKILL.md 的接線，沒有其他 caller 依賴 report 檔
+（已 grep 全 repo 確認）；implementer 的 report 改回單純的 subagent 回傳訊息，不產生
+孤兒檔或失效路徑。
 
 ## 8. 連帶變更：三個 SKILL.md 的 dispatch 段落改寫
 
@@ -212,9 +292,13 @@ stdout 一次取得全部結果。
 - **writing-plans/SKILL.md**：Per-Task + Coverage 改呼 `review-plan.sh`（以多個
   `--task` 指定本輪 active tasks、以 `--coverage` 控制 Coverage Verifier 是否參與）。
 - **subagent-driven-development/SKILL.md**：每個 task 的兩階段審查改呼
-  `review-impl.sh`（spec 與 code-quality 並行）；流程語義由「先 spec OKAY 再
-  code-quality」改為「兩者每輪並跑、任一有 blocking finding 就由 implementer 修完
-  兩者後整批重跑」。最終 adversarial 合併閘段落維持原樣。
+  `review-impl.sh`（spec 與 code-quality 並行，遵循 §5.3 的 snapshot/invalidation/rerun
+  契約）；流程語義由「先 spec OKAY 再 code-quality」改為「兩者每輪並跑、任一有
+  blocking finding 就由 implementer 一次修完兩者再整批重跑」。同時**移除 §7 盤點的
+  report 接線**（report mktemp 建立、`--report-file` 傳入、完成後 `rm`，及對應流程圖
+  節點、範例 log、檔案清單描述）。最終 adversarial 合併閘段落維持原樣。
+- 三個 SKILL.md 的呼叫端說明都須落實 §4.5 的 partial-failure caller contract（任何
+  退出碼都讀並解析 wrapper stdout 的 Summary）。
 
 ## 9. 失敗、並行與邊界
 
@@ -224,7 +308,13 @@ stdout 一次取得全部結果。
   ERROR 路徑（引擎不重複做版本檢查）。
 - 並行度上限預設 5，可由 `--max-parallel` 調整；FIFO token-bucket 真正節流。
 - review 目錄不存在時自動 `mkdir -p`。
-- 同一 `<label>.<round>.output.md` 已存在（同輪重跑）→ 覆寫。
+- **同一 `<label>.<round>.output.md` 已存在（同輪重跑）→ 以 §4.3 的原子 `mv` 覆寫**。
+  最終檔永遠是某一次完整輸出，不會是兩次交錯的混合檔。
+- **並行/重跑隔離假設**：預設模型是「同一 `<spec name>` 同時只有一個審查迴圈在跑」
+  （單一 agent 循序推進輪次，`--round` 對每個邏輯輪次唯一）。在此模型下，§4.3 的
+  「彙整只讀本次 invocation 自己的私有暫存檔」已足以保證本次回傳結果不被污染。
+  若需對「同一主題同時有多個 agent 並行審查」做更強隔離，由 caller 傳入不同
+  `--name` 將輸出分流到不同目錄——本案不在引擎內建跨 agent 鎖。
 
 ## 10. 驗證策略
 
@@ -237,6 +327,15 @@ stdout 一次取得全部結果。
 - stdout 彙整格式：heading 順序 = 登記順序；Summary 區段狀態行擷取（Status/Verdict/
   prose/ERROR 四種情形）。
 - 失敗語義：一個 job 失敗時其他仍完成、失敗者標 ERROR、整體非零退出。
+- **partial-failure stdout 完整性**：模擬一個 reviewer 失敗，驗證**非零退出下 stdout 仍
+  含完整全文 + Summary**（含失敗者的 ERROR 行與成功者的狀態行），對應 §4.5 caller
+  contract。
+- **原子寫入與本次擁有權**：驗證最終檔由原子 `mv` 落地（無半寫狀態）；且預先在 review
+  目錄塞入一個別人的舊 `<label>.<round>.output.md`，確認本次 `batch_run` 的 Summary
+  只反映自己這次的輸出、不被既有檔污染（§4.3）。
+- **各 wrapper 名稱推導**：`review-brainstorm.sh` 由 `--spec` 去 `-design`、
+  `review-plan.sh` 與 `review-impl.sh` 由 `--plan` 去 `-plan`，同主題三者得到一致
+  `<spec name>`；`--name` 覆寫生效。
 - 並行節流：同時並行數不超過 `MAX_PARALLEL`。
 
 ## 11. 設計取捨記錄
@@ -249,8 +348,15 @@ stdout 一次取得全部結果。
 - **round 由 agent 顯式傳、name 由檔名推**：腳本無狀態、跨技能語義一致，不靠掃描
   目錄猜輪數。
 - **prompt 不落地**：保 dispatch.sh 零改動，並避免重現替換邏輯。
-- **移除 report file**：report 本就不被信任，git diff 已是事實來源。
+- **移除 report file**：report 本就不被信任，git diff 已是事實來源；implementer 的
+  report 改回單純的 subagent 回傳訊息（非磁碟檔），無孤兒路徑。
 - **FIFO token-bucket 節流**：bash 3.2 可攜，且為真正滑動節流。
+- **原子 `mv` + 彙整只讀本次私有暫存**（vs 直接寫最終路徑 + glob 目錄）：避免並行/同輪
+  重跑時的半寫檔與交錯污染，且不必在引擎內建跨 agent 鎖。
+- **非零退出但 stdout 權威**（保留使用者「非零退出」決策，並補 caller contract）：以
+  「stdout 任何退出碼都完整」的 harness 行為為前提，非零碼僅作注意訊號。
+- **並行 impl reviewer 的 invalidation 契約**（vs 保留循序閘）：以「任一修改使雙方失效、
+  同一無修改批次雙方皆過才收斂」消除「一過一敗後修改使過時通過」的競態。
 
 ## 12. 非目標
 

@@ -109,7 +109,10 @@ Create `scripts/review-batch-lib.sh`:
 batch_init() {
   _BATCH_LABELS=()
   _BATCH_ARGV=()           # each entry = one job's full argv, %q-encoded (subcommand + args)
-  : "${MAX_PARALLEL:=5}"
+  # Default to 5 only when MAX_PARALLEL is genuinely UNSET. An explicitly EMPTY value
+  # (MAX_PARALLEL="") must survive to validation so it can fail fast — do NOT use
+  # `: "${MAX_PARALLEL:=5}"`, which would silently rewrite "" to 5.
+  if [ -z "${MAX_PARALLEL+x}" ]; then MAX_PARALLEL=5; fi
 }
 
 # batch_add <label> <subcommand> <dispatch-args...> : register one job.
@@ -162,8 +165,10 @@ git commit -m "feat: add batch dispatch engine skeleton with job registration"
 Append before the final `printf`/`[ "$FAIL" -eq 0 ]` lines of `scripts/review-batch-lib.test.sh`:
 
 ```bash
-# Empty, zero, leading-zero, and non-numeric --max-parallel values all fail fast.
-for bad_mp in 0 "" abc 3x; do
+# Empty, zero, leading-zero (0*, e.g. 01/03), and non-numeric --max-parallel values all
+# fail fast. MAX_PARALLEL is set BEFORE batch_init so an explicit "" survives (batch_init
+# only defaults when UNSET) and reaches validation.
+for bad_mp in 0 "" abc 3x 03; do
   ( BATCH_DISPATCH_SH="$ECHO_STUB"; . "$LIB"; MAX_PARALLEL="$bad_mp"; batch_init
     batch_add j task --base HEAD; batch_run ) >/dev/null 2>&1
   if [ "$?" -ne 0 ]; then ok "invalid --max-parallel '$bad_mp' fails fast"
@@ -199,7 +204,7 @@ done < "$CONC_LOG"
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — the engine runs sequentially and never validates `MAX_PARALLEL`. The invalid-value cases exit 0 (no validation) and the sequential run never reaches a peak of 2; the validation `bad` lines and the concurrency `bad` line appear. Output shows `1 passed, 5 failed`.
+Expected: FAIL — the engine runs sequentially and never validates `MAX_PARALLEL`. The invalid-value cases exit 0 (no validation) and the sequential run never reaches a peak of 2; the five validation `bad` lines and the concurrency `bad` line appear. Output shows `1 passed, 6 failed`.
 
 - [ ] **Step 3: Implement validation + FIFO token-bucket in `batch_run`**
 
@@ -259,7 +264,7 @@ batch_run() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all earlier + new assertions pass (4 invalid-value oks via the loop + 1 concurrency ok + the 1 earlier argv ok). Output ends with `6 passed, 0 failed`.
+Expected: PASS — all earlier + new assertions pass (5 invalid-value oks via the loop + 1 concurrency ok + the 1 earlier argv ok). Output ends with `7 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -365,7 +370,7 @@ printf '%s\n' "$EE_RC" | grep -qx '[0-9][0-9]*' \
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `batch_run` streams raw stdout with no `## <label>` headings, no `=== Summary ===`, and no captured stderr. The order, four classification, stderr-excerpt, and errexit-Summary assertions report `bad` (seven failures); the errexit "completes" assertion happens to pass. Output ends with `7 passed, 7 failed`.
+Expected: FAIL — `batch_run` streams raw stdout with no `## <label>` headings, no `=== Summary ===`, and no captured stderr. The order, four classification, stderr-excerpt, and errexit-Summary assertions report `bad` (seven failures); the errexit "completes" assertion happens to pass. Output ends with `8 passed, 7 failed`.
 
 - [ ] **Step 3: Implement capture + aggregation + classification**
 
@@ -451,7 +456,7 @@ batch_run() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all aggregation/classification/order/stderr and both errexit assertions pass. Output ends with `14 passed, 0 failed`.
+Expected: PASS — all aggregation/classification/order/stderr and both errexit assertions pass. Output ends with `15 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -512,7 +517,7 @@ RC_ERR=$?
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `batch_run` currently always `return 0`, so the two ERROR-case assertions wrongly see exit 0 and report `bad`; the all-verdict assertion passes. Output ends with `15 passed, 2 failed`.
+Expected: FAIL — `batch_run` currently always `return 0`, so the two ERROR-case assertions wrongly see exit 0 and report `bad`; the all-verdict assertion passes. Output ends with `16 passed, 2 failed`.
 
 - [ ] **Step 3: Implement ERROR-aware exit code**
 
@@ -556,7 +561,7 @@ to:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all three exit-code assertions pass. Output ends with `17 passed, 0 failed`.
+Expected: PASS — all three exit-code assertions pass. Output ends with `18 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -567,13 +572,41 @@ git commit -m "feat: return nonzero exit only when a job is a tool ERROR"
 
 ---
 
-### Task 5: shutdown trap (process-group best-effort + reap + rm temp)
+### Task 5: shutdown trap (reliable reap + rm temp; optional best-effort process-group kill)
 
 **Files:**
 - Modify: `scripts/review-batch-lib.sh`
 - Test: `scripts/review-batch-lib.test.sh`
 
-Install a `trap` on EXIT/INT/TERM that: stops launching new jobs, best-effort kills each job's process group (`set -m` in the job subshell to get a distinct pgid; `kill -- -<pgid>` TERM then KILL after a short timeout), `wait`/reaps, removes the FIFO, and `rm -rf`s the temp dir. **Honest weak fallback:** if true pgroup kill isn't available, only the direct child PID is signaled and a companion grandchild may briefly survive — but its output lands in the already-removed temp dir and its companion job-id is unique, so it cannot corrupt a retry. The grandchild test asserts the strong guarantee where possible, else the documented weaker isolation.
+Install a `trap` on EXIT/INT/TERM that stops launching new jobs and tears the batch down. The
+**reliable primary mechanism** is: **direct-child TERM then KILL of each recorded job PID, plus
+`wait`/reap**, then remove the FIFO and `rm -rf` the temp dir. This always works and is exactly
+the spec's documented mechanism — it is NOT a weak fallback for the temp-dir guarantee.
+
+**Why not claim true process-group termination as the primary path:** enabling `set -m` INSIDE
+a subshell that is *already* a backgrounded job does NOT move that subshell into its own process
+group — the job's pid is therefore not a real pgid, and `kill -- -$pid` would not signal the
+companion subtree. So we do NOT record `$pid` as a pgid from inside the job. True process-group
+termination is an **OPTIONAL best-effort enhancement** done correctly only where job control can
+establish it: the ENGINE/launcher shell enables job control with `set -m` *before* each `job &`,
+so each backgrounded job's pid IS its own process-group id; shutdown can then `kill -- -<pid>`
+the group (TERM then KILL). This is guarded so it is skipped/harmless where job control is
+unavailable (non-interactive bash 3.2 / BSD), and **no strong "grandchild always killed"
+guarantee is claimed**.
+
+**Honest isolation guarantee (always holds, even with no process-group support):** the temp dir
+is `rm -rf`-ed on ANY exit path, so any companion grandchild that briefly survives can only write
+into the now-removed temp dir; and each batch uses a fresh `mktemp -d` and the companion's unique
+per-invocation `job.id`, so a stale grandchild cannot corrupt a fresh retry's output, aggregation,
+or companion state. Test 5b always asserts THIS guarantee; it only ADDITIONALLY asserts "grandchild
+killed" when process-group support is actually available, and never FAILS on platforms lacking it.
+
+**Cleanup stays armed through aggregation:** the temp-dir `rm -rf` must run on ANY exit path —
+including an interruption *during* aggregation. So the EXIT trap is NOT disarmed before the
+aggregation loop; it remains armed until `batch_run` returns. The INT/TERM handler runs cleanup
+then exits nonzero (no fall-through into aggregation); the EXIT handler cleans up on the normal
+return path. `batch_run` removes the temp dir itself on the success path and clears `_BATCH_TMP`
+so the still-armed EXIT trap's cleanup is an idempotent no-op.
 
 - [ ] **Step 1: Write the failing tests (temp gone after run; grandchild killed or isolated)**
 
@@ -596,16 +629,16 @@ after_dirs="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d
   && ok "run writes nothing under the project dir" \
   || bad "run writes nothing under the project dir" "$(ls -A "$PROJDIR" 2>/dev/null)"
 
-# Grandchild isolation under INT: a stub spawns a grandchild that, after a delay, writes
-# a marker to its inherited stdout — which the engine has redirected INTO this run's
-# batch-owned temp file ($tmp/<i>.out). After INT:
-#   - strong guarantee → the grandchild was killed, so the marker was never written; AND
-#   - weak fallback → the marker (if written) can only land in the now-removed temp file,
-#     so a fresh retry's temp dir/output is untouched.
-# We assert the run's temp dir is gone AND a fresh retry runs cleanly with its own temp.
+# Grandchild isolation under INT (the RELIABLE guarantee — asserted on every platform).
+# A stub spawns a grandchild that, after a delay, writes a marker to a path UNDER this run's
+# batch-owned temp dir (passed in via GC_MARK_DIR). The reliable guarantee, independent of
+# whether the grandchild is killed, is: the run's temp dir is `rm -rf`-ed on INT, so any
+# marker the grandchild writes can only land in the now-removed dir; and a fresh retry uses a
+# brand-new temp dir, so it is never corrupted by a stale grandchild. We do NOT assert the
+# grandchild was killed here (that needs process-group support — covered separately below).
 GC_STUB="$ROOT/gc/dispatch.sh"
 write_stub "$GC_STUB" \
-  '( sleep 1; echo "GRANDCHILD-MARKER" ) &' \
+  '( sleep 1; echo "GRANDCHILD-MARKER" >> "${GC_MARK_DIR:-/tmp}/gc-marker" 2>/dev/null ) &' \
   'sleep 2' \
   'echo "Status: OKAY"'
 gc_before="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
@@ -619,14 +652,50 @@ wait "$BATCH_PID" 2>/dev/null
 sleep 1.2   # past the grandchild's 1s timer
 gc_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
 [ "$gc_after" -le "$gc_before" ] \
-  && ok "INT removes the run's temp dir (stale grandchild marker can only be in it)" \
+  && ok "INT removes the run's temp dir (stale grandchild output can only land in it)" \
   || bad "INT removes the run's temp dir" "before=$gc_before after=$gc_after"
-# A fresh retry after the INT runs cleanly into its own brand-new temp dir.
+# A fresh retry after the INT runs cleanly into its own brand-new temp dir, unaffected by any
+# stale grandchild (this proves the reliable no-cross-contamination guarantee).
 RETRY="$( BATCH_DISPATCH_SH="$OKAY_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
   batch_add "retry" ; batch_run 2>/dev/null )"
 printf '%s\n' "$RETRY" | grep -q '^=== Summary ===$' \
   && ok "fresh retry after INT is unaffected by any stale grandchild" \
   || bad "fresh retry after INT is unaffected" "$RETRY"
+
+# OPTIONAL process-group enhancement (asserted only WHERE SUPPORTED; never fails otherwise).
+# Detect whether the engine/launcher shell can put a backgrounded job into its own process
+# group (job control via `set -m` BEFORE `&`, so the job's pid IS its pgid). If it can, the
+# grandchild is killed by `kill -- -<pid>` and never writes its marker; if it cannot, we SKIP
+# the kill assertion (record an ok) rather than fail on an unsupported platform.
+PG_SUPPORTED=0
+( set -m 2>/dev/null
+  ( sleep 5 ) &
+  _bgpid=$!
+  # If job control set up a distinct process group, the bg pid is usable as a pgid for
+  # `kill -- -<pid>`. Probe with signal 0 against the negative pgid.
+  if kill -0 -- "-$_bgpid" 2>/dev/null; then exit 0; else exit 1; fi
+  ) && PG_SUPPORTED=1 || PG_SUPPORTED=0
+# clean up the probe's background sleep regardless
+wait 2>/dev/null || :
+if [ "$PG_SUPPORTED" -eq 1 ]; then
+  GC_MARK="$ROOT/gc-mark-dir"; mkdir -p "$GC_MARK"; : > "$GC_MARK/gc-marker"
+  ( BATCH_DISPATCH_SH="$GC_STUB"; GC_MARK_DIR="$GC_MARK"; export GC_MARK_DIR
+    . "$LIB"; MAX_PARALLEL=1; batch_init
+    batch_add "slow" task --prompt /tmp/p.md
+    batch_run ) >/dev/null 2>&1 &
+  PG_PID=$!
+  sleep 0.4
+  kill -INT "$PG_PID" 2>/dev/null
+  wait "$PG_PID" 2>/dev/null
+  sleep 1.2   # past the grandchild's 1s timer
+  if ! grep -q 'GRANDCHILD-MARKER' "$GC_MARK/gc-marker" 2>/dev/null; then
+    ok "process-group support present: grandchild killed, no marker written"
+  else
+    bad "process-group support present: grandchild killed" "marker was written"
+  fi
+else
+  ok "process-group kill not supported on this platform — reliable temp-dir isolation suffices (skipped)"
+fi
 
 # TERM (alongside INT) also reaps and removes the run's temp dir.
 term_before="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
@@ -647,31 +716,39 @@ term_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — there is no EXIT/INT/TERM trap, so the INT- and TERM-interrupted runs leave their `review-batch.*` temp dirs behind (and never signal the job group). The INT and TERM temp-dir assertions report `bad`. Output ends with `20 passed, 2 failed`.
+Expected: FAIL — there is no EXIT/INT/TERM trap, so the INT- and TERM-interrupted runs leave their `review-batch.*` temp dirs behind (and never signal any job). The INT and TERM temp-dir assertions report `bad`. The optional process-group assertion is SKIPPED→ok on this non-interactive test shell (job control does not establish a usable per-job process group, so `PG_SUPPORTED=0`). The four other Task 5 assertions (temp dir removed after a normal run, writes-nothing-under-proj, fresh retry, process-group skipped) pass. Output ends with `22 passed, 2 failed`.
 
-- [ ] **Step 3: Implement the shutdown trap + per-job process groups**
+- [ ] **Step 3: Implement the shutdown trap (reliable reap + optional process-group kill)**
 
-In `scripts/review-batch-lib.sh`, replace the entire `batch_run` function with this version (adds `_BATCH_TMP`/`_BATCH_PIDS`/`_BATCH_PGIDS` state, `_batch_shutdown`, the trap, `set -m` job subshells, and pgid capture):
+In `scripts/review-batch-lib.sh`, replace the entire `batch_run` function with this version. It
+adds `_BATCH_TMP`/`_BATCH_PIDS`/`_BATCH_PGIDS` state, `_batch_shutdown`, the EXIT/INT/TERM trap,
+and — for the OPTIONAL best-effort group kill — enables job control with `set -m` in the
+**launcher shell BEFORE each `job &`** (so each backgrounded job's pid is its own process-group
+id) and records that pid as a candidate pgid. The reliable mechanism is direct-child TERM/KILL +
+`wait`/reap + temp-dir removal, which always works. The EXIT trap stays armed through aggregation;
+the success path removes the temp dir and clears `_BATCH_TMP` so the trap's cleanup is an
+idempotent no-op:
 
 ```bash
-# Shutdown: stop launching, best-effort kill each job's process group (TERM then KILL),
-# reap, then remove the temp dir. Honest weak fallback: on platforms where a distinct
-# process group per job is unavailable, only the direct child PID is signaled and a
-# companion grandchild may briefly survive — but its output went to the (now-removed)
-# temp dir and its companion job-id is unique, so it cannot corrupt a retry.
-# _batch_shutdown: stop launching, best-effort kill each job's process group (TERM then
-# KILL), reap, close the token FIFO fd, then rm the temp dir. Arrays are always
+# Shutdown: stop launching, signal each recorded job. The RELIABLE mechanism is direct-child
+# TERM then KILL + reap; an OPTIONAL best-effort process-group kill (kill -- -<pgid>) is also
+# attempted, but is only meaningful where the launcher established job control before `&` (so
+# pid == pgid). Where it isn't, the negative-pid kills simply no-op and the direct-child path
+# still tears everything down. A grandchild that briefly survives can only write into the
+# (about-to-be-removed) temp dir, so it cannot corrupt a fresh retry. Arrays are always
 # initialized (see batch_run) so `${#arr[@]}` is never a bad substitution.
 _batch_shutdown() {
   local p
+  # Best-effort group TERM first (no-op where pid is not a real pgid).
   if [ "${#_BATCH_PGIDS[@]}" -gt 0 ]; then
     for p in "${_BATCH_PGIDS[@]}"; do
-      [ -n "$p" ] && kill -TERM "-$p" 2>/dev/null
+      [ -n "$p" ] && kill -TERM "-$p" 2>/dev/null || :
     done
   fi
+  # Reliable direct-child TERM.
   if [ "${#_BATCH_PIDS[@]}" -gt 0 ]; then
     for p in "${_BATCH_PIDS[@]}"; do
-      [ -n "$p" ] && kill -TERM "$p" 2>/dev/null
+      [ -n "$p" ] && kill -TERM "$p" 2>/dev/null || :
     done
   fi
   # Brief grace, then hard kill any survivors.
@@ -687,10 +764,10 @@ _batch_shutdown() {
     sleep 0.1; waited=$((waited+1))
   done
   if [ "${#_BATCH_PGIDS[@]}" -gt 0 ]; then
-    for p in "${_BATCH_PGIDS[@]}"; do [ -n "$p" ] && kill -KILL "-$p" 2>/dev/null; done
+    for p in "${_BATCH_PGIDS[@]}"; do [ -n "$p" ] && kill -KILL "-$p" 2>/dev/null || :; done
   fi
   if [ "${#_BATCH_PIDS[@]}" -gt 0 ]; then
-    for p in "${_BATCH_PIDS[@]}";  do [ -n "$p" ] && kill -KILL "$p"  2>/dev/null; done
+    for p in "${_BATCH_PIDS[@]}";  do [ -n "$p" ] && kill -KILL "$p"  2>/dev/null || :; done
   fi
   wait 2>/dev/null || :
   # Explicitly close the token-bucket FIFO fd so no reader/writer keeps it open.
@@ -718,9 +795,15 @@ batch_run() {
   mkfifo "$fifo"
   exec 9<>"$fifo"
   # EXIT runs cleanup on any exit path; INT/TERM run cleanup then exit nonzero (no
-  # fall-through into aggregation).
+  # fall-through into aggregation). The EXIT trap stays armed through aggregation so an
+  # interruption DURING aggregation still removes the temp dir.
   trap '_batch_shutdown' EXIT
   trap '_batch_on_signal' INT TERM
+
+  # Enable job control in the LAUNCHER shell so each `job &` below starts in its own process
+  # group (its pid IS its pgid) — this is what makes the OPTIONAL group kill correct where
+  # supported. On platforms where this is a no-op, the direct-child reap still tears down.
+  set -m 2>/dev/null || true
 
   local t
   for ((t=0; t<MAX_PARALLEL; t++)); do printf '\n' >&9; done
@@ -729,10 +812,6 @@ batch_run() {
   for i in "${!_BATCH_LABELS[@]}"; do
     read -r -u 9 _token
     (
-      # set -m gives this subshell its own process group; record its pgid so shutdown
-      # can signal the whole tree (dispatch.sh + node companion). Weak-fallback
-      # platforms simply leave pgid unusable; the direct PID is still signaled.
-      set -m 2>/dev/null || true
       eval "set -- ${_BATCH_ARGV[$i]}"
       # The reviewer tool may exit nonzero (the expected ERROR case); capture its rc
       # explicitly so errexit cannot abort this job, write the rc file BEFORE returning
@@ -746,12 +825,19 @@ batch_run() {
     ) &
     pid=$!
     _BATCH_PIDS+=("$pid")
-    _BATCH_PGIDS+=("$pid")   # with job control the bg subshell's pid == its pgid
+    # Candidate pgid: valid ONLY because the launcher enabled job control before `&` above,
+    # so the job started as its own group leader (pid == pgid). Where job control is a
+    # no-op the negative-pid signal simply fails harmlessly; the direct PID is reaped anyway.
+    _BATCH_PGIDS+=("$pid")
   done
-  # A child exiting nonzero must not abort the batch under errexit.
+  # Re-disable launcher job control so the rest of batch_run runs normally. A child exiting
+  # nonzero must not abort the batch under errexit.
+  set +m 2>/dev/null || true
   wait || :
   exec 9>&-
-  trap - EXIT INT TERM
+  # NOTE: do NOT disarm the EXIT trap here — cleanup must stay armed through aggregation so an
+  # interruption during aggregation still removes the temp dir. INT/TERM are likewise left
+  # armed; an interrupt during aggregation runs _batch_on_signal (cleanup + nonzero exit).
 
   local rc frag summary="" rc_all=0
   for i in "${!_BATCH_LABELS[@]}"; do
@@ -771,8 +857,11 @@ batch_run() {
   printf '=== Summary ===\n'
   printf '%s' "$summary"
 
+  # Success path: remove the temp dir and clear _BATCH_TMP so the still-armed EXIT trap's
+  # cleanup is an idempotent no-op. Then disarm the traps and return.
   rm -rf "$tmp"
   _BATCH_TMP=""
+  trap - EXIT INT TERM
   return "$rc_all"
 }
 ```
@@ -780,7 +869,7 @@ batch_run() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — the normal run leaves no temp dir and writes nothing under the project dir; the INT- and TERM-interrupted runs reap + remove their temp dir (strong-guarantee platforms also kill the grandchild), and a fresh retry runs cleanly. Output ends with `22 passed, 0 failed`.
+Expected: PASS — the normal run leaves no temp dir and writes nothing under the project dir; the INT- and TERM-interrupted runs reap + remove their temp dir, and a fresh retry runs cleanly. The optional process-group assertion either confirms the grandchild was killed (where job control establishes a per-job process group) or is recorded as skipped (where it cannot) — never a failure. Output ends with `24 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -834,7 +923,7 @@ else bad "review-brainstorm: design-soundness argv" "$T6"; fi
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `review-brainstorm.sh` does not exist, so `bash "$BRAINSTORM" ...` errors and `T6` is empty. Both assertions report `bad`. Output ends with `22 passed, 2 failed`.
+Expected: FAIL — `review-brainstorm.sh` does not exist, so `bash "$BRAINSTORM" ...` errors and `T6` is empty. Both assertions report `bad`. Output ends with `24 passed, 2 failed`.
 
 - [ ] **Step 3: Write `review-brainstorm.sh`**
 
@@ -882,7 +971,7 @@ batch_run
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `chmod +x scripts/review-brainstorm.sh && bash scripts/review-batch-lib.test.sh`
-Expected: PASS — both reviewer argv assertions pass. Output ends with `24 passed, 0 failed`.
+Expected: PASS — both reviewer argv assertions pass. Output ends with `26 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -953,7 +1042,7 @@ else bad "review-plan: missing option value fails with a clear wrapper error" "r
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `review-plan.sh` does not exist. All five new assertions report `bad`. Output ends with `24 passed, 5 failed`.
+Expected: FAIL — `review-plan.sh` does not exist. All five new assertions report `bad`. Output ends with `26 passed, 5 failed`.
 
 - [ ] **Step 3: Write `review-plan.sh`**
 
@@ -1019,7 +1108,7 @@ batch_run
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `chmod +x scripts/review-plan.sh && bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all five assertions pass. Output ends with `29 passed, 0 failed`.
+Expected: PASS — all five assertions pass. Output ends with `31 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -1075,7 +1164,7 @@ else bad "review-impl: code-quality argv" "$T8"; fi
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `review-impl.sh` does not exist, so `T8` is empty: the spec-compliance and code-quality argv assertions fail (2 failures), while the "no `--report-file`" assertion passes (an empty `T8` contains no `--report-file`). Output ends with `30 passed, 2 failed`.
+Expected: FAIL — `review-impl.sh` does not exist, so `T8` is empty: the spec-compliance and code-quality argv assertions fail (2 failures), while the "no `--report-file`" assertion passes (an empty `T8` contains no `--report-file`). Output ends with `32 passed, 2 failed`.
 
 - [ ] **Step 3: Write `review-impl.sh`**
 
@@ -1127,7 +1216,7 @@ batch_run
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `chmod +x scripts/review-impl.sh && bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all three assertions pass. Output ends with `32 passed, 0 failed`.
+Expected: PASS — all three assertions pass. Output ends with `34 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -1215,8 +1304,9 @@ to:
 ```
 ## CRITICAL: Verify Independently From the Diff
 
-There is no implementer report to read. The implementation may be incomplete,
-inaccurate, or optimistic. You MUST verify everything independently from the diff.
+You receive no prose summary from the implementer — only the diff and the plan. The
+implementation may be incomplete, inaccurate, or optimistic. You MUST verify everything
+independently from the diff.
 
 **DO NOT:**
 - Assume a requirement was met because the Task says so
@@ -1333,7 +1423,7 @@ git commit -m "docs: drop report-file from spec reviewer, add evidence-verifiabi
 - Modify: `skills/brainstorming/SKILL.md`
 - Test (verify): grep checks below.
 
-Replace the two-background-call dispatch (the "Parallel dispatch per round" + "Dispatch mechanism" + the two separate `dispatch.sh` blocks) with a single `review-brainstorm.sh` call plus the explicit caller control-flow from spec §7 (read stdout on ANY exit code; classify from `=== Summary ===`; ERROR → rerun whole wrapper; findings → fix + re-review).
+Replace the two-background-call dispatch (the "Parallel dispatch per round" + "Dispatch mechanism" + the two separate `dispatch.sh` blocks) with a single `review-brainstorm.sh` call plus the explicit caller control-flow from spec §7 (read stdout on ANY exit code; classify from `=== Summary ===`; ERROR → rerun whole wrapper; findings → fix + re-review). Also fix the stale sections that survive the dispatch block: (a) the "Round loop — zero tolerance" PSEUDOCODE (it has no ERROR branch and routes every non-pass into `fix_all_findings`); (b) the gitignored-spec instruction (it implies the design-soundness reviewer can be individually "skipped", which the fixed two-reviewer `review-brainstorm.sh` wrapper cannot express); (c) the User Review Gate "may focus" wording (the wrapper only takes `--spec`/`--base` and always re-reviews the whole spec); and (d) ADD the caller HEAD contract (spec §11: callers must not advance `HEAD` while `review-brainstorm.sh` runs).
 
 - [ ] **Step 1: Write the verify check (expected to fail before the edit)**
 
@@ -1417,15 +1507,109 @@ sidecar) and the design-soundness reviewer (`dispatch.sh adversarial`,
 4. **Otherwise** apply the round loop: if either reviewer reports a finding, fix ALL findings,
    commit, and re-run the whole wrapper next round; when structural-completeness is
    `Status: OKAY` AND design-soundness is `Verdict: approve` in the same round, the loop ends.
+
+**Caller HEAD contract:** Do not advance `HEAD` (commit/rebase/checkout) while
+`review-brainstorm.sh` is running — both reviewers must see the same `HEAD` and the same
+`<SPEC_BASE>..HEAD` diff. The engine does not detect `HEAD` movement; this is a documented
+caller contract (spec §11). Commit each round's spec fixes BEFORE launching the next round's
+wrapper call, not while it runs.
 ````
+
+Edit D — the "Round loop — zero tolerance" PSEUDOCODE. It currently has no ERROR branch and
+routes every non-pass straight into `fix_all_findings`, and it does not parse the
+`=== Summary ===` block. Change:
+
+````
+**Round loop — zero tolerance:**
+
+```
+while true:
+  [launch the structural-completeness and design-soundness reviewers in parallel, wait for both]
+  if structural_completeness == "Status: OKAY" AND design_soundness == "Verdict: approve":
+    break  # both passed — exit loop
+  fix_all_findings(structural_completeness.issues + design_soundness.findings)  # every finding — none skipped
+  # spec was edited — re-dispatch BOTH reviewers next round
+  # (both re-run together whenever any spec edit is made)
+```
+
+Any finding from either reviewer blocks the round. Fix everything before re-dispatching.
+````
+
+to:
+
+````
+**Round loop — zero tolerance:**
+
+```
+while true:
+  summary = run_review_brainstorm(spec_file, SPEC_BASE)   # ONE wrapper call, both reviewers
+  parse === Summary ===   # read stdout on ANY exit code (stdout is authoritative)
+  structural = structural_completeness verdict   # Status: OKAY | Issues Found | ERROR (tool failed…)
+  design     = design_soundness verdict          # Verdict: approve | needs-attention | ERROR (tool failed…) | prose
+
+  if structural is "ERROR (tool failed…)" OR design is "ERROR (tool failed…)":
+    continue   # tool failure, NOT a review result — re-run the WHOLE wrapper, same args
+
+  if structural == "Status: OKAY" AND design == "Verdict: approve":
+    break   # both passed — exit loop
+
+  # Only real reviewer findings (Issues Found / needs-attention, and any prose finding) reach here.
+  fix_all_findings(structural.issues + design.findings)   # every finding — none skipped
+  commit_round_fixes()
+  # spec was edited — re-run the whole wrapper next round (both reviewers re-run together)
+```
+
+Any finding from either reviewer blocks the round. An `ERROR (tool failed…)` is a tool failure,
+not a finding: re-run the whole wrapper rather than entering the fix loop. Fix every real finding
+before re-running.
+````
+
+Edit E — the gitignored-spec instruction. The fixed two-reviewer `review-brainstorm.sh` wrapper
+has no per-reviewer skip option, so the "design-soundness reviewer … must be skipped for that
+round" sentence is not expressible. Change:
+
+```
+**Git commit discipline:** Before the first review round, commit the first version of the spec. After each round's fixes, commit again with a message noting the round (e.g. `docs(spec): fix review round 2 - resolve ambiguity in auth flow`). If the spec file is gitignored, skip the commit — NEVER use `git add -f` to force-add an ignored file. If the spec is gitignored, the design-soundness reviewer cannot diff the spec commit and must be skipped for that round (note the skip in output).
+```
+
+to:
+
+```
+**Git commit discipline:** Before the first review round, commit the first version of the spec. After each round's fixes, commit again with a message noting the round (e.g. `docs(spec): fix review round 2 - resolve ambiguity in auth flow`). NEVER use `git add -f` to force-add an ignored file. `review-brainstorm.sh` is a fixed two-reviewer wrapper with no per-reviewer skip option; the design-soundness reviewer diffs `<SPEC_BASE>..HEAD`, so the spec **must be committed** for the wrapper-based review to run as designed. If the spec file is gitignored, the wrapper cannot review it — do not attempt the dual review on a gitignored spec; ask the user to un-ignore (or relocate) the spec so it can be committed before review.
+```
+
+Edit F — the User Review Gate rerun instructions. The wrapper only takes `--spec`/`--base` and
+always re-reviews the whole spec, so remove the "the review may focus there" implication. Change:
+
+```
+2. Re-run the dual spec review loop (both the structural-completeness and design-soundness reviewers in parallel, until both pass). If the change affects global consistency or scope, the full spec is re-reviewed; if it only affects a single section, the review may focus there — but both reviewers still re-run.
+```
+
+to:
+
+```
+2. Re-run the dual spec review loop with ONE `review-brainstorm.sh` call (both the structural-completeness and design-soundness reviewers in parallel, until both pass). The wrapper takes only `--spec`/`--base` and always re-reviews the whole spec — there is no per-section focus — so any edit re-runs both reviewers over the entire spec.
+```
 
 - [ ] **Step 3: Run the verify checks (expected to pass after the edit)**
 
 Run: `grep -c 'review-brainstorm.sh' skills/brainstorming/SKILL.md`
-Expected: ≥ `4` (checklist item 6, the diagram node + edges, the command block, and the prose reference).
+Expected: ≥ `7` — the literal script name `review-brainstorm.sh` now appears in: checklist item 6, the diagram node + edges, the command block, the new-prose reference, the HEAD contract, the gitignored-spec instruction (Edit E), and the User Review Gate rerun (Edit F).
 
 Run: `grep -c '=== Summary ===' skills/brainstorming/SKILL.md`
-Expected: ≥ `1` (the new caller control-flow references the Summary block).
+Expected: ≥ `1` (the caller control-flow and the round-loop pseudocode both reference the Summary block).
+
+Run: `grep -c 'must be skipped for that round' skills/brainstorming/SKILL.md`
+Expected: `0` — the per-reviewer "design-soundness reviewer … must be skipped for that round" instruction (which the fixed two-reviewer wrapper cannot express) was removed.
+
+Run: `grep -c 'the review may focus' skills/brainstorming/SKILL.md`
+Expected: `0` — the User Review Gate "the review may focus there" per-section implication was removed.
+
+Run: `grep -ic 'ERROR (tool failed' skills/brainstorming/SKILL.md`
+Expected: ≥ `1` — the round-loop pseudocode now has an explicit ERROR branch that re-runs the whole wrapper.
+
+Run: `grep -ic 'do not advance .HEAD.' skills/brainstorming/SKILL.md`
+Expected: ≥ `1` — the caller HEAD contract (spec §11: "Do not advance `HEAD` … while `review-brainstorm.sh` is running") was added.
 
 Concrete check that the old direct-dispatch review-loop INSTRUCTIONS are gone. The review loop must no longer instruct the two separate background `dispatch.sh` calls, and the diagram/checklist must no longer drive the loop through direct `dispatch.sh task`/`dispatch.sh adversarial`:
 
@@ -1458,7 +1642,7 @@ git commit -m "docs: rewrite brainstorming spec-review dispatch to single review
 - Modify: `skills/writing-plans/SKILL.md`
 - Test (verify): grep checks below.
 
-Replace the per-Task + Coverage background dispatch (the "Dispatch mechanism" section with its two `dispatch.sh task` blocks and the surrounding "separate run_in_background Bash call" instructions) with a single `review-plan.sh` call (multiple `--task`, optional `--coverage`) plus the spec §7 caller control-flow.
+Replace the per-Task + Coverage background dispatch (the "Dispatch mechanism" section with its two `dispatch.sh task` blocks and the surrounding "separate run_in_background Bash call" instructions) with a single `review-plan.sh` call (multiple `--task`, optional `--coverage`) plus the spec §7 caller control-flow. Also update the `### Per-Task Review` and `### Coverage Verifier` subsections that still describe per-reviewer dispatch ("Per-Task invocation", "each reviewer call passes `--set TASK_ID`", "dispatch one Coverage Verifier") to the single-wrapper model, and add `prose` to the caller control-flow classification.
 
 - [ ] **Step 1: Write the verify check (expected to fail before the edit)**
 
@@ -1518,8 +1702,9 @@ rounds where the Coverage Verifier has dropped out (principle 3). At least one `
 
 1. **Regardless of the wrapper's exit code, read and parse its entire stdout** and locate the
    `=== Summary ===` section — stdout is preserved in full even on a nonzero exit.
-2. Classify each reviewer from its Summary line: `Status: OKAY` / `Status: Issues Found`, or
-   `ERROR (tool failed, ...)`.
+2. Classify each reviewer from its Summary line: `Status: OKAY` / `Status: Issues Found`,
+   `(prose — 見全文)` (a no-verdict reviewer — read its full `## <label>` section and treat any
+   blocking observation as a finding), or `ERROR (tool failed, ...)`.
 3. **If any reviewer is ERROR** → **re-run the entire `review-plan.sh` call** with the same
    `--task`/`--coverage` set. Do not treat ERROR as a review failure and do not discard stdout.
 4. **Otherwise** apply the unified re-run policy below: fix all issues and gaps, commit, and
@@ -1589,10 +1774,36 @@ to:
 2. Re-run review with ONE `review-plan.sh` call: pass one `--task "Task N"` for every **affected Task** so each reviewer reads sibling Task context from the plan file, and add `--coverage` to also re-run the Coverage Verifier over the whole plan vs. the whole spec (edits can introduce new coverage gaps).
 ```
 
+Edit G — the `### Per-Task Review` and `### Coverage Verifier` subsections. These still describe the per-reviewer model ("Per-Task invocation", "each reviewer call passes `--set TASK_ID`", "dispatch one Coverage Verifier"). Replace BOTH subsections — from the `### Per-Task Review` heading through the end of the `### Coverage Verifier` subsection (i.e. up to but NOT including `### The Round Loop`) — with:
+
+````
+### Per-Task Review
+
+Every active Task this round is reviewed by one per-Task reviewer, registered as a single
+`--task "Task N"` on the one `review-plan.sh` call in **Dispatch mechanism** above (the wrapper
+translates each `--task` into the reviewer's task id for you — you never pass any `--set` flag
+yourself). The reviewer reads the plan file, locates that Task, and treats every other Task in
+the file as sibling context — no Task text is pasted.
+
+A Task that has not yet received `Status: OKAY` is passed as a `--task` each round. A Task drops
+out of the loop (its `--task` is omitted next round) once its reviewer reports `Status: OKAY` and
+its content is not edited again.
+
+### Coverage Verifier
+
+In **addition** to the per-Task reviews, add `--coverage` to the same `review-plan.sh` call each
+round the Coverage Verifier is active (it uses `coverage-verifier-prompt.md` over the whole plan
+file and whole spec file, read-only, comparing them globally).
+
+If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Tasks, or amend the
+spec. Any newly added or substantially changed Task re-enters per-Task review next round (as a new
+`--task`). Keep `--coverage` on next round only if gaps were fixed this round; otherwise omit it.
+````
+
 - [ ] **Step 3: Run the verify checks (expected to pass after the edit)**
 
 Run: `grep -c 'review-plan.sh' skills/writing-plans/SKILL.md`
-Expected: ≥ `5` (Plan Review Loop intro, Dispatch mechanism heading + command block + prose, Round Loop prose, the "exactly as written" line, the pseudo-code, and the User Review Gate rerun all reference it).
+Expected: ≥ `7` — the literal `review-plan.sh` now appears in: Plan Review Loop intro (×2 bullets), Dispatch mechanism heading + command block + prose, Round Loop prose, the "exactly as written" line, the User Review Gate rerun, and the Per-Task Review + Coverage Verifier subsections (Edit G).
 
 Run: `grep -c '=== Summary ===' skills/writing-plans/SKILL.md`
 Expected: ≥ `1`.
@@ -1605,6 +1816,18 @@ Expected: `0` (no direct `dispatch.sh task` invocation block remains in the revi
 
 Run: `grep -Ec 'dispatch_task_reviewer|dispatch_coverage_verifier' skills/writing-plans/SKILL.md`
 Expected: `0` (the pseudo-code now calls `run_review_plan`, not the per-reviewer dispatch helpers).
+
+Run: `grep -c -- '--set TASK_ID' skills/writing-plans/SKILL.md`
+Expected: `0` — the caller no longer passes `--set TASK_ID` directly; the User Review Gate and Per-Task Review now use `--task "Task N"` (Edit F + Edit G removed the last `--set TASK_ID` instruction).
+
+Run: `grep -c 'Per-Task invocation' skills/writing-plans/SKILL.md`
+Expected: `0` — the "using the Per-Task invocation in Dispatch mechanism" phrasing was replaced by the single-wrapper `--task` model.
+
+Run: `grep -c 'Coverage Verifier invocation' skills/writing-plans/SKILL.md`
+Expected: `0` — the "using the Coverage Verifier invocation in Dispatch mechanism" phrasing was replaced by `--coverage` on the one wrapper call.
+
+Run: `grep -c 'prose — 見全文\|(prose' skills/writing-plans/SKILL.md`
+Expected: ≥ `1` — `prose` was added to the caller control-flow classification (a no-verdict reviewer).
 
 - [ ] **Step 4: Commit**
 
@@ -1621,7 +1844,7 @@ git commit -m "docs: rewrite writing-plans review dispatch to single review-plan
 - Modify: `skills/subagent-driven-development/SKILL.md`
 - Test (verify): grep checks below.
 
-Replace the two-stage per-task review (the "Spec-compliance reviewer" + "Code-quality reviewer" subsections and the report-file `mktemp`→`--report-file`→`rm` wiring) with a single `review-impl.sh` call (spec + code-quality parallel, §5.3 contract). REMOVE every mention of the report-file wiring (incl. the process diagram's `--report-file` node, the Example Workflow lines, and the Sidecar files line). Keep the final adversarial merge gate unchanged. Add the §7 caller control-flow.
+Replace the two-stage per-task review (the "Spec-compliance reviewer" + "Code-quality reviewer" subsections and the report-file `mktemp`→`--report-file`→`rm` wiring) with a single `review-impl.sh` call (spec + code-quality parallel, §5.3 contract). REMOVE every mention of the report-file wiring (incl. the process diagram's `--report-file` node, the Example Workflow lines, and the Sidecar files line). Keep the final adversarial merge gate unchanged. Add the §7 caller control-flow (incl. `prose` classification for code-quality). Also update the Advantages "Quality gates" bullet (no longer two-stage) and shape the Example Workflow so the `=== Summary ===` block holds ONLY final status lines while full reviewer output appears in the `## <label>` sections BEFORE Summary (spec §4.4).
 
 - [ ] **Step 1: Write the verify check (expected to fail before the edit)**
 
@@ -1748,8 +1971,9 @@ prose — no `Verdict:` line).
 1. **Regardless of the wrapper's exit code, read and parse its entire stdout** and locate the
    `=== Summary ===` section — stdout is preserved in full even on a nonzero exit.
 2. Classify each reviewer from its Summary line: spec-compliance as
-   `Status: OKAY` / `Status: Issues Found`; code-quality from its prose (a blocking-severity
-   defect = a finding); or `ERROR (tool failed, ...)`.
+   `Status: OKAY` / `Status: Issues Found`; code-quality as `(prose — 見全文)` — read its full
+   `## code-quality` section and treat any blocking-severity defect as a finding; or
+   `ERROR (tool failed, ...)`.
 3. **If either reviewer is ERROR** → **re-run the entire `review-impl.sh` call** (same
    `--plan`/`--task`/`--task-base`). Do not treat ERROR as a review failure and do not discard
    stdout.
@@ -1792,9 +2016,15 @@ to:
 
 ```
 [Dispatch batched review: review-impl.sh --task "Task 1" --task-base abc1234]
+## spec-compliance
+Status: OKAY
+
+## code-quality
+Clean implementation. No blocking issues found.
+
 === Summary ===
 - spec-compliance: Status: OKAY
-- code-quality: (prose — 見全文)  [prose: Clean implementation. No blocking issues found.]
+- code-quality: (prose — 見全文)
 [spec OKAY + no blocking findings -> task passes]
 ```
 
@@ -1828,22 +2058,32 @@ to:
 
 ```
 [Dispatch batched review: review-impl.sh --task "Task 2" --task-base def5678]
+## spec-compliance
+Status: Issues Found
+  - src/recovery.ts:47 — Missing progress reporting (spec says "report every 100 items")
+    Fix: [concrete patch provided]
+  - src/recovery.ts:112 — Extra --json flag not in spec
+    Fix: [concrete removal patch provided]
+
+## code-quality
+src/recovery.ts:47 uses magic number 100 — should be a named constant.
+
 === Summary ===
 - spec-compliance: Status: Issues Found
 - code-quality: (prose — 見全文)
-  spec-compliance:
-    - src/recovery.ts:47 — Missing progress reporting (spec says "report every 100 items")
-      Fix: [concrete patch provided]
-    - src/recovery.ts:112 — Extra --json flag not in spec
-      Fix: [concrete removal patch provided]
-  code-quality prose: src/recovery.ts:47 uses magic number 100 — should be a named constant.
 
 [Implementer applies ALL findings from both reviewers in one pass, re-commits]
 
 [Re-run batched review: review-impl.sh --task "Task 2" --task-base def5678]
+## spec-compliance
+Status: OKAY
+
+## code-quality
+Clean. No issues.
+
 === Summary ===
 - spec-compliance: Status: OKAY
-- code-quality: (prose — 見全文)  [prose: Clean. No issues.]
+- code-quality: (prose — 見全文)
 [spec OKAY + no blocking findings -> task passes]
 ```
 
@@ -1859,6 +2099,20 @@ to:
 ```
 - Advance HEAD (commit/rebase/checkout) while `review-impl.sh` is running (both reviewers must see the same HEAD)
 - Move to next task while either review has open issues
+```
+
+Edit I — the Advantages "Quality gates" bullet (still describes the removed two-stage serialization). Change:
+
+```
+- Two-stage review: spec compliance (`dispatch.sh task`), then code quality (`dispatch.sh review`)
+- Final adversarial gate (`dispatch.sh adversarial`) catches cross-task integration problems
+```
+
+to:
+
+```
+- One batched review per task: spec compliance and code quality run in parallel via `review-impl.sh`
+- Final adversarial gate (`dispatch.sh adversarial`) catches cross-task integration problems
 ```
 
 - [ ] **Step 3: Run the verify checks (expected to pass after the edit)**
@@ -1878,13 +2132,25 @@ Expected: ≥ `1`.
 Run: `grep -c 'dispatch.sh adversarial' skills/subagent-driven-development/SKILL.md`
 Expected: ≥ `1` (the final adversarial gate is unchanged).
 
+Run: `grep -c 'Two-stage review' skills/subagent-driven-development/SKILL.md`
+Expected: `0` (the Advantages "Quality gates" two-stage bullet was reworded to the one batched review).
+
+Run: `grep -c 'Start code quality review before spec compliance' skills/subagent-driven-development/SKILL.md`
+Expected: `0` (the now-invalid ordering Red Flag was removed).
+
+Run: `grep -c 'prose — 見全文' skills/subagent-driven-development/SKILL.md`
+Expected: ≥ `1` (the caller control-flow and Example Workflow classify code-quality as `(prose — 見全文)`).
+
+Verify the Example Workflow matches the spec §4.4 shape — the `=== Summary ===` block holds ONLY the per-reviewer status lines, with full reviewer detail in the `## <label>` sections that precede it. Run: `awk '/^=== Summary ===$/{f=1;next} f&&/^## /{f=0} f&&/Fix: \[concrete/{print "LEAK"}' skills/subagent-driven-development/SKILL.md | grep -c LEAK`
+Expected: `0` — no concrete-fix detail leaks into a Summary block (detail lives only in the `## spec-compliance` / `## code-quality` sections above each Summary).
+
 **Compatibility inventory verification (the report-file channel survives where it must, and this plan does not touch the implementer prompt):**
 
 Run: `grep -c -- '--report-file' scripts/dispatch.sh`
 Expected: ≥ `1` — `dispatch.sh` still supports the general `--report-file` option (only `review-impl.sh` stopped using it; it is not dead code).
 
-Run: `git diff --name-only <IMPL_BASE>..HEAD | grep -c 'skills/subagent-driven-development/implementer-prompt.md'`
-Expected: `0` — `implementer-prompt.md` is NOT modified by this plan (its report is the subagent's return message to the parent, not a disk file, and stays as-is).
+Run (substitute `IMPL_BASE` with the SHA captured before Task 1 — the commit just before this plan's first commit, e.g. `git rev-parse HEAD~13` after all 13 commits, or the recorded base SHA): `IMPL_BASE="$(git rev-parse HEAD~13)"; git diff --name-only "$IMPL_BASE"..HEAD | grep -c 'skills/subagent-driven-development/implementer-prompt.md'`
+Expected: `0` — `implementer-prompt.md` is NOT modified by this plan (its report is the subagent's return message to the parent, not a disk file, and stays as-is). If you do not know the base SHA, equivalently run `git log --oneline -- skills/subagent-driven-development/implementer-prompt.md | head -1` and confirm the latest commit touching it predates this plan's work.
 
 - [ ] **Step 4: Commit**
 
@@ -1895,89 +2161,124 @@ git commit -m "docs: rewrite per-task review to single review-impl.sh, drop repo
 
 ---
 
-### Task 13: caller control-flow acceptance fixture (Summary contract is machine-parseable)
+### Task 13: caller control-flow acceptance fixture (each SKILL.md caller's decision is machine-decidable)
 
 **Files:**
 - Test: `scripts/review-batch-lib.test.sh`
 
-The agent-facing contract is the wrapper's stdout `=== Summary ===` block plus the §7
-control-flow decision (ERROR → rerun entire wrapper; findings → fix + re-review). This task
-adds a hermetic acceptance test with a small reference parser that, given canned wrapper-stdout
-blobs, extracts each reviewer's status, detects ERROR, and decides the action. It tests the
-CONTRACT/format (a machine could parse it and decide), not any live agent or companion.
+The agent-facing contract is the wrapper's stdout `=== Summary ===` block plus the per-caller
+control-flow decision: stdout is parsed REGARDLESS of exit code; an `ERROR (tool failed…)` line →
+"rerun entire wrapper"; findings (`Status: Issues Found` / `Verdict: needs-attention`) →
+"fix + re-review"; all-clear → "proceed". This task proves the decision is machine-decidable for
+**each of the three SKILL.md callers' shapes** (brainstorm: `Status:` + `Verdict:`; plan:
+per-task + coverage `Status:`; impl: spec-compliance `Status:` + code-quality prose), modelling
+BOTH the stdout blob AND the exit code (0 vs nonzero) for every caller. It tests the
+CONTRACT/format, not any live agent or companion.
 
-- [ ] **Step 1: Write the failing test (reference parser over fixture Summary blobs)**
+- [ ] **Step 1: Write the failing assertions (no helper yet — genuine RED)**
 
-Append before the final `printf`/`[ "$FAIL" -eq 0 ]` lines of `scripts/review-batch-lib.test.sh`:
+The reference parser `decide_action` is the production code this step is testing; the genuine-RED
+step appends the ASSERTIONS that call it WITHOUT defining it, so they fail (the undefined
+`decide_action` substitutes to empty, which never matches the expected action). Append the
+following before the final `printf`/`[ "$FAIL" -eq 0 ]` lines of `scripts/review-batch-lib.test.sh`:
 
 ```bash
-# The wrapper's stdout === Summary === block is machine-parseable and the §7 control-flow is
-# decidable from it. A tiny reference parser proves it: it extracts each reviewer's status,
-# detects ERROR, and selects "rerun entire wrapper" (ERROR) vs "fix + re-review" (findings)
-# vs "proceed" (all clear). These are canned wrapper-stdout fixtures — no live wrapper runs.
+# Acceptance: the wrapper's stdout === Summary === block is machine-parseable and each of the
+# three SKILL.md callers' control-flow is decidable from (stdout, exit-code). decide_action reads
+# the Summary from stdout REGARDLESS of the exit code and returns the documented action:
+#   - any "ERROR (tool failed" Summary line -> RERUN_WRAPPER (tool failure, not a review result)
+#   - else any "Status: Issues Found" / "Verdict: needs-attention" -> FIX_AND_REREVIEW
+#   - else (all OKAY / approve / prose) -> PROCEED
+# These are canned wrapper-stdout fixtures plus a modelled rc — no live wrapper runs.
 
-# decide_action <summary-blob> : print PROCEED | RERUN_WRAPPER | FIX_AND_REREVIEW.
-# - any "ERROR (tool failed" Summary line -> RERUN_WRAPPER (tool failure, not a review result)
-# - else any Issues Found / needs-attention -> FIX_AND_REREVIEW
-# - else (all OKAY / approve) -> PROCEED
-decide_action() {
-  local blob="$1" sumlines
-  sumlines="$(printf '%s\n' "$blob" | sed -n '/^=== Summary ===$/,$p')"
-  if printf '%s\n' "$sumlines" | grep -q 'ERROR (tool failed'; then
-    printf 'RERUN_WRAPPER'; return 0
-  fi
-  if printf '%s\n' "$sumlines" | grep -Eq 'Status: Issues Found|Verdict: needs-attention'; then
-    printf 'FIX_AND_REREVIEW'; return 0
-  fi
-  printf 'PROCEED'
-}
-
-# Fixture (i): exit 0, all reviewers OKAY / approve.
-FX_OK="$(printf '%s\n' \
+# --- brainstorm caller shape: structural-completeness (Status:) + design-soundness (Verdict:) ---
+BR_OK="$(printf '%s\n' \
   '## structural-completeness' 'Status: OKAY' '' \
   '## design-soundness' 'Verdict: approve' '' \
   '=== Summary ===' \
   '- structural-completeness: Status: OKAY' \
-  '- design-soundness: Verdict: approve')"
-
-# Fixture (ii): nonzero exit, one ERROR line plus others carrying verdicts.
-FX_ERR="$(printf '%s\n' \
-  '## spec-compliance' 'Status: OKAY' '' \
-  '## code-quality' '[stderr excerpt]' 'boom' '' \
+  '- design-soundness: Verdict: approve')"; BR_OK_RC=0
+BR_ERR="$(printf '%s\n' \
+  '## structural-completeness' 'Status: OKAY' '' \
+  '## design-soundness' '[stderr excerpt]' 'boom' '' \
   '=== Summary ===' \
-  '- spec-compliance: Status: OKAY' \
-  '- code-quality: ERROR (tool failed, exit 2)')"
+  '- structural-completeness: Status: OKAY' \
+  '- design-soundness: ERROR (tool failed, exit 1)')"; BR_ERR_RC=1
+BR_FIND="$(printf '%s\n' \
+  '## structural-completeness' 'Status: OKAY' '' \
+  '## design-soundness' 'Verdict: needs-attention' '' \
+  '=== Summary ===' \
+  '- structural-completeness: Status: OKAY' \
+  '- design-soundness: Verdict: needs-attention')"; BR_FIND_RC=0
 
-# Fixture (iii): exit 0, a reviewer reports findings (Issues Found) — drives fix + re-review.
-FX_FIND="$(printf '%s\n' \
+# --- plan caller shape: per-task (Status:) + coverage-verifier (Status:) ---
+PL_OK="$(printf '%s\n' \
+  '## per-task Task 1' 'Status: OKAY' '' \
+  '## coverage-verifier' 'Status: OKAY' '' \
+  '=== Summary ===' \
+  '- per-task Task 1: Status: OKAY' \
+  '- coverage-verifier: Status: OKAY')"; PL_OK_RC=0
+PL_ERR="$(printf '%s\n' \
+  '## per-task Task 1' '[stderr excerpt]' 'boom' '' \
+  '## coverage-verifier' 'Status: OKAY' '' \
+  '=== Summary ===' \
+  '- per-task Task 1: ERROR (tool failed, exit 2)' \
+  '- coverage-verifier: Status: OKAY')"; PL_ERR_RC=2
+PL_FIND="$(printf '%s\n' \
   '## per-task Task 1' 'Status: Issues Found' '' \
   '## coverage-verifier' 'Status: OKAY' '' \
   '=== Summary ===' \
   '- per-task Task 1: Status: Issues Found' \
-  '- coverage-verifier: Status: OKAY')"
+  '- coverage-verifier: Status: OKAY')"; PL_FIND_RC=0
 
-# The parser extracts each reviewer's status line from the Summary.
-printf '%s\n' "$FX_OK" | sed -n '/^=== Summary ===$/,$p' | grep -q '^- structural-completeness: Status: OKAY$' \
+# --- impl caller shape: spec-compliance (Status:) + code-quality (prose, no verdict line) ---
+IM_OK="$(printf '%s\n' \
+  '## spec-compliance' 'Status: OKAY' '' \
+  '## code-quality' 'Clean implementation. No blocking issues found.' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: OKAY' \
+  '- code-quality: (prose — 見全文)')"; IM_OK_RC=0
+IM_ERR="$(printf '%s\n' \
+  '## spec-compliance' 'Status: OKAY' '' \
+  '## code-quality' '[stderr excerpt]' 'boom' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: OKAY' \
+  '- code-quality: ERROR (tool failed, exit 2)')"; IM_ERR_RC=2
+IM_FIND="$(printf '%s\n' \
+  '## spec-compliance' 'Status: Issues Found' '' \
+  '## code-quality' 'src/x.ts:1 magic number' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: Issues Found' \
+  '- code-quality: (prose — 見全文)')"; IM_FIND_RC=0
+
+# expect_action <name> <blob> <rc> <expected-action> : assert decide_action(stdout, rc) matches.
+expect_action() {
+  local name="$1" blob="$2" rc="$3" want="$4" got
+  got="$(decide_action "$blob" "$rc")"
+  if [ "$got" = "$want" ]; then ok "$name -> $want"
+  else bad "$name -> $want" "got=$got (rc=$rc)"; fi
+}
+
+# Every caller's three documented decisions (stdout drives the decision at any exit code).
+expect_action "brainstorm all-clear (rc 0)"        "$BR_OK"   "$BR_OK_RC"   "PROCEED"
+expect_action "brainstorm ERROR (rc nonzero)"      "$BR_ERR"  "$BR_ERR_RC"  "RERUN_WRAPPER"
+expect_action "brainstorm needs-attention (rc 0)"  "$BR_FIND" "$BR_FIND_RC" "FIX_AND_REREVIEW"
+expect_action "plan all-clear (rc 0)"              "$PL_OK"   "$PL_OK_RC"   "PROCEED"
+expect_action "plan ERROR (rc nonzero)"            "$PL_ERR"  "$PL_ERR_RC"  "RERUN_WRAPPER"
+expect_action "plan Issues Found (rc 0)"           "$PL_FIND" "$PL_FIND_RC" "FIX_AND_REREVIEW"
+expect_action "impl all-clear prose (rc 0)"        "$IM_OK"   "$IM_OK_RC"   "PROCEED"
+expect_action "impl ERROR (rc nonzero)"            "$IM_ERR"  "$IM_ERR_RC"  "RERUN_WRAPPER"
+expect_action "impl Issues Found (rc 0)"           "$IM_FIND" "$IM_FIND_RC" "FIX_AND_REREVIEW"
+
+# stdout is parsed REGARDLESS of exit code: a findings Summary delivered with a NONZERO rc still
+# decides FIX_AND_REREVIEW from stdout (the rc must not override the stdout verdict). This proves
+# the caller does not branch on exit code alone.
+expect_action "findings stdout with nonzero rc still FIX_AND_REREVIEW" "$PL_FIND" 7 "FIX_AND_REREVIEW"
+
+# The parser extracts a reviewer's status line from the Summary block.
+printf '%s\n' "$IM_OK" | sed -n '/^=== Summary ===$/,$p' | grep -q '^- spec-compliance: Status: OKAY$' \
   && ok "parser extracts a reviewer's status from the Summary block" \
-  || bad "parser extracts a reviewer's status from the Summary block" "$FX_OK"
-
-# All-clear fixture -> PROCEED.
-[ "$(decide_action "$FX_OK")" = "PROCEED" ] \
-  && ok "all-OKAY Summary selects PROCEED" \
-  || bad "all-OKAY Summary selects PROCEED" "$(decide_action "$FX_OK")"
-
-# ERROR fixture -> detect the ERROR and select rerun-entire-wrapper.
-printf '%s\n' "$FX_ERR" | grep -q 'ERROR (tool failed, exit 2)' \
-  && ok "parser detects the ERROR Summary line" \
-  || bad "parser detects the ERROR Summary line" "$FX_ERR"
-[ "$(decide_action "$FX_ERR")" = "RERUN_WRAPPER" ] \
-  && ok "ERROR Summary selects rerun-entire-wrapper" \
-  || bad "ERROR Summary selects rerun-entire-wrapper" "$(decide_action "$FX_ERR")"
-
-# Findings fixture -> fix + re-review (NOT rerun-wrapper).
-[ "$(decide_action "$FX_FIND")" = "FIX_AND_REREVIEW" ] \
-  && ok "findings Summary selects fix-and-re-review" \
-  || bad "findings Summary selects fix-and-re-review" "$(decide_action "$FX_FIND")"
+  || bad "parser extracts a reviewer's status from the Summary block" "$IM_OK"
 
 # Engine never inspects HEAD (documented trade-off: it does not detect HEAD movement).
 # The engine source must contain no git/HEAD/rev-parse/reflog references.
@@ -1988,26 +2289,48 @@ else
 fi
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
-
-The acceptance assertions depend on the `decide_action` helper and fixtures defined together in
-the appended block; before the block is added, those names do not exist. Add the block, then run
-to confirm all six assertions are present and evaluated.
+- [ ] **Step 2: Run test to verify it fails (genuine RED — `decide_action` not yet defined)**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: with the block appended, the six assertions are evaluated. (This task adds no
-production code — it asserts the already-implemented Summary format is parseable and the engine
-never reads HEAD; if any assertion fails, the Summary format / §4.4 classification regressed or a
-`HEAD`/`git ` reference crept into the engine.) Output ends with `38 passed, 0 failed`.
+Expected: FAIL — `decide_action` is not defined yet, so each `expect_action` call captures empty
+output (`got=`) which never equals the expected action: the nine per-caller decision assertions
+plus the "findings with nonzero rc" assertion report `bad` (10 failures). The two helper-independent
+assertions (parser extracts a status line; engine never inspects HEAD) pass. Output ends with
+`36 passed, 10 failed`.
 
-- [ ] **Step 3: Confirm the acceptance assertions pass**
+- [ ] **Step 3: Define the `decide_action` reference parser (GREEN)**
+
+Append the `decide_action` definition ABOVE the assertion block from Step 1 (so it is defined
+before first use), in `scripts/review-batch-lib.test.sh`. It reads the Summary from stdout
+regardless of the exit code argument (the rc is accepted to make the contract explicit — stdout is
+authoritative — but the decision is taken from the Summary text, never from the rc):
+
+```bash
+# decide_action <stdout-blob> <exit-code> : print PROCEED | RERUN_WRAPPER | FIX_AND_REREVIEW.
+# The exit code is accepted but NOT used to decide — the decision is read from the stdout Summary,
+# which is authoritative at any exit code. This is the reference parser the SKILL.md callers model.
+decide_action() {
+  local blob="$1" rc="$2" sumlines   # rc accepted to make "stdout is authoritative" explicit
+  : "$rc"                            # intentionally unused: stdout drives the decision
+  sumlines="$(printf '%s\n' "$blob" | sed -n '/^=== Summary ===$/,$p')"
+  if printf '%s\n' "$sumlines" | grep -q 'ERROR (tool failed'; then
+    printf 'RERUN_WRAPPER'; return 0
+  fi
+  if printf '%s\n' "$sumlines" | grep -Eq 'Status: Issues Found|Verdict: needs-attention'; then
+    printf 'FIX_AND_REREVIEW'; return 0
+  fi
+  printf 'PROCEED'
+}
+```
+
+- [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all six contract/property assertions pass (parser extracts statuses, PROCEED on
-all-clear, ERROR detected, RERUN_WRAPPER on ERROR, FIX_AND_REREVIEW on findings, and the engine
-source contains no HEAD inspection). Output ends with `38 passed, 0 failed`.
+Expected: PASS — every caller's three documented decisions hold, the nonzero-rc-findings case still
+decides from stdout, the parser extracts a status line, and the engine source contains no HEAD
+inspection. Output ends with `46 passed, 0 failed`.
 
-- [ ] **Step 4: Commit**
+- [ ] **Step 5: Commit**
 
 ```bash
 git add scripts/review-batch-lib.test.sh
@@ -2021,9 +2344,10 @@ git commit -m "test: add caller control-flow acceptance fixtures for the Summary
 After Task 13, run the full engine + acceptance test suite once more and confirm it is green:
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: `38 passed, 0 failed` and exit 0.
+Expected: `46 passed, 0 failed` and exit 0.
 
-Confirm `dispatch.sh` and its tests were never touched:
+Confirm `dispatch.sh` and its tests were never touched (substitute `IMPL_BASE` with the SHA
+recorded before this plan's first commit, e.g. `git rev-parse HEAD~13`):
 
-Run: `git diff --name-only <IMPL_BASE>..HEAD | grep -E 'scripts/dispatch\.(sh|test\.sh)$'`
+Run: `IMPL_BASE="$(git rev-parse HEAD~13)"; git diff --name-only "$IMPL_BASE"..HEAD | grep -E 'scripts/dispatch\.(sh|test\.sh)$'`
 Expected: prints nothing.

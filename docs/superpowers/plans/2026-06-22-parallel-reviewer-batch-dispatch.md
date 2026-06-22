@@ -65,7 +65,7 @@ write_stub() {
 ECHO_STUB="$ROOT/echo/dispatch.sh"
 write_stub "$ECHO_STUB" 'for a in "$@"; do printf "ARG:%s\n" "$a"; done'
 
-# --- Task 1: argv round-trip incl. a value containing a space ---
+# argv round-trip: a value containing a space survives intact through %q encoding.
 ( set -e
   BATCH_DISPATCH_SH="$ECHO_STUB"
   . "$LIB"
@@ -124,8 +124,8 @@ batch_add() {
   _BATCH_ARGV+=("$enc")
 }
 
-# batch_run: execute the queue (sequential for now) through BATCH_DISPATCH_SH and
-# stream each job's stdout. Throttling/capture/aggregation arrive in later tasks.
+# batch_run: execute the queue sequentially through BATCH_DISPATCH_SH and stream
+# each job's stdout. (Throttling, capture, and aggregation are layered on later.)
 batch_run() {
   local i
   for i in "${!_BATCH_LABELS[@]}"; do
@@ -162,7 +162,7 @@ git commit -m "feat: add batch dispatch engine skeleton with job registration"
 Append before the final `printf`/`[ "$FAIL" -eq 0 ]` lines of `scripts/review-batch-lib.test.sh`:
 
 ```bash
-# --- Task 2: invalid MAX_PARALLEL fails fast ---
+# Empty, zero, leading-zero, and non-numeric --max-parallel values all fail fast.
 for bad_mp in 0 "" abc 3x; do
   ( BATCH_DISPATCH_SH="$ECHO_STUB"; . "$LIB"; MAX_PARALLEL="$bad_mp"; batch_init
     batch_add j task --base HEAD; batch_run ) >/dev/null 2>&1
@@ -170,9 +170,9 @@ for bad_mp in 0 "" abc 3x; do
   else bad "invalid --max-parallel '$bad_mp' fails fast" "rc=0"; fi
 done
 
-# --- Task 2: peak concurrency never exceeds MAX_PARALLEL ---
-# Stub appends "+" on start and "-" on finish to a shared file, with a short sleep,
-# so a post-hoc scan of the running count never exceeds the cap.
+# Peak concurrency reaches exactly the cap and never exceeds it.
+# The stub appends "+" on start and "-" on finish to a shared file, with a short sleep,
+# so a post-hoc scan of the running count reveals the true peak.
 CONC_LOG="$ROOT/conc.log"
 CONC_STUB="$ROOT/conc/dispatch.sh"
 write_stub "$CONC_STUB" \
@@ -191,28 +191,31 @@ while IFS= read -r line; do
     "-") cur=$((cur-1)) ;;
   esac
 done < "$CONC_LOG"
-[ "$peak" -le 2 ] && [ "$peak" -ge 1 ] \
-  && ok "peak concurrency <= MAX_PARALLEL (peak=$peak)" \
-  || bad "peak concurrency <= MAX_PARALLEL" "peak=$peak"
+[ "$peak" -eq 2 ] \
+  && ok "peak concurrency reaches exactly MAX_PARALLEL (peak=$peak)" \
+  || bad "peak concurrency reaches exactly MAX_PARALLEL" "peak=$peak"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — the engine runs sequentially and never validates `MAX_PARALLEL`. The invalid-value cases exit 0 (no validation) and the concurrency scan may report `peak` of 1 only by accident; the validation `bad` lines appear. Output shows `1 passed, N failed`.
+Expected: FAIL — the engine runs sequentially and never validates `MAX_PARALLEL`. The invalid-value cases exit 0 (no validation) and the sequential run never reaches a peak of 2; the validation `bad` lines and the concurrency `bad` line appear. Output shows `1 passed, 5 failed`.
 
 - [ ] **Step 3: Implement validation + FIFO token-bucket in `batch_run`**
 
 Replace the entire `batch_run` function in `scripts/review-batch-lib.sh` with:
 
 ```bash
-# _batch_validate_max_parallel: enforce ^[1-9][0-9]*$ and clamp to MAX_PARALLEL_CAP (16).
+# _batch_validate_max_parallel: default ONLY when unset (empty must fail), enforce
+# ^[1-9][0-9]*$ (rejects empty, 0, leading-zero, non-numeric), clamp to the cap (16).
 _BATCH_MAX_CAP=16
 _batch_validate_max_parallel() {
+  # Default to 5 only when MAX_PARALLEL is genuinely UNSET — an empty value is invalid.
+  if [ -z "${MAX_PARALLEL+x}" ]; then MAX_PARALLEL=5; fi
+  # Enforce ^[1-9][0-9]*$ without extglob: reject empty / non-digit, then leading zero.
   case "$MAX_PARALLEL" in
-    ''|*[!0-9]*) printf 'review-batch: --max-parallel must be a positive integer, got: %s\n' "${MAX_PARALLEL:-<empty>}" >&2; return 1 ;;
+    ''|*[!0-9]*|0*) printf 'review-batch: --max-parallel must be a positive integer, got: %s\n' "${MAX_PARALLEL:-<empty>}" >&2; return 1 ;;
   esac
-  [ "$MAX_PARALLEL" -ge 1 ] || { printf 'review-batch: --max-parallel must be >= 1, got: %s\n' "$MAX_PARALLEL" >&2; return 1; }
   if [ "$MAX_PARALLEL" -gt "$_BATCH_MAX_CAP" ]; then
     printf 'review-batch: --max-parallel %s exceeds cap %s; clamping to %s\n' "$MAX_PARALLEL" "$_BATCH_MAX_CAP" "$_BATCH_MAX_CAP" >&2
     MAX_PARALLEL="$_BATCH_MAX_CAP"
@@ -224,7 +227,6 @@ _batch_validate_max_parallel() {
 # concurrently. Preload N tokens into a FIFO; each job reads one before starting and
 # writes one back on finish. Works on bash 3.2 (no `wait -n`).
 batch_run() {
-  : "${MAX_PARALLEL:=5}"
   _batch_validate_max_parallel || return 1
 
   local fifo_dir fifo
@@ -257,7 +259,7 @@ batch_run() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all Task 1 + Task 2 assertions pass (5 invalid-value oks via the loop + 1 concurrency ok + Task 1's 1). Output ends with `6 passed, 0 failed`.
+Expected: PASS — all earlier + new assertions pass (4 invalid-value oks via the loop + 1 concurrency ok + the 1 earlier argv ok). Output ends with `6 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -286,7 +288,7 @@ git commit -m "feat: validate --max-parallel and throttle jobs with FIFO token-b
 Append before the final lines of `scripts/review-batch-lib.test.sh`:
 
 ```bash
-# --- Task 3: stdout aggregation, classification, registration order ---
+# stdout aggregation, four-way classification, and registration-order headings.
 OKAY_STUB="$ROOT/okay/dispatch.sh"
 write_stub "$OKAY_STUB" 'echo "looks complete"' 'echo "Status: OKAY"'
 ISSUES_STUB="$ROOT/issues/dispatch.sh"
@@ -338,12 +340,32 @@ printf '%s\n' "$SUM" | grep -q 'D-prose:.*prose' \
 # stderr excerpt of the ERROR job is appended to its section
 printf '%s\n' "$T3" | grep -q 'boom on stderr' \
   && ok "ERROR job stderr excerpt appended" || bad "ERROR job stderr excerpt appended" "$T3"
+
+# Errexit safety: source the library from a `set -euo pipefail` shell and run a job
+# whose tool exits nonzero with no verdict line. A reviewer tool failing is the EXPECTED
+# error case, so neither the job's nonzero exit nor the nonzero `wait` may abort the batch
+# under errexit: the Summary must still be emitted and the batch must not hang. Reaching
+# the assertion at all (the subshell returns, not aborts) proves no deadlock/abort.
+EE_OUT="$ROOT/ee.out"
+( set -euo pipefail
+  BATCH_DISPATCH_SH="$MUX_STUB"
+  . "$LIB"
+  batch_init
+  batch_add "E-err" err
+  batch_run > "$EE_OUT" 2>/dev/null
+) ; EE_RC=$?
+if grep -q '^=== Summary ===$' "$EE_OUT"; then
+  ok "errexit: Summary still emitted under set -e with a nonzero no-verdict job"
+else bad "errexit: Summary still emitted under set -e with a nonzero no-verdict job" "$(cat "$EE_OUT")"; fi
+printf '%s\n' "$EE_RC" | grep -qx '[0-9][0-9]*' \
+  && ok "errexit: batch completes (returns a value, does not abort) under set -e" \
+  || bad "errexit: batch completes under set -e" "rc=$EE_RC"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `batch_run` streams raw stdout with no `## <label>` headings, no `=== Summary ===`, no captured stderr. The new assertions report `bad`. Output ends with `6 passed, N failed`.
+Expected: FAIL — `batch_run` streams raw stdout with no `## <label>` headings, no `=== Summary ===`, and no captured stderr. The order, four classification, stderr-excerpt, and errexit-Summary assertions report `bad` (seven failures); the errexit "completes" assertion happens to pass. Output ends with `7 passed, 7 failed`.
 
 - [ ] **Step 3: Implement capture + aggregation + classification**
 
@@ -368,8 +390,10 @@ _batch_classify() {
 
 # batch_run: run the queue throttled, capture each job's stdout/stderr/rc to a temp
 # dir, then emit per-job stdout in registration order + a === Summary === block.
+# Errexit-safe: this library is SOURCED by wrappers running under `set -euo pipefail`.
+# A reviewer tool returning nonzero is the EXPECTED error case, so each dispatch call
+# and the `wait` are wrapped so errexit can never abort the batch.
 batch_run() {
-  : "${MAX_PARALLEL:=5}"
   _batch_validate_max_parallel || return 1
 
   local tmp fifo
@@ -385,12 +409,19 @@ batch_run() {
     read -r -u 9 _token
     (
       eval "set -- ${_BATCH_ARGV[$i]}"
+      # The reviewer tool may exit nonzero (the expected ERROR case). Capture its rc
+      # explicitly so errexit cannot abort this job, write the rc file BEFORE returning
+      # the token, then return the token.
+      set +e
       "$BATCH_DISPATCH_SH" "$@" > "$tmp/$i.out" 2> "$tmp/$i.err"
-      printf '%s' "$?" > "$tmp/$i.rc"
+      _jrc=$?
+      set -e
+      printf '%s' "$_jrc" > "$tmp/$i.rc"
       printf '\n' >&9
     ) &
   done
-  wait
+  # A child exiting nonzero must not abort the batch under errexit.
+  wait || :
   exec 9>&-
 
   # Aggregate in registration order.
@@ -420,7 +451,7 @@ batch_run() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all aggregation/classification/order/stderr assertions pass. Output ends with `12 passed, 0 failed`.
+Expected: PASS — all aggregation/classification/order/stderr and both errexit assertions pass. Output ends with `14 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -444,28 +475,44 @@ git commit -m "feat: capture per-job output and emit aggregated Summary with cla
 Append before the final lines of `scripts/review-batch-lib.test.sh`:
 
 ```bash
-# --- Task 4: exit-code semantics ---
+# Exit-code semantics: capture the batch rc into a variable BEFORE the assertion so a
+# failure message shows the real rc (a bare $? inside [ ... ] would re-read the test's rc).
 # All jobs produce a verdict (one is Issues Found) -> batch exits 0.
 ( BATCH_DISPATCH_SH="$MUX_STUB"; . "$LIB"; MAX_PARALLEL=4; batch_init
   batch_add "A-okay"   okay
   batch_add "B-issues" issues
   batch_run ) >/dev/null 2>&1
-[ "$?" -eq 0 ] && ok "all-verdict batch (incl Issues Found) exits 0" \
-  || bad "all-verdict batch exits 0" "rc=$?"
+RC_ALLVERDICT=$?
+[ "$RC_ALLVERDICT" -eq 0 ] && ok "all-verdict batch (incl Issues Found) exits 0" \
+  || bad "all-verdict batch exits 0" "rc=$RC_ALLVERDICT"
 
 # One job is ERROR (no verdict + nonzero) -> batch exits nonzero.
 ( BATCH_DISPATCH_SH="$MUX_STUB"; . "$LIB"; MAX_PARALLEL=4; batch_init
   batch_add "A-okay" okay
   batch_add "C-err"  err
   batch_run ) >/dev/null 2>&1
-[ "$?" -ne 0 ] && ok "batch with an ERROR job exits nonzero" \
-  || bad "batch with an ERROR job exits nonzero" "rc=$?"
+RC_ERR=$?
+[ "$RC_ERR" -ne 0 ] && ok "batch with an ERROR job exits nonzero" \
+  || bad "batch with an ERROR job exits nonzero" "rc=$RC_ERR"
+
+# Errexit: the same ERROR case sourced under `set -euo pipefail` returns nonzero (does not
+# abort early) — proving the ERROR exit code survives the errexit-safe wait/return path.
+( set -euo pipefail
+  BATCH_DISPATCH_SH="$MUX_STUB"
+  . "$LIB"
+  batch_init
+  batch_add "C-err" err
+  batch_run >/dev/null 2>&1
+) ; RC_ERR_EE=$?
+[ "$RC_ERR_EE" -ne 0 ] \
+  && ok "errexit: ERROR batch returns nonzero under set -e" \
+  || bad "errexit: ERROR batch returns nonzero under set -e" "rc=$RC_ERR_EE"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `batch_run` currently always `return 0`, so the ERROR case wrongly exits 0. The second assertion reports `bad`. Output ends with `13 passed, 1 failed`.
+Expected: FAIL — `batch_run` currently always `return 0`, so the two ERROR-case assertions wrongly see exit 0 and report `bad`; the all-verdict assertion passes. Output ends with `15 passed, 2 failed`.
 
 - [ ] **Step 3: Implement ERROR-aware exit code**
 
@@ -509,7 +556,7 @@ to:
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — both exit-code assertions pass. Output ends with `15 passed, 0 failed`.
+Expected: PASS — all three exit-code assertions pass. Output ends with `17 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -533,48 +580,74 @@ Install a `trap` on EXIT/INT/TERM that: stops launching new jobs, best-effort ki
 Append before the final lines of `scripts/review-batch-lib.test.sh`:
 
 ```bash
-# --- Task 5: shutdown trap cleans temp + best-effort kills the job tree ---
-# 5a: after a normal run, no review-batch.* temp dirs linger from this run.
+# A normal run leaves no review-batch.* temp dir behind, and writes nothing under the
+# project/repo dir (no .claude/superpowers/review is ever created).
 before_dirs="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
-( BATCH_DISPATCH_SH="$OKAY_STUB"; . "$LIB"; MAX_PARALLEL=2; batch_init
+PROJDIR="$ROOT/proj"; mkdir -p "$PROJDIR"
+( cd "$PROJDIR"
+  BATCH_DISPATCH_SH="$OKAY_STUB"; . "$LIB"; MAX_PARALLEL=2; batch_init
   batch_add "A" ; batch_add "B"
   batch_run ) >/dev/null 2>&1
 after_dirs="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
 [ "$after_dirs" -le "$before_dirs" ] \
   && ok "temp dir removed after normal run" \
   || bad "temp dir removed after normal run" "before=$before_dirs after=$after_dirs"
+[ ! -e "$PROJDIR/.claude/superpowers/review" ] && [ -z "$(ls -A "$PROJDIR" 2>/dev/null)" ] \
+  && ok "run writes nothing under the project dir" \
+  || bad "run writes nothing under the project dir" "$(ls -A "$PROJDIR" 2>/dev/null)"
 
-# 5b: a stub that spawns a grandchild which writes a marker after a delay; after we
-# INT the batch, EITHER the grandchild was killed (marker absent = strong guarantee)
-# OR the documented weak fallback holds (marker lands in the deleted temp, never in a
-# fresh retry). We assert the marker does NOT appear in a path the batch still owns.
-MARK="$ROOT/grandchild.marker"; rm -f "$MARK"
+# Grandchild isolation under INT: a stub spawns a grandchild that, after a delay, writes
+# a marker to its inherited stdout — which the engine has redirected INTO this run's
+# batch-owned temp file ($tmp/<i>.out). After INT:
+#   - strong guarantee → the grandchild was killed, so the marker was never written; AND
+#   - weak fallback → the marker (if written) can only land in the now-removed temp file,
+#     so a fresh retry's temp dir/output is untouched.
+# We assert the run's temp dir is gone AND a fresh retry runs cleanly with its own temp.
 GC_STUB="$ROOT/gc/dispatch.sh"
 write_stub "$GC_STUB" \
-  '( sleep 1; echo alive > "'"$MARK"'" ) &' \
+  '( sleep 1; echo "GRANDCHILD-MARKER" ) &' \
   'sleep 2' \
   'echo "Status: OKAY"'
+gc_before="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
 ( BATCH_DISPATCH_SH="$GC_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
-  batch_add "slow"
+  batch_add "slow" task --prompt /tmp/p.md
   batch_run ) >/dev/null 2>&1 &
 BATCH_PID=$!
 sleep 0.4
 kill -INT "$BATCH_PID" 2>/dev/null
 wait "$BATCH_PID" 2>/dev/null
 sleep 1.2   # past the grandchild's 1s timer
-# Strong-guarantee platforms: marker absent. Weak-fallback: marker may exist but the
-# batch's temp dir is already gone, so a retry is unaffected. Either way, no temp dir
-# from this run remains.
-after_int="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
-[ "$after_int" -le "$before_dirs" ] \
-  && ok "INT leaves no temp dir (stale grandchild cannot reach a retry's temp)" \
-  || bad "INT leaves no temp dir" "after_int=$after_int before=$before_dirs"
+gc_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
+[ "$gc_after" -le "$gc_before" ] \
+  && ok "INT removes the run's temp dir (stale grandchild marker can only be in it)" \
+  || bad "INT removes the run's temp dir" "before=$gc_before after=$gc_after"
+# A fresh retry after the INT runs cleanly into its own brand-new temp dir.
+RETRY="$( BATCH_DISPATCH_SH="$OKAY_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
+  batch_add "retry" ; batch_run 2>/dev/null )"
+printf '%s\n' "$RETRY" | grep -q '^=== Summary ===$' \
+  && ok "fresh retry after INT is unaffected by any stale grandchild" \
+  || bad "fresh retry after INT is unaffected" "$RETRY"
+
+# TERM (alongside INT) also reaps and removes the run's temp dir.
+term_before="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
+( BATCH_DISPATCH_SH="$GC_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
+  batch_add "slow" task --prompt /tmp/p.md
+  batch_run ) >/dev/null 2>&1 &
+TERM_PID=$!
+sleep 0.4
+kill -TERM "$TERM_PID" 2>/dev/null
+wait "$TERM_PID" 2>/dev/null
+sleep 1.2
+term_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
+[ "$term_after" -le "$term_before" ] \
+  && ok "TERM removes the run's temp dir" \
+  || bad "TERM removes the run's temp dir" "before=$term_before after=$term_after"
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — there is no EXIT/INT/TERM trap, so an INT-interrupted run leaves its `review-batch.*` temp dir behind (and never signals the job group). The 5b assertion reports `bad`. Output ends with `16 passed, 1 failed`.
+Expected: FAIL — there is no EXIT/INT/TERM trap, so the INT- and TERM-interrupted runs leave their `review-batch.*` temp dirs behind (and never signal the job group). The INT and TERM temp-dir assertions report `bad`. Output ends with `20 passed, 2 failed`.
 
 - [ ] **Step 3: Implement the shutdown trap + per-job process groups**
 
@@ -586,14 +659,17 @@ In `scripts/review-batch-lib.sh`, replace the entire `batch_run` function with t
 # process group per job is unavailable, only the direct child PID is signaled and a
 # companion grandchild may briefly survive — but its output went to the (now-removed)
 # temp dir and its companion job-id is unique, so it cannot corrupt a retry.
+# _batch_shutdown: stop launching, best-effort kill each job's process group (TERM then
+# KILL), reap, close the token FIFO fd, then rm the temp dir. Arrays are always
+# initialized (see batch_run) so `${#arr[@]}` is never a bad substitution.
 _batch_shutdown() {
   local p
-  if [ "${#_BATCH_PGIDS[@]:-0}" -gt 0 ]; then
+  if [ "${#_BATCH_PGIDS[@]}" -gt 0 ]; then
     for p in "${_BATCH_PGIDS[@]}"; do
       [ -n "$p" ] && kill -TERM "-$p" 2>/dev/null
     done
   fi
-  if [ "${#_BATCH_PIDS[@]:-0}" -gt 0 ]; then
+  if [ "${#_BATCH_PIDS[@]}" -gt 0 ]; then
     for p in "${_BATCH_PIDS[@]}"; do
       [ -n "$p" ] && kill -TERM "$p" 2>/dev/null
     done
@@ -602,21 +678,37 @@ _batch_shutdown() {
   local waited=0
   while [ "$waited" -lt 10 ]; do
     local alive=0
-    for p in "${_BATCH_PIDS[@]:-}"; do
-      [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive=1
-    done
+    if [ "${#_BATCH_PIDS[@]}" -gt 0 ]; then
+      for p in "${_BATCH_PIDS[@]}"; do
+        [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive=1
+      done
+    fi
     [ "$alive" -eq 0 ] && break
     sleep 0.1; waited=$((waited+1))
   done
-  for p in "${_BATCH_PGIDS[@]:-}"; do [ -n "$p" ] && kill -KILL "-$p" 2>/dev/null; done
-  for p in "${_BATCH_PIDS[@]:-}";  do [ -n "$p" ] && kill -KILL "$p"  2>/dev/null; done
-  wait 2>/dev/null
+  if [ "${#_BATCH_PGIDS[@]}" -gt 0 ]; then
+    for p in "${_BATCH_PGIDS[@]}"; do [ -n "$p" ] && kill -KILL "-$p" 2>/dev/null; done
+  fi
+  if [ "${#_BATCH_PIDS[@]}" -gt 0 ]; then
+    for p in "${_BATCH_PIDS[@]}";  do [ -n "$p" ] && kill -KILL "$p"  2>/dev/null; done
+  fi
+  wait 2>/dev/null || :
+  # Explicitly close the token-bucket FIFO fd so no reader/writer keeps it open.
+  exec 9>&- 2>/dev/null || :
+  exec 9<&- 2>/dev/null || :
   [ -n "${_BATCH_TMP:-}" ] && rm -rf "$_BATCH_TMP"
   _BATCH_TMP=""
 }
 
+# _batch_on_signal: run cleanup, then exit nonzero — an interrupted batch must NOT fall
+# through into normal aggregation.
+_batch_on_signal() {
+  _batch_shutdown
+  trap - EXIT INT TERM
+  exit 130
+}
+
 batch_run() {
-  : "${MAX_PARALLEL:=5}"
   _batch_validate_max_parallel || return 1
 
   _BATCH_PIDS=()
@@ -625,7 +717,10 @@ batch_run() {
   local tmp="$_BATCH_TMP" fifo="$_BATCH_TMP/tokens"
   mkfifo "$fifo"
   exec 9<>"$fifo"
-  trap '_batch_shutdown' EXIT INT TERM
+  # EXIT runs cleanup on any exit path; INT/TERM run cleanup then exit nonzero (no
+  # fall-through into aggregation).
+  trap '_batch_shutdown' EXIT
+  trap '_batch_on_signal' INT TERM
 
   local t
   for ((t=0; t<MAX_PARALLEL; t++)); do printf '\n' >&9; done
@@ -639,15 +734,22 @@ batch_run() {
       # platforms simply leave pgid unusable; the direct PID is still signaled.
       set -m 2>/dev/null || true
       eval "set -- ${_BATCH_ARGV[$i]}"
+      # The reviewer tool may exit nonzero (the expected ERROR case); capture its rc
+      # explicitly so errexit cannot abort this job, write the rc file BEFORE returning
+      # the token.
+      set +e
       "$BATCH_DISPATCH_SH" "$@" > "$tmp/$i.out" 2> "$tmp/$i.err"
-      printf '%s' "$?" > "$tmp/$i.rc"
+      _jrc=$?
+      set -e
+      printf '%s' "$_jrc" > "$tmp/$i.rc"
       printf '\n' >&9
     ) &
     pid=$!
     _BATCH_PIDS+=("$pid")
     _BATCH_PGIDS+=("$pid")   # with job control the bg subshell's pid == its pgid
   done
-  wait
+  # A child exiting nonzero must not abort the batch under errexit.
+  wait || :
   exec 9>&-
   trap - EXIT INT TERM
 
@@ -678,7 +780,7 @@ batch_run() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — the normal run leaves no temp dir, and the INT-interrupted run reaps + removes its temp dir (strong-guarantee platforms also kill the grandchild). Output ends with `18 passed, 0 failed`.
+Expected: PASS — the normal run leaves no temp dir and writes nothing under the project dir; the INT- and TERM-interrupted runs reap + remove their temp dir (strong-guarantee platforms also kill the grandchild), and a fresh retry runs cleanly. Output ends with `22 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -702,9 +804,9 @@ Parse `--spec`, `--base`, optional `--max-parallel`. Derive `SCRIPT_DIR`; set `B
 Append before the final lines of `scripts/review-batch-lib.test.sh`:
 
 ```bash
-# --- Task 6: review-brainstorm.sh wrapper argv assembly ---
+# review-brainstorm.sh assembles the two reviewers' dispatch argv from its CLI.
 BRAINSTORM="$HERE/review-brainstorm.sh"
-PROOT="$ROOT/plugin"   # fixture PLUGIN_ROOT
+PROOT="$ROOT/plugin"   # fixture plugin root
 mkdir -p "$PROOT/skills/brainstorming"
 : > "$PROOT/skills/brainstorming/spec-document-reviewer-prompt.md"
 : > "$PROOT/skills/brainstorming/adversarial-spec-review-focus.md"
@@ -716,7 +818,7 @@ if printf '%s\n' "$T6" | grep -q '^## structural-completeness$' \
    && printf '%s\n' "$T6" | grep -qx "ARG:--prompt" \
    && printf '%s\n' "$T6" | grep -qx "ARG:$PROOT/skills/brainstorming/spec-document-reviewer-prompt.md" \
    && printf '%s\n' "$T6" | grep -qx 'ARG:SPEC_FILE_PATH=docs/specs/x-design.md'; then
-  ok "review-brainstorm: structural-completeness argv matches spec"
+  ok "review-brainstorm: structural-completeness argv matches expected wrapper contract"
 else bad "review-brainstorm: structural-completeness argv" "$T6"; fi
 # design-soundness: adversarial --base <SPEC_BASE> --focus <root>/.../adversarial-spec-review-focus.md
 if printf '%s\n' "$T6" | grep -q '^## design-soundness$' \
@@ -725,14 +827,14 @@ if printf '%s\n' "$T6" | grep -q '^## design-soundness$' \
    && printf '%s\n' "$T6" | grep -qx 'ARG:SPECBASE' \
    && printf '%s\n' "$T6" | grep -qx 'ARG:--focus' \
    && printf '%s\n' "$T6" | grep -qx "ARG:$PROOT/skills/brainstorming/adversarial-spec-review-focus.md"; then
-  ok "review-brainstorm: design-soundness argv matches spec"
+  ok "review-brainstorm: design-soundness argv matches expected wrapper contract"
 else bad "review-brainstorm: design-soundness argv" "$T6"; fi
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `review-brainstorm.sh` does not exist, so `bash "$BRAINSTORM" ...` errors and `T6` is empty. Both assertions report `bad`. Output ends with `18 passed, 2 failed`.
+Expected: FAIL — `review-brainstorm.sh` does not exist, so `bash "$BRAINSTORM" ...` errors and `T6` is empty. Both assertions report `bad`. Output ends with `22 passed, 2 failed`.
 
 - [ ] **Step 3: Write `review-brainstorm.sh`**
 
@@ -749,12 +851,16 @@ BATCH_DISPATCH_SH="${BATCH_DISPATCH_SH:-$SCRIPT_DIR/dispatch.sh}"
 PLUGIN_ROOT="${PLUGIN_ROOT:-$SCRIPT_DIR/..}"
 export BATCH_DISPATCH_SH
 
+# need_val: fail with a clear wrapper error when an option is missing its value, instead
+# of crashing on an unbound `$2` under `set -u`.
+need_val() { [ "$2" -ge 2 ] || { printf 'review-brainstorm: %s requires a value\n' "$1" >&2; exit 1; }; }
+
 SPEC=""; BASE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --spec)         SPEC="$2"; shift 2 ;;
-    --base)         BASE="$2"; shift 2 ;;
-    --max-parallel) MAX_PARALLEL="$2"; shift 2 ;;
+    --spec)         need_val "$1" "$#"; SPEC="$2"; shift 2 ;;
+    --base)         need_val "$1" "$#"; BASE="$2"; shift 2 ;;
+    --max-parallel) need_val "$1" "$#"; MAX_PARALLEL="$2"; shift 2 ;;
     *) printf 'review-brainstorm: unknown arg: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -776,7 +882,7 @@ batch_run
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `chmod +x scripts/review-brainstorm.sh && bash scripts/review-batch-lib.test.sh`
-Expected: PASS — both reviewer argv assertions pass. Output ends with `20 passed, 0 failed`.
+Expected: PASS — both reviewer argv assertions pass. Output ends with `24 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -800,8 +906,9 @@ Parse repeated `--task`, `--plan`, `--spec`, optional `--coverage`, `--max-paral
 Append before the final lines of `scripts/review-batch-lib.test.sh`:
 
 ```bash
-# --- Task 7: review-plan.sh wrapper argv assembly ---
+# review-plan.sh assembles per-Task (+ optional coverage) dispatch argv from its CLI.
 PLAN_W="$HERE/review-plan.sh"
+PROOT="${PROOT:-$ROOT/plugin}"   # fixture plugin root (defined locally; do not rely on it being set elsewhere)
 mkdir -p "$PROOT/skills/writing-plans"
 : > "$PROOT/skills/writing-plans/plan-document-reviewer-prompt.md"
 : > "$PROOT/skills/writing-plans/coverage-verifier-prompt.md"
@@ -815,7 +922,7 @@ if printf '%s\n' "$T7" | grep -q '^## per-task Task 1$' \
    && printf '%s\n' "$T7" | grep -qx 'ARG:PLAN_FILE_PATH=docs/plans/x.md' \
    && printf '%s\n' "$T7" | grep -qx 'ARG:SPEC_FILE_PATH=docs/specs/x.md' \
    && printf '%s\n' "$T7" | grep -qx 'ARG:TASK_ID=Task 1'; then
-  ok "review-plan: per-task Task 1 argv matches spec"
+  ok "review-plan: per-task Task 1 argv matches expected wrapper contract"
 else bad "review-plan: per-task Task 1 argv" "$T7"; fi
 printf '%s\n' "$T7" | grep -q '^## per-task Task 3$' \
   && ok "review-plan: second per-task job registered" \
@@ -823,19 +930,30 @@ printf '%s\n' "$T7" | grep -q '^## per-task Task 3$' \
 # coverage-verifier job
 if printf '%s\n' "$T7" | grep -q '^## coverage-verifier$' \
    && printf '%s\n' "$T7" | grep -qx "ARG:$PROOT/skills/writing-plans/coverage-verifier-prompt.md"; then
-  ok "review-plan: coverage-verifier argv matches spec"
+  ok "review-plan: coverage-verifier argv matches expected wrapper contract"
 else bad "review-plan: coverage-verifier argv" "$T7"; fi
 # require at least one --task or --coverage
 ( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
   bash "$PLAN_W" --plan docs/plans/x.md --spec docs/specs/x.md ) >/dev/null 2>&1
-[ "$?" -ne 0 ] && ok "review-plan: no --task/--coverage fails fast" \
-  || bad "review-plan: no --task/--coverage fails fast" "rc=0"
+RC_REQ=$?
+[ "$RC_REQ" -ne 0 ] && ok "review-plan: no --task/--coverage fails fast" \
+  || bad "review-plan: no --task/--coverage fails fast" "rc=$RC_REQ"
+# malformed CLI: a trailing option with no value fails with a clear wrapper error, NOT a
+# raw `set -u` unbound-variable crash.
+PLAN_ERR="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+  bash "$PLAN_W" --spec docs/specs/x.md --task "Task 1" --plan 2>&1 )"
+RC_MALFORMED=$?
+if [ "$RC_MALFORMED" -ne 0 ] \
+   && printf '%s\n' "$PLAN_ERR" | grep -q 'review-plan: --plan requires a value' \
+   && ! printf '%s\n' "$PLAN_ERR" | grep -qi 'unbound variable'; then
+  ok "review-plan: missing option value fails with a clear wrapper error"
+else bad "review-plan: missing option value fails with a clear wrapper error" "rc=$RC_MALFORMED out=$PLAN_ERR"; fi
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `review-plan.sh` does not exist. All four new assertions report `bad`. Output ends with `20 passed, 4 failed`.
+Expected: FAIL — `review-plan.sh` does not exist. All five new assertions report `bad`. Output ends with `24 passed, 5 failed`.
 
 - [ ] **Step 3: Write `review-plan.sh`**
 
@@ -854,15 +972,19 @@ BATCH_DISPATCH_SH="${BATCH_DISPATCH_SH:-$SCRIPT_DIR/dispatch.sh}"
 PLUGIN_ROOT="${PLUGIN_ROOT:-$SCRIPT_DIR/..}"
 export BATCH_DISPATCH_SH
 
+# need_val: fail with a clear wrapper error when an option is missing its value, instead
+# of crashing on an unbound `$2` under `set -u`.
+need_val() { [ "$2" -ge 2 ] || { printf 'review-plan: %s requires a value\n' "$1" >&2; exit 1; }; }
+
 PLAN=""; SPEC=""; COVERAGE=0
 TASKS=()
 while [ $# -gt 0 ]; do
   case "$1" in
-    --plan)         PLAN="$2"; shift 2 ;;
-    --spec)         SPEC="$2"; shift 2 ;;
-    --task)         TASKS+=("$2"); shift 2 ;;
+    --plan)         need_val "$1" "$#"; PLAN="$2"; shift 2 ;;
+    --spec)         need_val "$1" "$#"; SPEC="$2"; shift 2 ;;
+    --task)         need_val "$1" "$#"; TASKS+=("$2"); shift 2 ;;
     --coverage)     COVERAGE=1; shift ;;
-    --max-parallel) MAX_PARALLEL="$2"; shift 2 ;;
+    --max-parallel) need_val "$1" "$#"; MAX_PARALLEL="$2"; shift 2 ;;
     *) printf 'review-plan: unknown arg: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -897,7 +1019,7 @@ batch_run
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `chmod +x scripts/review-plan.sh && bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all four assertions pass. Output ends with `24 passed, 0 failed`.
+Expected: PASS — all five assertions pass. Output ends with `29 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -921,8 +1043,9 @@ Parse `--plan`, `--task`, `--task-base`, optional `--max-parallel`. Register `sp
 Append before the final lines of `scripts/review-batch-lib.test.sh`:
 
 ```bash
-# --- Task 8: review-impl.sh wrapper argv assembly ---
+# review-impl.sh assembles the spec-compliance + code-quality dispatch argv (no report file).
 IMPL_W="$HERE/review-impl.sh"
+PROOT="${PROOT:-$ROOT/plugin}"   # fixture plugin root (defined locally)
 mkdir -p "$PROOT/skills/subagent-driven-development"
 : > "$PROOT/skills/subagent-driven-development/spec-reviewer-prompt.md"
 T8="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
@@ -934,7 +1057,7 @@ if printf '%s\n' "$T8" | grep -q '^## spec-compliance$' \
    && printf '%s\n' "$T8" | grep -qx 'ARG:PLAN_FILE_PATH=docs/plans/x.md' \
    && printf '%s\n' "$T8" | grep -qx 'ARG:TASK_ID=Task 2' \
    && printf '%s\n' "$T8" | grep -qx 'ARG:TASK_BASE=TBASE'; then
-  ok "review-impl: spec-compliance argv matches spec"
+  ok "review-impl: spec-compliance argv matches expected wrapper contract"
 else bad "review-impl: spec-compliance argv" "$T8"; fi
 # NO --report-file anywhere
 printf '%s\n' "$T8" | grep -q -- '--report-file' \
@@ -945,14 +1068,14 @@ if printf '%s\n' "$T8" | grep -q '^## code-quality$' \
    && printf '%s\n' "$T8" | grep -qx 'ARG:review' \
    && printf '%s\n' "$T8" | grep -qx 'ARG:--base' \
    && printf '%s\n' "$T8" | grep -qx 'ARG:TBASE'; then
-  ok "review-impl: code-quality argv matches spec"
+  ok "review-impl: code-quality argv matches expected wrapper contract"
 else bad "review-impl: code-quality argv" "$T8"; fi
 ```
 
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `review-impl.sh` does not exist. The three new assertions report `bad`. Output ends with `24 passed, 3 failed`.
+Expected: FAIL — `review-impl.sh` does not exist, so `T8` is empty: the spec-compliance and code-quality argv assertions fail (2 failures), while the "no `--report-file`" assertion passes (an empty `T8` contains no `--report-file`). Output ends with `30 passed, 2 failed`.
 
 - [ ] **Step 3: Write `review-impl.sh`**
 
@@ -971,13 +1094,17 @@ BATCH_DISPATCH_SH="${BATCH_DISPATCH_SH:-$SCRIPT_DIR/dispatch.sh}"
 PLUGIN_ROOT="${PLUGIN_ROOT:-$SCRIPT_DIR/..}"
 export BATCH_DISPATCH_SH
 
+# need_val: fail with a clear wrapper error when an option is missing its value, instead
+# of crashing on an unbound `$2` under `set -u`.
+need_val() { [ "$2" -ge 2 ] || { printf 'review-impl: %s requires a value\n' "$1" >&2; exit 1; }; }
+
 PLAN=""; TASK=""; TASK_BASE=""
 while [ $# -gt 0 ]; do
   case "$1" in
-    --plan)         PLAN="$2"; shift 2 ;;
-    --task)         TASK="$2"; shift 2 ;;
-    --task-base)    TASK_BASE="$2"; shift 2 ;;
-    --max-parallel) MAX_PARALLEL="$2"; shift 2 ;;
+    --plan)         need_val "$1" "$#"; PLAN="$2"; shift 2 ;;
+    --task)         need_val "$1" "$#"; TASK="$2"; shift 2 ;;
+    --task-base)    need_val "$1" "$#"; TASK_BASE="$2"; shift 2 ;;
+    --max-parallel) need_val "$1" "$#"; MAX_PARALLEL="$2"; shift 2 ;;
     *) printf 'review-impl: unknown arg: %s\n' "$1" >&2; exit 1 ;;
   esac
 done
@@ -1000,7 +1127,7 @@ batch_run
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `chmod +x scripts/review-impl.sh && bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all three assertions pass. Output ends with `27 passed, 0 failed`.
+Expected: PASS — all three assertions pass. Output ends with `32 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -1024,10 +1151,26 @@ Per spec §6: remove the `[REPORT_FILE_PATH]` placeholder and the report-reading
 Run: `grep -L REPORT_FILE_PATH skills/subagent-driven-development/spec-reviewer-prompt.md`
 Expected (before edit): prints **nothing** (the file still contains `REPORT_FILE_PATH`, so `grep -L` does not list it) — confirming the edit is not yet done.
 
-Run: `grep -c 'inherently not diff/test-verifiable' skills/subagent-driven-development/spec-reviewer-prompt.md`
-Expected (before edit): `0` — the new rule is absent.
+Run: `grep -ic 'inherently not diff/test-verifiable' skills/subagent-driven-development/spec-reviewer-prompt.md`
+Expected (before edit): `0` — the new rule is absent. (Case-insensitive `-i` so it matches the inserted `**Inherently not diff/test-verifiable**` regardless of capitalization.)
 
 - [ ] **Step 2: Apply the edits**
+
+Edit 0 — reframe the opening paragraph (there is no implementer report). Change:
+
+```
+You are a spec compliance reviewer executed by the codex companion. You verify whether an
+implementation matches its specification. Do NOT trust the implementer's report — read the
+actual code and git history.
+```
+
+to:
+
+```
+You are a spec compliance reviewer executed by the codex companion. You verify whether an
+implementation matches its specification. Verify independently from the diff and the plan;
+do not assume the implementation is correct — read the actual code and git history.
+```
 
 Edit 1 — replace the header block. Change:
 
@@ -1116,12 +1259,51 @@ inherently-unverifiable-but-legitimate Task impossible to ever pass.
 ## Issue Reporting Requirements
 ```
 
+Edit 4 — reword the "Missing requirements" bullets so nothing references a claim/report.
+Change:
+
+```
+**Missing requirements:**
+- Did they implement everything that was requested?
+- Are there requirements they skipped or missed?
+- Did they claim something works but didn't actually implement it?
+```
+
+to:
+
+```
+**Missing requirements:**
+- Did they implement everything the Task requires (verified from the diff)?
+- Are there requirements they skipped or missed?
+- Does any requirement appear unimplemented when you read the actual diff?
+```
+
+Edit 5 — reword the `**DO:**` bullet that references a claim. Change:
+
+```
+**DO:**
+- Run `git diff [TASK_BASE]..HEAD` to read the actual code changes
+- Compare actual implementation to the Task's requirements line by line
+- Check for missing pieces they claimed to implement
+- Look for extra features they didn't mention
+```
+
+to:
+
+```
+**DO:**
+- Run `git diff [TASK_BASE]..HEAD` to read the actual code changes
+- Compare actual implementation to the Task's requirements line by line
+- Check for missing pieces the Task requires but the diff does not show
+- Look for extra changes the Task did not call for
+```
+
 - [ ] **Step 3: Run the verify checks (expected to pass after the edit)**
 
 Run: `grep -L REPORT_FILE_PATH skills/subagent-driven-development/spec-reviewer-prompt.md`
 Expected: prints `skills/subagent-driven-development/spec-reviewer-prompt.md` (the file no longer contains `REPORT_FILE_PATH`, so `grep -L` lists it).
 
-Run: `grep -c 'inherently not diff/test-verifiable' skills/subagent-driven-development/spec-reviewer-prompt.md` (note: match the rendered text)
+Run: `grep -ic 'inherently not diff/test-verifiable' skills/subagent-driven-development/spec-reviewer-prompt.md` (case-insensitive, matching the inserted `**Inherently not diff/test-verifiable**`)
 Expected: `1`.
 
 Run: `grep -c 'git diff \[TASK_BASE\]\.\.HEAD' skills/subagent-driven-development/spec-reviewer-prompt.md`
@@ -1129,6 +1311,12 @@ Expected: ≥ `2` (diff range preserved; no `[TASK_HEAD]` introduced).
 
 Run: `grep -c 'TASK_HEAD' skills/subagent-driven-development/spec-reviewer-prompt.md`
 Expected: `0`.
+
+Run: `grep -ic "implementer's report\|implementer report\|REPORT_FILE_PATH" skills/subagent-driven-development/spec-reviewer-prompt.md`
+Expected: `0` — no report references remain anywhere in the prompt.
+
+Run: `grep -ic 'claim' skills/subagent-driven-development/spec-reviewer-prompt.md`
+Expected: `0` — the "claim/claimed" wording is gone from the opening and the Missing-requirements bullets.
 
 - [ ] **Step 4: Commit**
 
@@ -1152,9 +1340,51 @@ Replace the two-background-call dispatch (the "Parallel dispatch per round" + "D
 Run: `grep -c 'review-brainstorm.sh' skills/brainstorming/SKILL.md`
 Expected (before edit): `0`.
 
-- [ ] **Step 2: Apply the edit**
+- [ ] **Step 2: Apply the edits**
 
-Replace the block that begins with `**Parallel dispatch per round:**` and ends with the Design Soundness `dispatch.sh adversarial` fenced code block (lines from `**Parallel dispatch per round:**` through the closing ``` of the adversarial block) with:
+Edit A — Checklist item 6. Change:
+
+```
+6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch the structural-completeness reviewer (`dispatch.sh task`, spec-document-reviewer sidecar) and the design-soundness reviewer (`dispatch.sh adversarial`, `adversarial-spec-review-focus.md`) in parallel each round; fix ALL findings; loop until the structural-completeness reviewer returns `Status: OKAY` AND the design-soundness reviewer returns `Verdict: approve` in the same round (see below — do NOT do this inline)
+```
+
+to:
+
+```
+6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch both reviewers each round with ONE `review-brainstorm.sh` call (it runs the structural-completeness and design-soundness reviewers in parallel); read the wrapper's stdout `=== Summary ===` on any exit code; fix ALL findings; loop until the structural-completeness reviewer returns `Status: OKAY` AND the design-soundness reviewer returns `Verdict: approve` in the same round (see below — do NOT do this inline)
+```
+
+Edit B — Process-flow DOT diagram. The diagram has a "Spec review loop" node labelled with the two direct `dispatch.sh` calls and three edges referencing it. Replace the node-label and the three edges that mention `dispatch.sh task + ... dispatch.sh adversarial` so the loop references the single wrapper. Change:
+
+```
+    "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)" [shape=box];
+```
+
+to:
+
+```
+    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" [shape=box];
+```
+
+and change the three edges:
+
+```
+    "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)";
+    "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)" -> "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)" [label="any finding — fix all, re-dispatch both"];
+    "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)" -> "User reviews spec?" [label="both OKAY + approve"];
+    "User reviews spec?" -> "Spec review loop\n(structural-completeness: dispatch.sh task + design-soundness: dispatch.sh adversarial\nboth parallel, both must pass)" [label="changes requested — re-run dual loop"];
+```
+
+to:
+
+```
+    "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)";
+    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" [label="any finding — fix all, re-run wrapper"];
+    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" -> "User reviews spec?" [label="both OKAY + approve"];
+    "User reviews spec?" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" [label="changes requested — re-run dual loop"];
+```
+
+Edit C — replace the review-loop dispatch block. Replace the block that begins with `**Parallel dispatch per round:**` and ends with the Design Soundness `dispatch.sh adversarial` fenced code block (lines from `**Parallel dispatch per round:**` through the closing ``` of the adversarial block) with:
 
 ````
 **Single batched dispatch per round:**
@@ -1192,13 +1422,26 @@ sidecar) and the design-soundness reviewer (`dispatch.sh adversarial`,
 - [ ] **Step 3: Run the verify checks (expected to pass after the edit)**
 
 Run: `grep -c 'review-brainstorm.sh' skills/brainstorming/SKILL.md`
-Expected: ≥ `2` (the command block + the prose reference).
-
-Run: `grep -c 'run_in_background' skills/brainstorming/SKILL.md`
-Expected: the count should be smaller than before — verify the "Parallel dispatch per round" reviewer section no longer instructs separate background calls. (Run before and after; the rewritten section drops its `run_in_background` instructions.)
+Expected: ≥ `4` (checklist item 6, the diagram node + edges, the command block, and the prose reference).
 
 Run: `grep -c '=== Summary ===' skills/brainstorming/SKILL.md`
-Expected: ≥ `1`.
+Expected: ≥ `1` (the new caller control-flow references the Summary block).
+
+Concrete check that the old direct-dispatch review-loop INSTRUCTIONS are gone. The review loop must no longer instruct the two separate background `dispatch.sh` calls, and the diagram/checklist must no longer drive the loop through direct `dispatch.sh task`/`dispatch.sh adversarial`:
+
+Run: `grep -c 'separate background Bash calls' skills/brainstorming/SKILL.md`
+Expected: `0` (the "Parallel dispatch per round" two-background-call instruction was removed).
+
+Run: `grep -c 'run_in_background' skills/brainstorming/SKILL.md`
+Expected: `0` (both `run_in_background: true` review-loop call instructions were removed with the old dispatch block).
+
+Run: `grep -c '\.sh" task' skills/brainstorming/SKILL.md`
+Expected: `0` (no direct `dispatch.sh task` invocation block remains in the review loop).
+
+Run: `grep -c '\.sh" adversarial' skills/brainstorming/SKILL.md`
+Expected: `0` (no direct `dispatch.sh adversarial` invocation block remains in the review loop).
+
+Note: the bare strings `dispatch.sh task` / `dispatch.sh adversarial` still appear as descriptive prose (the reviewer-role labels in the "Spec Review Loop" section and the one-line parenthetical inside the new wrapper description); those are descriptions of what the wrapper runs, not direct-call instructions, and are intentionally retained.
 
 - [ ] **Step 4: Commit**
 
@@ -1222,9 +1465,27 @@ Replace the per-Task + Coverage background dispatch (the "Dispatch mechanism" se
 Run: `grep -c 'review-plan.sh' skills/writing-plans/SKILL.md`
 Expected (before edit): `0`.
 
-- [ ] **Step 2: Apply the edit**
+- [ ] **Step 2: Apply the edits**
 
-Replace the entire `### Dispatch mechanism (shared `dispatch.sh`)` subsection (from its heading through the Coverage Verifier `dispatch.sh task` fenced block) with:
+Edit A — Plan Review Loop intro. Change:
+
+```
+After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch reviewers via `dispatch.sh` (see **Dispatch mechanism** below). There are two reviewer roles:
+
+- **Per-Task reviewer:** reviews one Task at a time using `plan-document-reviewer-prompt.md`, dispatched via `dispatch.sh` (see **Dispatch mechanism**) (read-only).
+- **Coverage Verifier:** reviews the whole plan against the whole spec using `coverage-verifier-prompt.md`, dispatched via `dispatch.sh` (see **Dispatch mechanism**) (read-only).
+```
+
+to:
+
+```
+After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch all reviewers with ONE `review-plan.sh` call (see **Dispatch mechanism** below). There are two reviewer roles:
+
+- **Per-Task reviewer:** reviews one Task at a time using `plan-document-reviewer-prompt.md`, registered by `review-plan.sh` as one `--task "Task N"` per active Task (read-only).
+- **Coverage Verifier:** reviews the whole plan against the whole spec using `coverage-verifier-prompt.md`, registered by `review-plan.sh` via `--coverage` (read-only).
+```
+
+Edit B — Dispatch mechanism subsection. Replace the entire `### Dispatch mechanism (shared `dispatch.sh`)` subsection (from its heading through the Coverage Verifier `dispatch.sh task` fenced block) with:
 
 ````
 ### Dispatch mechanism (shared `review-plan.sh`)
@@ -1266,16 +1527,84 @@ rounds where the Coverage Verifier has dropped out (principle 3). At least one `
    when every active reviewer returns `Status: OKAY` in a single round.
 ````
 
+Edit C — The Round Loop prose. Change:
+
+```
+Per-Task reviewers and the Coverage Verifier are dispatched **in parallel** within a round using separate Bash calls with `run_in_background: true`. Do not wait for all per-Task reviews to finish before launching the Coverage Verifier. When a backgrounded dispatch finishes, Claude Code notifies you automatically — do NOT poll BashOutput in a loop or otherwise wait for the output to have a value. Wait for each completion notification, then read that task's output once. Once all results are in, fix all issues and gaps together, then start the next round.
+```
+
+to:
+
+```
+Per-Task reviewers and the Coverage Verifier all run **in parallel** within a round via ONE `review-plan.sh` call — pass every active Task as a `--task "Task N"` and add `--coverage` while the Coverage Verifier is active. The wrapper returns ALL reviewers' output on stdout in one shot; read its `=== Summary ===` on any exit code. Once you have parsed every reviewer's result, fix all issues and gaps together, then start the next round.
+```
+
+Edit D — the "Use the Dispatch mechanism invocations above exactly as written" line. Change:
+
+```
+Use the **Dispatch mechanism** invocations above exactly as written — do NOT pre-probe dispatch.sh with `--help`, `ls`/`find`, or source greps before dispatching.
+```
+
+to:
+
+```
+Use the **Dispatch mechanism** `review-plan.sh` invocation above exactly as written — do NOT pre-probe `review-plan.sh` or `dispatch.sh` with `--help`, `ls`/`find`, or source greps before dispatching.
+```
+
+Edit E — Round Loop pseudo-code. Change:
+
+```
+    # Dispatch in parallel
+    task_results = parallel(
+        # reviewer reads the plan file itself for sibling-Task context (no Task text pasted)
+        [dispatch_task_reviewer(task) for task in active_tasks],
+        dispatch_coverage_verifier(spec_file, plan_file) if coverage_active else [],
+    )
+```
+
+to:
+
+```
+    # ONE review-plan.sh call dispatches every active reviewer in parallel and returns
+    # all output on stdout; the reviewer reads the plan file itself for sibling-Task
+    # context (no Task text pasted).
+    summary = run_review_plan(
+        plan_file, spec_file,
+        tasks=active_tasks,
+        coverage=coverage_active,
+    )
+    task_results = parse_summary(summary)   # read === Summary === on any exit code
+```
+
+Edit F — User Review Gate rerun instructions. Change:
+
+```
+2. Re-run the per-Task reviewer for every **affected Task** using the Per-Task invocation in **Dispatch mechanism** above; pass only `--set TASK_ID="Task N"` so the reviewer reads sibling Task context from the plan file.
+3. Re-run the Coverage Verifier over the whole plan vs. the whole spec (edits can introduce new coverage gaps).
+```
+
+to:
+
+```
+2. Re-run review with ONE `review-plan.sh` call: pass one `--task "Task N"` for every **affected Task** so each reviewer reads sibling Task context from the plan file, and add `--coverage` to also re-run the Coverage Verifier over the whole plan vs. the whole spec (edits can introduce new coverage gaps).
+```
+
 - [ ] **Step 3: Run the verify checks (expected to pass after the edit)**
 
 Run: `grep -c 'review-plan.sh' skills/writing-plans/SKILL.md`
-Expected: ≥ `2`.
+Expected: ≥ `5` (Plan Review Loop intro, Dispatch mechanism heading + command block + prose, Round Loop prose, the "exactly as written" line, the pseudo-code, and the User Review Gate rerun all reference it).
 
 Run: `grep -c '=== Summary ===' skills/writing-plans/SKILL.md`
 Expected: ≥ `1`.
 
-Run: `grep -c 'separate.*run_in_background.*Bash call' skills/writing-plans/SKILL.md`
-Expected: `0` in the rewritten Dispatch mechanism section (the per-reviewer separate-background-call instruction is gone). Other parts of the file that still mention `run_in_background` in the Round Loop prose may be updated for consistency but the Dispatch mechanism no longer instructs separate calls.
+Run: `grep -c 'run_in_background' skills/writing-plans/SKILL.md`
+Expected: `0` (every per-reviewer separate-background-call instruction — Dispatch mechanism, The Round Loop — was removed).
+
+Run: `grep -c '\.sh" task' skills/writing-plans/SKILL.md`
+Expected: `0` (no direct `dispatch.sh task` invocation block remains in the review loop).
+
+Run: `grep -Ec 'dispatch_task_reviewer|dispatch_coverage_verifier' skills/writing-plans/SKILL.md`
+Expected: `0` (the pseudo-code now calls `run_review_plan`, not the per-reviewer dispatch helpers).
 
 - [ ] **Step 4: Commit**
 
@@ -1398,8 +1727,9 @@ dispatching. `${CLAUDE_PLUGIN_ROOT}` is inline-expanded at load time.
 
 Fill `<TASK_BASE>` with the SHA captured before this task's implementer started, the plan
 path with the real plan, and `"Task N"` with the actual Task heading. Substitute the values;
-do not run verbatim. **There is no report file** — the spec-compliance reviewer verifies
-directly from `git diff <TASK_BASE>..HEAD`, so no `mktemp`/`--report-file`/`rm` is needed:
+do not run verbatim. **Spec-compliance now verifies directly from the task's diff
+(`git diff <TASK_BASE>..HEAD`); nothing extra is created, passed, or cleaned up between
+implementer and reviewer:**
 
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/review-impl.sh" \
@@ -1548,6 +1878,14 @@ Expected: ≥ `1`.
 Run: `grep -c 'dispatch.sh adversarial' skills/subagent-driven-development/SKILL.md`
 Expected: ≥ `1` (the final adversarial gate is unchanged).
 
+**Compatibility inventory verification (the report-file channel survives where it must, and this plan does not touch the implementer prompt):**
+
+Run: `grep -c -- '--report-file' scripts/dispatch.sh`
+Expected: ≥ `1` — `dispatch.sh` still supports the general `--report-file` option (only `review-impl.sh` stopped using it; it is not dead code).
+
+Run: `git diff --name-only <IMPL_BASE>..HEAD | grep -c 'skills/subagent-driven-development/implementer-prompt.md'`
+Expected: `0` — `implementer-prompt.md` is NOT modified by this plan (its report is the subagent's return message to the parent, not a disk file, and stays as-is).
+
 - [ ] **Step 4: Commit**
 
 ```bash
@@ -1557,12 +1895,133 @@ git commit -m "docs: rewrite per-task review to single review-impl.sh, drop repo
 
 ---
 
-## Final verification
+### Task 13: caller control-flow acceptance fixture (Summary contract is machine-parseable)
 
-After Task 12, run the full engine test suite once more and confirm it is green:
+**Files:**
+- Test: `scripts/review-batch-lib.test.sh`
+
+The agent-facing contract is the wrapper's stdout `=== Summary ===` block plus the §7
+control-flow decision (ERROR → rerun entire wrapper; findings → fix + re-review). This task
+adds a hermetic acceptance test with a small reference parser that, given canned wrapper-stdout
+blobs, extracts each reviewer's status, detects ERROR, and decides the action. It tests the
+CONTRACT/format (a machine could parse it and decide), not any live agent or companion.
+
+- [ ] **Step 1: Write the failing test (reference parser over fixture Summary blobs)**
+
+Append before the final `printf`/`[ "$FAIL" -eq 0 ]` lines of `scripts/review-batch-lib.test.sh`:
+
+```bash
+# The wrapper's stdout === Summary === block is machine-parseable and the §7 control-flow is
+# decidable from it. A tiny reference parser proves it: it extracts each reviewer's status,
+# detects ERROR, and selects "rerun entire wrapper" (ERROR) vs "fix + re-review" (findings)
+# vs "proceed" (all clear). These are canned wrapper-stdout fixtures — no live wrapper runs.
+
+# decide_action <summary-blob> : print PROCEED | RERUN_WRAPPER | FIX_AND_REREVIEW.
+# - any "ERROR (tool failed" Summary line -> RERUN_WRAPPER (tool failure, not a review result)
+# - else any Issues Found / needs-attention -> FIX_AND_REREVIEW
+# - else (all OKAY / approve) -> PROCEED
+decide_action() {
+  local blob="$1" sumlines
+  sumlines="$(printf '%s\n' "$blob" | sed -n '/^=== Summary ===$/,$p')"
+  if printf '%s\n' "$sumlines" | grep -q 'ERROR (tool failed'; then
+    printf 'RERUN_WRAPPER'; return 0
+  fi
+  if printf '%s\n' "$sumlines" | grep -Eq 'Status: Issues Found|Verdict: needs-attention'; then
+    printf 'FIX_AND_REREVIEW'; return 0
+  fi
+  printf 'PROCEED'
+}
+
+# Fixture (i): exit 0, all reviewers OKAY / approve.
+FX_OK="$(printf '%s\n' \
+  '## structural-completeness' 'Status: OKAY' '' \
+  '## design-soundness' 'Verdict: approve' '' \
+  '=== Summary ===' \
+  '- structural-completeness: Status: OKAY' \
+  '- design-soundness: Verdict: approve')"
+
+# Fixture (ii): nonzero exit, one ERROR line plus others carrying verdicts.
+FX_ERR="$(printf '%s\n' \
+  '## spec-compliance' 'Status: OKAY' '' \
+  '## code-quality' '[stderr excerpt]' 'boom' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: OKAY' \
+  '- code-quality: ERROR (tool failed, exit 2)')"
+
+# Fixture (iii): exit 0, a reviewer reports findings (Issues Found) — drives fix + re-review.
+FX_FIND="$(printf '%s\n' \
+  '## per-task Task 1' 'Status: Issues Found' '' \
+  '## coverage-verifier' 'Status: OKAY' '' \
+  '=== Summary ===' \
+  '- per-task Task 1: Status: Issues Found' \
+  '- coverage-verifier: Status: OKAY')"
+
+# The parser extracts each reviewer's status line from the Summary.
+printf '%s\n' "$FX_OK" | sed -n '/^=== Summary ===$/,$p' | grep -q '^- structural-completeness: Status: OKAY$' \
+  && ok "parser extracts a reviewer's status from the Summary block" \
+  || bad "parser extracts a reviewer's status from the Summary block" "$FX_OK"
+
+# All-clear fixture -> PROCEED.
+[ "$(decide_action "$FX_OK")" = "PROCEED" ] \
+  && ok "all-OKAY Summary selects PROCEED" \
+  || bad "all-OKAY Summary selects PROCEED" "$(decide_action "$FX_OK")"
+
+# ERROR fixture -> detect the ERROR and select rerun-entire-wrapper.
+printf '%s\n' "$FX_ERR" | grep -q 'ERROR (tool failed, exit 2)' \
+  && ok "parser detects the ERROR Summary line" \
+  || bad "parser detects the ERROR Summary line" "$FX_ERR"
+[ "$(decide_action "$FX_ERR")" = "RERUN_WRAPPER" ] \
+  && ok "ERROR Summary selects rerun-entire-wrapper" \
+  || bad "ERROR Summary selects rerun-entire-wrapper" "$(decide_action "$FX_ERR")"
+
+# Findings fixture -> fix + re-review (NOT rerun-wrapper).
+[ "$(decide_action "$FX_FIND")" = "FIX_AND_REREVIEW" ] \
+  && ok "findings Summary selects fix-and-re-review" \
+  || bad "findings Summary selects fix-and-re-review" "$(decide_action "$FX_FIND")"
+
+# Engine never inspects HEAD (documented trade-off: it does not detect HEAD movement).
+# The engine source must contain no git/HEAD/rev-parse/reflog references.
+if grep -nE 'git |rev-parse|reflog|HEAD' "$LIB" >/dev/null 2>&1; then
+  bad "engine never inspects HEAD" "$(grep -nE 'git |rev-parse|reflog|HEAD' "$LIB")"
+else
+  ok "engine never inspects HEAD (no git/rev-parse/reflog/HEAD in the engine source)"
+fi
+```
+
+- [ ] **Step 2: Run test to verify it fails**
+
+The acceptance assertions depend on the `decide_action` helper and fixtures defined together in
+the appended block; before the block is added, those names do not exist. Add the block, then run
+to confirm all six assertions are present and evaluated.
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: `27 passed, 0 failed` and exit 0.
+Expected: with the block appended, the six assertions are evaluated. (This task adds no
+production code — it asserts the already-implemented Summary format is parseable and the engine
+never reads HEAD; if any assertion fails, the Summary format / §4.4 classification regressed or a
+`HEAD`/`git ` reference crept into the engine.) Output ends with `38 passed, 0 failed`.
+
+- [ ] **Step 3: Confirm the acceptance assertions pass**
+
+Run: `bash scripts/review-batch-lib.test.sh`
+Expected: PASS — all six contract/property assertions pass (parser extracts statuses, PROCEED on
+all-clear, ERROR detected, RERUN_WRAPPER on ERROR, FIX_AND_REREVIEW on findings, and the engine
+source contains no HEAD inspection). Output ends with `38 passed, 0 failed`.
+
+- [ ] **Step 4: Commit**
+
+```bash
+git add scripts/review-batch-lib.test.sh
+git commit -m "test: add caller control-flow acceptance fixtures for the Summary contract"
+```
+
+---
+
+## Final verification
+
+After Task 13, run the full engine + acceptance test suite once more and confirm it is green:
+
+Run: `bash scripts/review-batch-lib.test.sh`
+Expected: `38 passed, 0 failed` and exit 0.
 
 Confirm `dispatch.sh` and its tests were never touched:
 

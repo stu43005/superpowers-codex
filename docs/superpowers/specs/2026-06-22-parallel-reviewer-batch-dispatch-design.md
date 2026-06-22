@@ -98,8 +98,10 @@ review 目錄：`$PWD/.claude/superpowers/review/<spec name>/`（不存在時 `m
 2. **彙整（讀私有暫存）**：所有 job 結束後，`batch_run` **讀取這些私有暫存檔**組裝
    §4.4 的 stdout（全文 + Summary）。彙整來源是私有暫存、不靠 glob 掃描 review 目錄，
    因此別的批次對最終路徑的並行/事後覆寫**不會污染本次回傳結果**。
-3. **發佈（原子 `mv`）**：彙整完成**之後**，再把每個私有暫存檔以**原子 `mv`** 改名到
-   最終的 `<label>.<round>.output.md`。發佈在彙整之後，故步驟 2 讀取時暫存檔必然仍在。
+3. **發佈（原子 `mv`，僅在批次有效時）**：彙整完成**之後**，**且批次未被 §4.6 判為
+   無效**時，再把每個私有暫存檔以**原子 `mv`** 改名到最終的
+   `<label>.<round>.output.md`。發佈在彙整之後，故步驟 2 讀取時暫存檔必然仍在；批次
+   無效時跳過本步驟，不留下任何 canonical 檔。
 
 如此：讀者（含本引擎與外部）永遠不會看到寫到一半的檔；最終檔一旦出現即為某一次的
 完整輸出，不會是兩次交錯的混合檔。並行/重跑的整體假設、發佈期的互斥鎖與邊界見 §9。
@@ -156,10 +158,15 @@ diff 型 reviewer（code-quality 的 `review --base`、design-soundness 的
 
 1. **caller 契約**：`review-*.sh` 是**阻塞式單次呼叫**；caller（SKILL.md）在 wrapper
    執行期間**不得推進 `HEAD`**（不得提交/rebase/checkout）。
-2. **引擎斷言**：若在 git repo 內，`batch_run` 於**開始時**記錄 `HEAD_AT_START=$(git rev-parse HEAD)`，
-   於**所有 job 結束、彙整前**再讀一次 `HEAD`；若不一致 → 整個批次標為**無效**
-   （非零退出，且 Summary 加一行 `BATCH INVALID: HEAD moved during run (<a>→<b>) — rerun`），
-   要求 caller 重跑。這即使無法在 companion 內釘住 diff 終點，也能可靠偵測違反契約。
+2. **引擎斷言 + 發佈前閘**：若在 git repo 內，`batch_run` 於**開始時**記錄
+   `HEAD_AT_START=$(git rev-parse HEAD)`，於**所有 job 結束、彙整前**再讀一次 `HEAD`；
+   若不一致 → 整個批次標為**無效**（非零退出，且 Summary 加一行
+   `BATCH INVALID: HEAD moved during run (<a>→<b>) — rerun`），要求 caller 重跑。
+   **無效批次不進入發佈**：跳過 §4.3 步驟 3 的 `mv`，**不寫任何 canonical
+   `<label>.<round>.output.md`**——避免把混合快照的過時審查持久化成與有效證據同名的
+   檔，讓事後的人或自動化誤當有效證據（漂移只會出現在 stdout 的 `BATCH INVALID` 行，
+   不會落地）。這即使無法在 companion 內釘住 diff 終點，也能可靠偵測並阻止違反契約的
+   結果落地。
 3. **顯式釘住（可釘的部分）**：能以參數釘住 diff 終點的 reviewer 一律釘成不可變的
    commit pair，而非 `..HEAD`——見 §5.3 的 spec-compliance（透過 `--set TASK_HEAD`）。
 
@@ -286,10 +293,18 @@ review-impl 不再傳 `--report-file`。spec-compliance 的真正驗證是
 管理暫存 report 檔與完成後清理的複雜度。
 
 **證據完整性要求（取代 report 作為證據來源）**：移除 report 後，spec-compliance 的可審
-證據**一律以 `git diff <TASK_BASE>..HEAD` 為事實來源**。對於 diff 不能直接呈現的產物
-（生成檔、移動/改名、被 gitignore 的檔、git 外部副作用），**plan 的該 Task 必須以可驗證
-的預期結果描述之**（例如「執行 X 後應產生 Y、Y 的內容應滿足 Z」），讓 reviewer 能據 plan
-Task 需求 + diff 驗證，而非依賴 implementer 的自述。這本就是 plan 驅動審查的既有方式。
+證據**一律以 `git diff <TASK_BASE>..[TASK_HEAD]` 為事實來源**。對於 diff 不能直接呈現的
+產物（生成檔、移動/改名、被 gitignore 的檔、runtime 行為、git 外部副作用），**plan 的該
+Task 必須以「會落進 diff 的可驗證形式」表達預期結果**——主要手段是**提交測試**：在該
+skill 既有的 TDD 政策下，runtime 行為與生成輸出皆由 implementer 提交的測試斷言，而**測試
+本身就在 git diff 內**，reviewer 能直接讀到並據以驗證。
+
+**為何 report 即使對非 diff 產物也補不上這個洞**：implementer report 是 **prose 自述**，
+`spec-reviewer-prompt.md` 本就明示「**不信任** report」。一句「我已更新外部 DB / 已生成
+資產 Z」是**不可驗證的主張**，不構成證據；真正能驗證的仍是「提交一個讀取/檢查該外部
+狀態或生成檔的測試」——而那同樣落在 diff 裡。因此保留 report 並不會把「非 diff 可見
+產物」變得可驗證，只會把不可信的 prose 重新引入。結論：以「測試入 diff」為證據通道，
+嚴格強於以 report 為通道。
 
 **`spec-reviewer-prompt.md` 變更**：
 - 移除 `[REPORT_FILE_PATH]` 佔位符（第 7 行）與「讀取 implementer report 看其 CLAIM」
@@ -343,18 +358,19 @@ stdout 一次取得全部結果。
 - review 目錄不存在時自動 `mkdir -p`。
 - **同一 `<label>.<round>.output.md` 已存在（同輪重跑）→ 以 §4.3 的原子 `mv` 覆寫**。
   最終檔永遠是某一次完整輸出，不會是兩次交錯的混合檔。
-- **發佈期互斥鎖（避免靜默覆寫毀掉證據）**：`batch_run` 在進入「發佈（原子 `mv`）」
-  階段前，先以**原子 `mkdir`** 取得 `<review 目錄>/.batch.lock` 作為 per-`<spec name>`
-  互斥鎖（lock 目錄內記錄持有者 PID 與 round），發佈完成後於 trap 中移除。
+- **互斥鎖在啟動任何 job 前取得（fail fast，避免輸家白跑全程）**：`batch_run`
+  **在登記後、啟動任何 reviewer job 之前**，先以**原子 `mkdir`** 取得
+  `<review 目錄>/.batch.lock` 作為 per-`<spec name>` 互斥鎖（lock 目錄內記錄持有者 PID
+  與 round），持有至發佈完成，於 trap 中移除。
   - `mkdir` 在 POSIX 上是原子操作，bash 3.2 / BSD 可攜（不依賴 `flock`，後者 macOS
     預設無）。
-  - 取鎖失敗（另一批次正持有）→ **fail fast**，印出可行動訊息（「`<spec name>` 已有
-    審查批次在跑；請改傳不同 `--name`，或移除殘留的 `.batch.lock`」），**不**靜默覆寫
-    對方的最終檔。如此即使兩個 agent 同名同 round 並行，也不會「最後一個 `mv` 贏、
-    抹掉另一次的持久證據」。
+  - 取鎖失敗（另一批次正持有）→ **立刻 fail fast**，印出可行動訊息（「`<spec name>`
+    已有審查批次在跑；請改傳不同 `--name`，或移除殘留的 `.batch.lock`」）。**在花費
+    任何 reviewer 成本之前**就退出——輸家不會白跑完整輪審查、也不會在發佈時才失敗
+    而丟失持久證據。如此兩個 agent 同名同 round 並行時，只有先取鎖者會實際執行。
   - 殘留鎖（持有者已死）：訊息明確指引手動移除；引擎不自動猜測 PID 存活以免誤判。
-  - 彙整（§4.3 步驟 2）讀私有暫存、不受此鎖影響；鎖只保護「發佈」這段對共享最終
-    路徑的寫入。
+  - 鎖涵蓋整個 `batch_run`（啟動 job → 彙整 → 發佈），確保同一 `<spec name>` 的批次
+    完全序列化，與「同一主題同時只有一個審查迴圈」的模型一致。
 - **並行/重跑隔離假設**：預設模型仍是「同一 `<spec name>` 同時只有一個審查迴圈」
   （單一 agent 循序推進輪次，`--round` 對每個邏輯輪次唯一）。上面的互斥鎖把「違反此
   假設」從「靜默毀證據」變成「fail fast 報錯」。要真正並行同一主題，由 caller 傳不同
@@ -379,10 +395,12 @@ stdout 一次取得全部結果。
   只反映自己這次的輸出、不被既有檔污染（§4.3）。
 - **先彙整後發佈順序**：驗證彙整在 `mv` 之前完成（私有暫存於彙整時仍存在），最終檔在
   彙整後才出現（§4.3 步驟順序）。
-- **HEAD 漂移偵測**：在批次執行中讓 `HEAD` 變動，驗證引擎偵測到並把批次標 `BATCH
-  INVALID`、非零退出（§4.6）；HEAD 不動時正常通過。
-- **發佈互斥鎖**：預先建立 `.batch.lock` 模擬另一批次持鎖，驗證本次 fail fast 報出
-  可行動訊息、且**不覆寫**既有最終檔（§9）。
+- **HEAD 漂移偵測 + 不發佈**：在批次執行中讓 `HEAD` 變動，驗證引擎標 `BATCH INVALID`、
+  非零退出，**且不產生任何 canonical `<label>.<round>.output.md`**（§4.6 發佈前閘）；
+  HEAD 不動時正常發佈。
+- **互斥鎖在 job 啟動前 fail fast**：預先建立 `.batch.lock` 模擬另一批次持鎖，驗證本次
+  **在啟動任何 reviewer job 之前**就 fail fast、報出可行動訊息、且**不覆寫**既有最終檔、
+  也不花費 reviewer 成本（§9）。
 - **`--max-parallel` 驗證**：`0`/空/非數字 → fail fast；超過上限 → 夾到上限；正整數 →
   通過（§5 共通參數）。
 - **各 wrapper 名稱推導**：`review-brainstorm.sh` 由 `--spec` 去 `-design`、
@@ -404,7 +422,8 @@ stdout 一次取得全部結果。
   report 改回單純的 subagent 回傳訊息（非磁碟檔），無孤兒路徑。
 - **FIFO token-bucket 節流**：bash 3.2 可攜，且為真正滑動節流。
 - **原子 `mv` + 彙整只讀本次私有暫存**（vs 直接寫最終路徑 + glob 目錄）：避免並行/同輪
-  重跑時的半寫檔與交錯污染，且不必在引擎內建跨 agent 鎖。
+  重跑時的半寫檔與交錯污染；持久證據的跨 agent 互斥另由 §9 的 `mkdir` 鎖在 job 啟動前
+  把競態轉為 fail fast（兩者互補：原子 `mv` 防半寫，鎖防同名覆寫毀證據）。
 - **非零退出但 stdout 權威**（保留使用者「非零退出」決策，並補 caller contract）：以
   「stdout 任何退出碼都完整」的 harness 行為為前提，非零碼僅作注意訊號。
 - **並行 impl reviewer 的 invalidation 契約**（vs 保留循序閘）：以「任一修改使雙方失效、
@@ -425,3 +444,8 @@ stdout 一次取得全部結果。
 - 不改變各技能 review 迴圈的收斂條件與 zero-tolerance 政策。
 - 不把 subagent 的最終 adversarial 合併閘納入批次。
 - 不引入跨技能共用的單一「萬用」CLI——三個 wrapper 各自獨立面向自己的技能。
+- **不為 spec-compliance 重建 implementer report / evidence 檔通道（明確可接受限制）**：
+  真正落入 git diff 的變更（含提交的測試）是事實證據；無法以「會進 diff 的測試」表達的
+  純外部副作用，本就無法被 prose report 可信地驗證（reviewer prompt 既定不信任 report），
+  故不在 spec-compliance 自動審查範圍，改由「implementer 提交的測試 + 最終 adversarial
+  合併閘 + user-review gate 的人工審查」涵蓋。此為刻意取捨，非疏漏。

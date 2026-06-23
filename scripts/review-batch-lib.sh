@@ -106,6 +106,7 @@ batch_run() {
     if ! grep -Eq '^(Status|Verdict):' "$tmp/$i.out" 2>/dev/null && [ "$rc" -ne 0 ]; then
       printf '\n[stderr excerpt]\n'
       tail -20 "$tmp/$i.err" 2>/dev/null
+      rc_all=1
     fi
     printf '\n'
     frag="$(_batch_classify "$tmp/$i.out" "$tmp/$i.err" "$rc")"
@@ -116,5 +117,5 @@ batch_run() {
   printf '%s' "$summary"
 
   rm -rf "$tmp"
-  return 0
+  return "$rc_all"
 }

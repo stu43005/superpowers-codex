@@ -151,5 +151,38 @@ printf '%s\n' "$EE_RC" | grep -qx '[0-9][0-9]*' \
   && ok "errexit: batch completes (returns a value, does not abort) under set -e" \
   || bad "errexit: batch completes under set -e" "rc=$EE_RC"
 
+# Exit-code semantics: capture the batch rc into a variable BEFORE the assertion so a
+# failure message shows the real rc (a bare $? inside [ ... ] would re-read the test's rc).
+# All jobs produce a verdict (one is Issues Found) -> batch exits 0.
+( BATCH_DISPATCH_SH="$MUX_STUB"; . "$LIB"; MAX_PARALLEL=4; batch_init
+  batch_add "A-okay"   okay
+  batch_add "B-issues" issues
+  batch_run ) >/dev/null 2>&1
+RC_ALLVERDICT=$?
+[ "$RC_ALLVERDICT" -eq 0 ] && ok "all-verdict batch (incl Issues Found) exits 0" \
+  || bad "all-verdict batch exits 0" "rc=$RC_ALLVERDICT"
+
+# One job is ERROR (no verdict + nonzero) -> batch exits nonzero.
+( BATCH_DISPATCH_SH="$MUX_STUB"; . "$LIB"; MAX_PARALLEL=4; batch_init
+  batch_add "A-okay" okay
+  batch_add "C-err"  err
+  batch_run ) >/dev/null 2>&1
+RC_ERR=$?
+[ "$RC_ERR" -ne 0 ] && ok "batch with an ERROR job exits nonzero" \
+  || bad "batch with an ERROR job exits nonzero" "rc=$RC_ERR"
+
+# Errexit: the same ERROR case sourced under `set -euo pipefail` returns nonzero (does not
+# abort early) — proving the ERROR exit code survives the errexit-safe wait/return path.
+( set -euo pipefail
+  BATCH_DISPATCH_SH="$MUX_STUB"
+  . "$LIB"
+  batch_init
+  batch_add "C-err" err
+  batch_run >/dev/null 2>&1
+) ; RC_ERR_EE=$?
+[ "$RC_ERR_EE" -ne 0 ] \
+  && ok "errexit: ERROR batch returns nonzero under set -e" \
+  || bad "errexit: ERROR batch returns nonzero under set -e" "rc=$RC_ERR_EE"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

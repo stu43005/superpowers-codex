@@ -601,12 +601,22 @@ per-invocation `job.id`, so a stale grandchild cannot corrupt a fresh retry's ou
 or companion state. Test 5b always asserts THIS guarantee; it only ADDITIONALLY asserts "grandchild
 killed" when process-group support is actually available, and never FAILS on platforms lacking it.
 
+**Trap installed on entry (before the FIFO):** the EXIT/INT/TERM trap is installed IMMEDIATELY
+after `mktemp -d`, BEFORE `mkfifo` and `exec 9<>`. If FIFO setup fails after the temp dir is
+created, the EXIT trap still removes the temp dir instead of leaking it.
+
 **Cleanup stays armed through aggregation:** the temp-dir `rm -rf` must run on ANY exit path —
 including an interruption *during* aggregation. So the EXIT trap is NOT disarmed before the
 aggregation loop; it remains armed until `batch_run` returns. The INT/TERM handler runs cleanup
 then exits nonzero (no fall-through into aggregation); the EXIT handler cleans up on the normal
 return path. `batch_run` removes the temp dir itself on the success path and clears `_BATCH_TMP`
 so the still-armed EXIT trap's cleanup is an idempotent no-op.
+
+**PID/PGID arrays cleared after `wait`:** once `wait` has reaped every job, `_BATCH_PIDS` and
+`_BATCH_PGIDS` are emptied BEFORE the aggregation phase. If INT/TERM fires during aggregation,
+`_batch_shutdown` then has no PIDs to signal — so it cannot accidentally signal an already-reaped
+(and possibly PID-reused) process. Only the temp-dir cleanup remains meaningful at that point, and
+it stays armed.
 
 - [ ] **Step 1: Write the failing tests (temp gone after run; grandchild killed or isolated)**
 
@@ -630,14 +640,21 @@ after_dirs="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d
   || bad "run writes nothing under the project dir" "$(ls -A "$PROJDIR" 2>/dev/null)"
 
 # Grandchild isolation under INT (the RELIABLE guarantee — asserted on every platform).
-# A stub spawns a grandchild that, after a delay, writes a marker to a path UNDER this run's
-# batch-owned temp dir (passed in via GC_MARK_DIR). The reliable guarantee, independent of
-# whether the grandchild is killed, is: the run's temp dir is `rm -rf`-ed on INT, so any
-# marker the grandchild writes can only land in the now-removed dir; and a fresh retry uses a
-# brand-new temp dir, so it is never corrupted by a stale grandchild. We do NOT assert the
-# grandchild was killed here (that needs process-group support — covered separately below).
+# A stub spawns a grandchild that, after a delay, writes a marker into a batch-owned path:
+# GC_MARK_DIR points at the live run's temp dir, resolved at runtime by globbing the single
+# review-batch.* dir present during this run. So the grandchild's marker, if it writes one,
+# lands INSIDE the batch temp dir. The reliable guarantee, independent of whether the
+# grandchild is killed, is: the run's temp dir is `rm -rf`-ed on INT, so the marker location
+# itself is removed and a fresh retry (a brand-new temp dir) can never observe it. The
+# assertion below actually reads the marker location and confirms it is gone after cleanup —
+# whether because the grandchild was killed (strong path) or because the dir holding it was
+# removed (weak fallback). We do NOT require the grandchild to have been killed here (that
+# needs process-group support — covered separately below).
 GC_STUB="$ROOT/gc/dispatch.sh"
 write_stub "$GC_STUB" \
+  '# Resolve the live batch temp dir at runtime (the only review-batch.* dir during this run)' \
+  'gc_dir="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | head -1)"' \
+  ': "${GC_MARK_DIR:=$gc_dir}"' \
   '( sleep 1; echo "GRANDCHILD-MARKER" >> "${GC_MARK_DIR:-/tmp}/gc-marker" 2>/dev/null ) &' \
   'sleep 2' \
   'echo "Status: OKAY"'
@@ -646,7 +663,10 @@ gc_before="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d 
   batch_add "slow" task --prompt /tmp/p.md
   batch_run ) >/dev/null 2>&1 &
 BATCH_PID=$!
+# Capture the live run's temp dir (the only review-batch.* dir) while the slow job runs, so the
+# assertion can read the exact marker location the grandchild targets.
 sleep 0.4
+GC_RUN_DIR="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | head -1)"
 kill -INT "$BATCH_PID" 2>/dev/null
 wait "$BATCH_PID" 2>/dev/null
 sleep 1.2   # past the grandchild's 1s timer
@@ -654,6 +674,14 @@ gc_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d '
 [ "$gc_after" -le "$gc_before" ] \
   && ok "INT removes the run's temp dir (stale grandchild output can only land in it)" \
   || bad "INT removes the run's temp dir" "before=$gc_before after=$gc_after"
+# Read the marker location directly: after cleanup the batch temp dir is gone, so the marker the
+# grandchild targeted (inside that dir) is absent — either it was killed before writing (strong)
+# or the dir holding it was removed (weak fallback). Both satisfy the reliable guarantee.
+if [ -n "$GC_RUN_DIR" ] && [ ! -e "$GC_RUN_DIR/gc-marker" ]; then
+  ok "grandchild marker absent after INT (killed, or its batch temp dir was removed)"
+else
+  bad "grandchild marker absent after INT" "GC_RUN_DIR=$GC_RUN_DIR exists=$([ -e "$GC_RUN_DIR/gc-marker" ] && echo yes || echo no)"
+fi
 # A fresh retry after the INT runs cleanly into its own brand-new temp dir, unaffected by any
 # stale grandchild (this proves the reliable no-cross-contamination guarantee).
 RETRY="$( BATCH_DISPATCH_SH="$OKAY_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
@@ -716,7 +744,7 @@ term_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — there is no EXIT/INT/TERM trap, so the INT- and TERM-interrupted runs leave their `review-batch.*` temp dirs behind (and never signal any job). The INT and TERM temp-dir assertions report `bad`. The optional process-group assertion is SKIPPED→ok on this non-interactive test shell (job control does not establish a usable per-job process group, so `PG_SUPPORTED=0`). The four other Task 5 assertions (temp dir removed after a normal run, writes-nothing-under-proj, fresh retry, process-group skipped) pass. Output ends with `22 passed, 2 failed`.
+Expected: FAIL — there is no EXIT/INT/TERM trap, so the INT- and TERM-interrupted runs leave their `review-batch.*` temp dirs behind (and never signal any job). The INT and TERM temp-dir assertions report `bad`, and the new grandchild-marker assertion also reports `bad` (the temp dir is not removed, so the surviving grandchild writes its marker into the still-present `GC_RUN_DIR/gc-marker`). The optional process-group assertion is SKIPPED→ok on this non-interactive test shell (job control does not establish a usable per-job process group, so `PG_SUPPORTED=0`). The four other Task 5 assertions (temp dir removed after a normal run, writes-nothing-under-proj, fresh retry, process-group skipped) pass. Output ends with `22 passed, 3 failed`.
 
 - [ ] **Step 3: Implement the shutdown trap (reliable reap + optional process-group kill)**
 
@@ -791,14 +819,17 @@ batch_run() {
   _BATCH_PIDS=()
   _BATCH_PGIDS=()
   _BATCH_TMP="$(mktemp -d "${TMPDIR:-/tmp}/review-batch.XXXXXX")"
+  # Install the cleanup trap IMMEDIATELY after the temp dir is created — BEFORE mkfifo /
+  # `exec 9<>` — so that if any later setup step (mkfifo, fd open) fails, the EXIT trap
+  # still removes the just-created temp dir instead of leaking it. EXIT runs cleanup on any
+  # exit path; INT/TERM run cleanup then exit nonzero (no fall-through into aggregation).
+  # The EXIT trap stays armed through aggregation so an interruption DURING aggregation
+  # still removes the temp dir.
+  trap '_batch_shutdown' EXIT
+  trap '_batch_on_signal' INT TERM
   local tmp="$_BATCH_TMP" fifo="$_BATCH_TMP/tokens"
   mkfifo "$fifo"
   exec 9<>"$fifo"
-  # EXIT runs cleanup on any exit path; INT/TERM run cleanup then exit nonzero (no
-  # fall-through into aggregation). The EXIT trap stays armed through aggregation so an
-  # interruption DURING aggregation still removes the temp dir.
-  trap '_batch_shutdown' EXIT
-  trap '_batch_on_signal' INT TERM
 
   # Enable job control in the LAUNCHER shell so each `job &` below starts in its own process
   # group (its pid IS its pgid) — this is what makes the OPTIONAL group kill correct where
@@ -835,6 +866,13 @@ batch_run() {
   set +m 2>/dev/null || true
   wait || :
   exec 9>&-
+  # All jobs have been reaped by `wait`. Clear the PID/PGID arrays BEFORE aggregation so that
+  # if INT/TERM fires DURING aggregation (the trap stays armed), _batch_shutdown does not
+  # signal already-reaped PIDs — which may have been reused by unrelated processes. The
+  # temp-dir cleanup stays armed (EXIT is NOT disarmed); only the now-meaningless kill targets
+  # are emptied.
+  _BATCH_PIDS=()
+  _BATCH_PGIDS=()
   # NOTE: do NOT disarm the EXIT trap here — cleanup must stay armed through aggregation so an
   # interruption during aggregation still removes the temp dir. INT/TERM are likewise left
   # armed; an interrupt during aggregation runs _batch_on_signal (cleanup + nonzero exit).
@@ -869,7 +907,7 @@ batch_run() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — the normal run leaves no temp dir and writes nothing under the project dir; the INT- and TERM-interrupted runs reap + remove their temp dir, and a fresh retry runs cleanly. The optional process-group assertion either confirms the grandchild was killed (where job control establishes a per-job process group) or is recorded as skipped (where it cannot) — never a failure. Output ends with `24 passed, 0 failed`.
+Expected: PASS — the normal run leaves no temp dir and writes nothing under the project dir; the INT- and TERM-interrupted runs reap + remove their temp dir, and a fresh retry runs cleanly. The grandchild-marker assertion passes because the run's temp dir (the marker's location) is removed on INT, so `GC_RUN_DIR/gc-marker` is absent. The optional process-group assertion either confirms the grandchild was killed (where job control establishes a per-job process group) or is recorded as skipped (where it cannot) — never a failure. Output ends with `25 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -923,7 +961,7 @@ else bad "review-brainstorm: design-soundness argv" "$T6"; fi
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `review-brainstorm.sh` does not exist, so `bash "$BRAINSTORM" ...` errors and `T6` is empty. Both assertions report `bad`. Output ends with `24 passed, 2 failed`.
+Expected: FAIL — `review-brainstorm.sh` does not exist, so `bash "$BRAINSTORM" ...` errors and `T6` is empty. Both assertions report `bad`. Output ends with `25 passed, 2 failed`.
 
 - [ ] **Step 3: Write `review-brainstorm.sh`**
 
@@ -971,7 +1009,7 @@ batch_run
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `chmod +x scripts/review-brainstorm.sh && bash scripts/review-batch-lib.test.sh`
-Expected: PASS — both reviewer argv assertions pass. Output ends with `26 passed, 0 failed`.
+Expected: PASS — both reviewer argv assertions pass. Output ends with `27 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -1042,7 +1080,7 @@ else bad "review-plan: missing option value fails with a clear wrapper error" "r
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `review-plan.sh` does not exist. All five new assertions report `bad`. Output ends with `26 passed, 5 failed`.
+Expected: FAIL — `review-plan.sh` does not exist. All five new assertions report `bad`. Output ends with `27 passed, 5 failed`.
 
 - [ ] **Step 3: Write `review-plan.sh`**
 
@@ -1108,7 +1146,7 @@ batch_run
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `chmod +x scripts/review-plan.sh && bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all five assertions pass. Output ends with `31 passed, 0 failed`.
+Expected: PASS — all five assertions pass. Output ends with `32 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -1164,7 +1202,7 @@ else bad "review-impl: code-quality argv" "$T8"; fi
 - [ ] **Step 2: Run test to verify it fails**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: FAIL — `review-impl.sh` does not exist, so `T8` is empty: the spec-compliance and code-quality argv assertions fail (2 failures), while the "no `--report-file`" assertion passes (an empty `T8` contains no `--report-file`). Output ends with `32 passed, 2 failed`.
+Expected: FAIL — `review-impl.sh` does not exist, so `T8` is empty: the spec-compliance and code-quality argv assertions fail (2 failures), while the "no `--report-file`" assertion passes (an empty `T8` contains no `--report-file`). Output ends with `33 passed, 2 failed`.
 
 - [ ] **Step 3: Write `review-impl.sh`**
 
@@ -1216,7 +1254,7 @@ batch_run
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `chmod +x scripts/review-impl.sh && bash scripts/review-batch-lib.test.sh`
-Expected: PASS — all three assertions pass. Output ends with `34 passed, 0 failed`.
+Expected: PASS — all three assertions pass. Output ends with `35 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -1736,7 +1774,11 @@ to:
 Use the **Dispatch mechanism** `review-plan.sh` invocation above exactly as written — do NOT pre-probe `review-plan.sh` or `dispatch.sh` with `--help`, `ls`/`find`, or source greps before dispatching.
 ```
 
-Edit E — Round Loop pseudo-code. Change:
+Edit E — Round Loop pseudo-code. The current pseudo-code has NO `ERROR` branch — a tool failure
+would fall through into `collect_issues()` / `fix_all_issues()` as if it were a review finding.
+Add the explicit ERROR branch (mirroring Task 10): an `ERROR (tool failed…)` line re-runs the
+WHOLE `review-plan.sh` with the same `--task`/`--coverage` set, and only real findings
+(Issues Found / coverage gaps / prose findings) reach the fix loop. Change:
 
 ```
     # Dispatch in parallel
@@ -1745,6 +1787,8 @@ Edit E — Round Loop pseudo-code. Change:
         [dispatch_task_reviewer(task) for task in active_tasks],
         dispatch_coverage_verifier(spec_file, plan_file) if coverage_active else [],
     )
+
+    issues = collect_issues(task_results)
 ```
 
 to:
@@ -1759,6 +1803,13 @@ to:
         coverage=coverage_active,
     )
     task_results = parse_summary(summary)   # read === Summary === on any exit code
+
+    # ERROR is a tool failure, NOT a review result: re-run the WHOLE wrapper, same args.
+    if any(r is "ERROR (tool failed…)" for r in task_results):
+        continue   # same active_tasks / coverage_active — do not enter the fix loop
+
+    # Only real reviewer results (Issues Found / coverage gaps / prose findings) reach here.
+    issues = collect_issues(task_results)
 ```
 
 Edit F — User Review Gate rerun instructions. Change:
@@ -1807,6 +1858,9 @@ Expected: ≥ `7` — the literal `review-plan.sh` now appears in: Plan Review L
 
 Run: `grep -c '=== Summary ===' skills/writing-plans/SKILL.md`
 Expected: ≥ `1`.
+
+Run (Round Loop pseudo-code now has an explicit `ERROR → re-run the WHOLE wrapper` branch, not a fall-through into the fix loop): `awk '/^### The Round Loop$/,/^### Git Commit Discipline$/' skills/writing-plans/SKILL.md | grep -Eic 'ERROR \(tool failed.*re-run the WHOLE wrapper|re-run the WHOLE wrapper, same args'`
+Expected: ≥ `1` — the Round Loop section contains the `ERROR (tool failed…)` → re-run the whole wrapper path (same `--task`/`--coverage` set), distinct from the Issues Found / coverage-gap / prose findings that go to the fix loop.
 
 Run: `grep -c 'run_in_background' skills/writing-plans/SKILL.md`
 Expected: `0` (every per-reviewer separate-background-call instruction — Dispatch mechanism, The Round Loop — was removed).
@@ -2149,8 +2203,19 @@ Expected: `0` — no concrete-fix detail leaks into a Summary block (detail live
 Run: `grep -c -- '--report-file' scripts/dispatch.sh`
 Expected: ≥ `1` — `dispatch.sh` still supports the general `--report-file` option (only `review-impl.sh` stopped using it; it is not dead code).
 
-Run (substitute `IMPL_BASE` with the SHA captured before Task 1 — the commit just before this plan's first commit, e.g. `git rev-parse HEAD~13` after all 13 commits, or the recorded base SHA): `IMPL_BASE="$(git rev-parse HEAD~13)"; git diff --name-only "$IMPL_BASE"..HEAD | grep -c 'skills/subagent-driven-development/implementer-prompt.md'`
-Expected: `0` — `implementer-prompt.md` is NOT modified by this plan (its report is the subagent's return message to the parent, not a disk file, and stays as-is). If you do not know the base SHA, equivalently run `git log --oneline -- skills/subagent-driven-development/implementer-prompt.md | head -1` and confirm the latest commit touching it predates this plan's work.
+`implementer-prompt.md` is NOT modified by this plan (its report is the subagent's return message
+to the parent, not a disk file, and stays as-is). Verify this base-independently — do NOT use a
+relative `HEAD~N`, whose depth is unknowable at Task 12 time (Task 13 does not exist yet and the
+number of commits preceding this Task is not fixed).
+
+Run: `git status --porcelain skills/subagent-driven-development/implementer-prompt.md`
+Expected: prints nothing — the file has no uncommitted modification at this point (this plan never
+edits it). This check is independent of how many commits precede Task 12.
+
+Run (the file is also absent from every Task's `Files:` block, so no Task is even scheduled to
+touch it — scan only the `Create:`/`Modify:` target lines, not prose): `awk '/^\*\*Files:\*\*/{f=1;next} /^###|^## /{f=0} f&&/^- (Create|Modify|Test)/' docs/superpowers/plans/<this-plan>.md | grep -c 'implementer-prompt.md'`
+Expected: `0` — `implementer-prompt.md` never appears as a Create/Modify/Test target in any Task's
+`Files:` block, confirming the plan does not modify it (substitute the actual plan filename).
 
 - [ ] **Step 4: Commit**
 
@@ -2168,12 +2233,15 @@ git commit -m "docs: rewrite per-task review to single review-impl.sh, drop repo
 
 The agent-facing contract is the wrapper's stdout `=== Summary ===` block plus the per-caller
 control-flow decision: stdout is parsed REGARDLESS of exit code; an `ERROR (tool failed…)` line →
-"rerun entire wrapper"; findings (`Status: Issues Found` / `Verdict: needs-attention`) →
-"fix + re-review"; all-clear → "proceed". This task proves the decision is machine-decidable for
+"rerun entire wrapper"; findings (`Status: Issues Found` / `Verdict: needs-attention`, **or a
+blocking finding in a prose code-quality body**) → "fix + re-review"; all-clear → "proceed". A
+code-quality reviewer's `(prose — 見全文)` Summary line is NOT automatically a pass — per
+`review-impl.sh`'s contract the caller MUST read the `## code-quality` section body and treat a
+blocking-severity defect there as a finding. This task proves the decision is machine-decidable for
 **each of the three SKILL.md callers' shapes** (brainstorm: `Status:` + `Verdict:`; plan:
-per-task + coverage `Status:`; impl: spec-compliance `Status:` + code-quality prose), modelling
-BOTH the stdout blob AND the exit code (0 vs nonzero) for every caller. It tests the
-CONTRACT/format, not any live agent or companion.
+per-task + coverage `Status:`; impl: spec-compliance `Status:` + code-quality prose, including a
+prose body that carries a blocking finding), modelling BOTH the stdout blob AND the exit code
+(0 vs nonzero) for every caller. It tests the CONTRACT/format, not any live agent or companion.
 
 - [ ] **Step 1: Write the failing assertions (no helper yet — genuine RED)**
 
@@ -2188,7 +2256,10 @@ following before the final `printf`/`[ "$FAIL" -eq 0 ]` lines of `scripts/review
 # the Summary from stdout REGARDLESS of the exit code and returns the documented action:
 #   - any "ERROR (tool failed" Summary line -> RERUN_WRAPPER (tool failure, not a review result)
 #   - else any "Status: Issues Found" / "Verdict: needs-attention" -> FIX_AND_REREVIEW
-#   - else (all OKAY / approve / prose) -> PROCEED
+#   - else a code-quality reviewer whose Summary is prose ("(prose — 見全文)") but whose
+#     "## code-quality" body carries a BLOCKING finding -> FIX_AND_REREVIEW (prose is NOT
+#     automatically a pass — the caller MUST read the section body for blocking findings)
+#   - else (all OKAY / approve / no-blocking prose) -> PROCEED
 # These are canned wrapper-stdout fixtures plus a modelled rc — no live wrapper runs.
 
 # --- brainstorm caller shape: structural-completeness (Status:) + design-soundness (Verdict:) ---
@@ -2250,6 +2321,17 @@ IM_FIND="$(printf '%s\n' \
   '=== Summary ===' \
   '- spec-compliance: Status: Issues Found' \
   '- code-quality: (prose — 見全文)')"; IM_FIND_RC=0
+# code-quality is PROSE — a "(prose — 見全文)" Summary line is NOT automatically a pass. Here
+# spec-compliance is OKAY, the Summary shows code-quality as prose, exit 0 — but the
+# "## code-quality" BODY carries a BLOCKING finding (marked "BLOCKING:" — the senior-engineer
+# must-fix severity the reviewer emits). The caller MUST read the section body, so the decision
+# is FIX_AND_REREVIEW, not PROCEED. This is the case review-impl.sh's contract requires.
+IM_CQ_BLOCK="$(printf '%s\n' \
+  '## spec-compliance' 'Status: OKAY' '' \
+  '## code-quality' 'BLOCKING: src/recovery.ts:47 unhandled error path can drop data' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: OKAY' \
+  '- code-quality: (prose — 見全文)')"; IM_CQ_BLOCK_RC=0
 
 # expect_action <name> <blob> <rc> <expected-action> : assert decide_action(stdout, rc) matches.
 expect_action() {
@@ -2269,6 +2351,9 @@ expect_action "plan Issues Found (rc 0)"           "$PL_FIND" "$PL_FIND_RC" "FIX
 expect_action "impl all-clear prose (rc 0)"        "$IM_OK"   "$IM_OK_RC"   "PROCEED"
 expect_action "impl ERROR (rc nonzero)"            "$IM_ERR"  "$IM_ERR_RC"  "RERUN_WRAPPER"
 expect_action "impl Issues Found (rc 0)"           "$IM_FIND" "$IM_FIND_RC" "FIX_AND_REREVIEW"
+# Prose is NOT auto-PROCEED: a code-quality BLOCKING finding in the body decides FIX_AND_REREVIEW
+# even though its Summary line is "(prose — 見全文)" and exit code is 0.
+expect_action "impl code-quality prose BLOCKING (rc 0)" "$IM_CQ_BLOCK" "$IM_CQ_BLOCK_RC" "FIX_AND_REREVIEW"
 
 # stdout is parsed REGARDLESS of exit code: a findings Summary delivered with a NONZERO rc still
 # decides FIX_AND_REREVIEW from stdout (the rc must not override the stdout verdict). This proves
@@ -2293,10 +2378,10 @@ fi
 
 Run: `bash scripts/review-batch-lib.test.sh`
 Expected: FAIL — `decide_action` is not defined yet, so each `expect_action` call captures empty
-output (`got=`) which never equals the expected action: the nine per-caller decision assertions
-plus the "findings with nonzero rc" assertion report `bad` (10 failures). The two helper-independent
-assertions (parser extracts a status line; engine never inspects HEAD) pass. Output ends with
-`36 passed, 10 failed`.
+output (`got=`) which never equals the expected action: the ten per-caller decision assertions
+(nine documented decisions + the code-quality prose-BLOCKING decision) plus the "findings with
+nonzero rc" assertion report `bad` (11 failures). The two helper-independent assertions (parser
+extracts a status line; engine never inspects HEAD) pass. Output ends with `37 passed, 11 failed`.
 
 - [ ] **Step 3: Define the `decide_action` reference parser (GREEN)**
 
@@ -2307,16 +2392,30 @@ authoritative — but the decision is taken from the Summary text, never from th
 
 ```bash
 # decide_action <stdout-blob> <exit-code> : print PROCEED | RERUN_WRAPPER | FIX_AND_REREVIEW.
-# The exit code is accepted but NOT used to decide — the decision is read from the stdout Summary,
-# which is authoritative at any exit code. This is the reference parser the SKILL.md callers model.
+# The exit code is accepted but NOT used to decide — the decision is read from the stdout, which
+# is authoritative at any exit code. This is the reference parser the SKILL.md callers model.
+#
+# A code-quality reviewer is PROSE: its Summary line is "(prose — 見全文)", which is NOT
+# automatically a pass. Per review-impl.sh's contract the caller MUST read the "## code-quality"
+# section body and treat any blocking-severity defect there as a finding. The fixtures mark such a
+# defect with a "BLOCKING:" line (the senior-engineer must-fix severity), so the parser inspects
+# the code-quality section body for it. (An all-clear prose body like "No blocking issues found."
+# has no "BLOCKING:" line and stays PROCEED.)
 decide_action() {
-  local blob="$1" rc="$2" sumlines   # rc accepted to make "stdout is authoritative" explicit
-  : "$rc"                            # intentionally unused: stdout drives the decision
+  local blob="$1" rc="$2" sumlines cqbody   # rc accepted to make "stdout is authoritative" explicit
+  : "$rc"                                    # intentionally unused: stdout drives the decision
   sumlines="$(printf '%s\n' "$blob" | sed -n '/^=== Summary ===$/,$p')"
   if printf '%s\n' "$sumlines" | grep -q 'ERROR (tool failed'; then
     printf 'RERUN_WRAPPER'; return 0
   fi
   if printf '%s\n' "$sumlines" | grep -Eq 'Status: Issues Found|Verdict: needs-attention'; then
+    printf 'FIX_AND_REREVIEW'; return 0
+  fi
+  # Prose code-quality body: extract the "## code-quality" section (up to the next "## " heading or
+  # the "=== Summary ===" line — awk, portable on BSD/3.2; no GNU-only sed alternation) and treat a
+  # BLOCKING-severity line as a finding.
+  cqbody="$(printf '%s\n' "$blob" | awk '/^## code-quality$/{c=1;next} c&&/^## /{c=0} c&&/^=== Summary ===$/{c=0} c{print}')"
+  if printf '%s\n' "$cqbody" | grep -Eq '^BLOCKING:'; then
     printf 'FIX_AND_REREVIEW'; return 0
   fi
   printf 'PROCEED'
@@ -2326,9 +2425,10 @@ decide_action() {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: PASS — every caller's three documented decisions hold, the nonzero-rc-findings case still
-decides from stdout, the parser extracts a status line, and the engine source contains no HEAD
-inspection. Output ends with `46 passed, 0 failed`.
+Expected: PASS — every caller's documented decisions hold (including the impl code-quality
+prose-BLOCKING case deciding FIX_AND_REREVIEW, proving prose is not auto-PROCEED), the
+nonzero-rc-findings case still decides from stdout, the parser extracts a status line, and the
+engine source contains no HEAD inspection. Output ends with `48 passed, 0 failed`.
 
 - [ ] **Step 5: Commit**
 
@@ -2344,10 +2444,14 @@ git commit -m "test: add caller control-flow acceptance fixtures for the Summary
 After Task 13, run the full engine + acceptance test suite once more and confirm it is green:
 
 Run: `bash scripts/review-batch-lib.test.sh`
-Expected: `46 passed, 0 failed` and exit 0.
+Expected: `48 passed, 0 failed` and exit 0.
 
-Confirm `dispatch.sh` and its tests were never touched (substitute `IMPL_BASE` with the SHA
-recorded before this plan's first commit, e.g. `git rev-parse HEAD~13`):
+Confirm `dispatch.sh` and its tests were never touched. Verify base-independently — do NOT use a
+relative `HEAD~N`, whose depth depends on how many commits precede this plan's work:
 
-Run: `IMPL_BASE="$(git rev-parse HEAD~13)"; git diff --name-only "$IMPL_BASE"..HEAD | grep -E 'scripts/dispatch\.(sh|test\.sh)$'`
-Expected: prints nothing.
+Run: `git status --porcelain scripts/dispatch.sh scripts/dispatch.test.sh`
+Expected: prints nothing — neither file has any uncommitted modification (this plan never edits
+them).
+
+Run (the plan never lists them as a Create/Modify target either): `awk '/^\*\*Files:\*\*/{f=1;next} /^###|^## /{f=0} f&&/^- (Create|Modify|Test)/' docs/superpowers/plans/<this-plan>.md | grep -Ec 'scripts/dispatch\.(sh|test\.sh)'`
+Expected: `0` — `dispatch.sh` / `dispatch.test.sh` appear in no Task's `Files:` block (substitute the actual plan filename).

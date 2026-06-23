@@ -371,5 +371,33 @@ if [ "$RC_MALFORMED" -ne 0 ] \
   ok "review-plan: missing option value fails with a clear wrapper error"
 else bad "review-plan: missing option value fails with a clear wrapper error" "rc=$RC_MALFORMED out=$PLAN_ERR"; fi
 
+# review-impl.sh assembles the spec-compliance + code-quality dispatch argv (no report file).
+IMPL_W="$HERE/review-impl.sh"
+PROOT="${PROOT:-$ROOT/plugin}"   # fixture plugin root (defined locally)
+mkdir -p "$PROOT/skills/subagent-driven-development"
+: > "$PROOT/skills/subagent-driven-development/spec-reviewer-prompt.md"
+T8="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+       bash "$IMPL_W" --plan docs/plans/x.md --task "Task 2" --task-base TBASE 2>/dev/null )"
+# spec-compliance: task --prompt <root>/.../spec-reviewer-prompt.md --set PLAN_FILE_PATH --set TASK_ID --set TASK_BASE
+if printf '%s\n' "$T8" | grep -q '^## spec-compliance$' \
+   && printf '%s\n' "$T8" | grep -qx 'ARG:task' \
+   && printf '%s\n' "$T8" | grep -qx "ARG:$PROOT/skills/subagent-driven-development/spec-reviewer-prompt.md" \
+   && printf '%s\n' "$T8" | grep -qx 'ARG:PLAN_FILE_PATH=docs/plans/x.md' \
+   && printf '%s\n' "$T8" | grep -qx 'ARG:TASK_ID=Task 2' \
+   && printf '%s\n' "$T8" | grep -qx 'ARG:TASK_BASE=TBASE'; then
+  ok "review-impl: spec-compliance argv matches expected wrapper contract"
+else bad "review-impl: spec-compliance argv" "$T8"; fi
+# NO --report-file anywhere
+printf '%s\n' "$T8" | grep -q -- '--report-file' \
+  && bad "review-impl: no --report-file passed" "$T8" \
+  || ok "review-impl: no --report-file passed"
+# code-quality: review --base <TASK_BASE>
+if printf '%s\n' "$T8" | grep -q '^## code-quality$' \
+   && printf '%s\n' "$T8" | grep -qx 'ARG:review' \
+   && printf '%s\n' "$T8" | grep -qx 'ARG:--base' \
+   && printf '%s\n' "$T8" | grep -qx 'ARG:TBASE'; then
+  ok "review-impl: code-quality argv matches expected wrapper contract"
+else bad "review-impl: code-quality argv" "$T8"; fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

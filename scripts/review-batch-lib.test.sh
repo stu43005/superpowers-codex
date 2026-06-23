@@ -302,5 +302,31 @@ term_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d
   && ok "TERM removes the run's temp dir" \
   || bad "TERM removes the run's temp dir" "before=$term_before after=$term_after"
 
+# review-brainstorm.sh assembles the two reviewers' dispatch argv from its CLI.
+BRAINSTORM="$HERE/review-brainstorm.sh"
+PROOT="$ROOT/plugin"   # fixture plugin root
+mkdir -p "$PROOT/skills/brainstorming"
+: > "$PROOT/skills/brainstorming/spec-document-reviewer-prompt.md"
+: > "$PROOT/skills/brainstorming/adversarial-spec-review-focus.md"
+T6="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+       bash "$BRAINSTORM" --spec docs/specs/x-design.md --base SPECBASE 2>/dev/null )"
+# structural-completeness: task --prompt <root>/.../spec-document-reviewer-prompt.md --set SPEC_FILE_PATH=<spec>
+if printf '%s\n' "$T6" | grep -q '^## structural-completeness$' \
+   && printf '%s\n' "$T6" | grep -qx 'ARG:task' \
+   && printf '%s\n' "$T6" | grep -qx "ARG:--prompt" \
+   && printf '%s\n' "$T6" | grep -qx "ARG:$PROOT/skills/brainstorming/spec-document-reviewer-prompt.md" \
+   && printf '%s\n' "$T6" | grep -qx 'ARG:SPEC_FILE_PATH=docs/specs/x-design.md'; then
+  ok "review-brainstorm: structural-completeness argv matches expected wrapper contract"
+else bad "review-brainstorm: structural-completeness argv" "$T6"; fi
+# design-soundness: adversarial --base <SPEC_BASE> --focus <root>/.../adversarial-spec-review-focus.md
+if printf '%s\n' "$T6" | grep -q '^## design-soundness$' \
+   && printf '%s\n' "$T6" | grep -qx 'ARG:adversarial' \
+   && printf '%s\n' "$T6" | grep -qx 'ARG:--base' \
+   && printf '%s\n' "$T6" | grep -qx 'ARG:SPECBASE' \
+   && printf '%s\n' "$T6" | grep -qx 'ARG:--focus' \
+   && printf '%s\n' "$T6" | grep -qx "ARG:$PROOT/skills/brainstorming/adversarial-spec-review-focus.md"; then
+  ok "review-brainstorm: design-soundness argv matches expected wrapper contract"
+else bad "review-brainstorm: design-soundness argv" "$T6"; fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

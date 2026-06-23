@@ -43,5 +43,40 @@ else
   bad "argv round-trip: space-containing --set value not split" "$T1"
 fi
 
+# Empty, zero, leading-zero (0*, e.g. 01/03), and non-numeric --max-parallel values all
+# fail fast. MAX_PARALLEL is set BEFORE batch_init so an explicit "" survives (batch_init
+# only defaults when UNSET) and reaches validation.
+for bad_mp in 0 "" abc 3x 03; do
+  ( BATCH_DISPATCH_SH="$ECHO_STUB"; . "$LIB"; MAX_PARALLEL="$bad_mp"; batch_init
+    batch_add j task --base HEAD; batch_run ) >/dev/null 2>&1
+  if [ "$?" -ne 0 ]; then ok "invalid --max-parallel '$bad_mp' fails fast"
+  else bad "invalid --max-parallel '$bad_mp' fails fast" "rc=0"; fi
+done
+
+# Peak concurrency reaches exactly the cap and never exceeds it.
+# The stub appends "+" on start and "-" on finish to a shared file, with a short sleep,
+# so a post-hoc scan of the running count reveals the true peak.
+CONC_LOG="$ROOT/conc.log"
+CONC_STUB="$ROOT/conc/dispatch.sh"
+write_stub "$CONC_STUB" \
+  'echo "+" >> "'"$CONC_LOG"'"' \
+  'sleep 0.3' \
+  'echo "-" >> "'"$CONC_LOG"'"' \
+  'echo "Status: OKAY"'
+: > "$CONC_LOG"
+( BATCH_DISPATCH_SH="$CONC_STUB"; . "$LIB"; MAX_PARALLEL=2; batch_init
+  i=0; while [ "$i" -lt 6 ]; do batch_add "j$i" task --base HEAD; i=$((i+1)); done
+  batch_run ) >/dev/null 2>&1
+peak=0; cur=0
+while IFS= read -r line; do
+  case "$line" in
+    "+") cur=$((cur+1)); [ "$cur" -gt "$peak" ] && peak=$cur ;;
+    "-") cur=$((cur-1)) ;;
+  esac
+done < "$CONC_LOG"
+[ "$peak" -eq 2 ] \
+  && ok "peak concurrency reaches exactly MAX_PARALLEL (peak=$peak)" \
+  || bad "peak concurrency reaches exactly MAX_PARALLEL" "peak=$peak"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

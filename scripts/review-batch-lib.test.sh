@@ -328,5 +328,48 @@ if printf '%s\n' "$T6" | grep -q '^## design-soundness$' \
   ok "review-brainstorm: design-soundness argv matches expected wrapper contract"
 else bad "review-brainstorm: design-soundness argv" "$T6"; fi
 
+# review-plan.sh assembles per-Task (+ optional coverage) dispatch argv from its CLI.
+PLAN_W="$HERE/review-plan.sh"
+PROOT="${PROOT:-$ROOT/plugin}"   # fixture plugin root (defined locally; do not rely on it being set elsewhere)
+mkdir -p "$PROOT/skills/writing-plans"
+: > "$PROOT/skills/writing-plans/plan-document-reviewer-prompt.md"
+: > "$PROOT/skills/writing-plans/coverage-verifier-prompt.md"
+T7="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+       bash "$PLAN_W" --plan docs/plans/x.md --spec docs/specs/x.md \
+         --task "Task 1" --task "Task 3" --coverage 2>/dev/null )"
+# per-task Task 1 job: label + TASK_ID with a space intact
+if printf '%s\n' "$T7" | grep -q '^## per-task Task 1$' \
+   && printf '%s\n' "$T7" | grep -qx "ARG:--prompt" \
+   && printf '%s\n' "$T7" | grep -qx "ARG:$PROOT/skills/writing-plans/plan-document-reviewer-prompt.md" \
+   && printf '%s\n' "$T7" | grep -qx 'ARG:PLAN_FILE_PATH=docs/plans/x.md' \
+   && printf '%s\n' "$T7" | grep -qx 'ARG:SPEC_FILE_PATH=docs/specs/x.md' \
+   && printf '%s\n' "$T7" | grep -qx 'ARG:TASK_ID=Task 1'; then
+  ok "review-plan: per-task Task 1 argv matches expected wrapper contract"
+else bad "review-plan: per-task Task 1 argv" "$T7"; fi
+printf '%s\n' "$T7" | grep -q '^## per-task Task 3$' \
+  && ok "review-plan: second per-task job registered" \
+  || bad "review-plan: second per-task job registered" "$T7"
+# coverage-verifier job
+if printf '%s\n' "$T7" | grep -q '^## coverage-verifier$' \
+   && printf '%s\n' "$T7" | grep -qx "ARG:$PROOT/skills/writing-plans/coverage-verifier-prompt.md"; then
+  ok "review-plan: coverage-verifier argv matches expected wrapper contract"
+else bad "review-plan: coverage-verifier argv" "$T7"; fi
+# require at least one --task or --coverage
+( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+  bash "$PLAN_W" --plan docs/plans/x.md --spec docs/specs/x.md ) >/dev/null 2>&1
+RC_REQ=$?
+[ "$RC_REQ" -ne 0 ] && ok "review-plan: no --task/--coverage fails fast" \
+  || bad "review-plan: no --task/--coverage fails fast" "rc=$RC_REQ"
+# malformed CLI: a trailing option with no value fails with a clear wrapper error, NOT a
+# raw `set -u` unbound-variable crash.
+PLAN_ERR="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+  bash "$PLAN_W" --spec docs/specs/x.md --task "Task 1" --plan 2>&1 )"
+RC_MALFORMED=$?
+if [ "$RC_MALFORMED" -ne 0 ] \
+   && printf '%s\n' "$PLAN_ERR" | grep -q 'review-plan: --plan requires a value' \
+   && ! printf '%s\n' "$PLAN_ERR" | grep -qi 'unbound variable'; then
+  ok "review-plan: missing option value fails with a clear wrapper error"
+else bad "review-plan: missing option value fails with a clear wrapper error" "rc=$RC_MALFORMED out=$PLAN_ERR"; fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

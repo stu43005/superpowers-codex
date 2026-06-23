@@ -2216,9 +2216,9 @@ Expected: prints nothing — the file has no uncommitted modification at this po
 edits it). This check is independent of how many commits precede Task 12.
 
 Run (the file is also absent from every Task's `Files:` block, so no Task is even scheduled to
-touch it — scan only the `Create:`/`Modify:` target lines, not prose): `awk '/^\*\*Files:\*\*/{f=1;next} /^###|^## /{f=0} f&&/^- (Create|Modify|Test)/' docs/superpowers/plans/<this-plan>.md | grep -c 'implementer-prompt.md'`
+touch it — scan only the `Create:`/`Modify:` target lines, not prose): `awk '/^\*\*Files:\*\*/{f=1;next} /^###|^## /{f=0} f&&/^- (Create|Modify|Test)/' docs/superpowers/plans/2026-06-22-parallel-reviewer-batch-dispatch.md | grep -c 'implementer-prompt.md'`
 Expected: `0` — `implementer-prompt.md` never appears as a Create/Modify/Test target in any Task's
-`Files:` block, confirming the plan does not modify it (substitute the actual plan filename).
+`Files:` block, confirming the plan does not modify it.
 
 - [ ] **Step 4: Commit**
 
@@ -2456,5 +2456,5 @@ Run: `git status --porcelain scripts/dispatch.sh scripts/dispatch.test.sh`
 Expected: prints nothing — neither file has any uncommitted modification (this plan never edits
 them).
 
-Run (the plan never lists them as a Create/Modify target either): `awk '/^\*\*Files:\*\*/{f=1;next} /^###|^## /{f=0} f&&/^- (Create|Modify|Test)/' docs/superpowers/plans/<this-plan>.md | grep -Ec 'scripts/dispatch\.(sh|test\.sh)'`
-Expected: `0` — `dispatch.sh` / `dispatch.test.sh` appear in no Task's `Files:` block (substitute the actual plan filename).
+Run (the plan never lists them as a Create/Modify target either): `awk '/^\*\*Files:\*\*/{f=1;next} /^###|^## /{f=0} f&&/^- (Create|Modify|Test)/' docs/superpowers/plans/2026-06-22-parallel-reviewer-batch-dispatch.md | grep -Ec 'scripts/dispatch\.(sh|test\.sh)'`
+Expected: `0` — `dispatch.sh` / `dispatch.test.sh` appear in no Task's `Files:` block.

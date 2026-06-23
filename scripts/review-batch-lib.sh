@@ -60,6 +60,61 @@ _batch_classify() {
   fi
 }
 
+# Shutdown: stop launching, signal each recorded job. The RELIABLE mechanism is direct-child
+# TERM then KILL + reap; an OPTIONAL best-effort process-group kill (kill -- -<pgid>) is also
+# attempted, but is only meaningful where the launcher established job control before `&` (so
+# pid == pgid). Where it isn't, the negative-pid kills simply no-op and the direct-child path
+# still tears everything down. A grandchild that briefly survives can only write into the
+# (about-to-be-removed) temp dir, so it cannot corrupt a fresh retry. Arrays are always
+# initialized (see batch_run) so `${#arr[@]}` is never a bad substitution.
+_batch_shutdown() {
+  local p
+  # Best-effort group TERM first (no-op where pid is not a real pgid).
+  if [ "${#_BATCH_PGIDS[@]}" -gt 0 ]; then
+    for p in "${_BATCH_PGIDS[@]}"; do
+      [ -n "$p" ] && kill -TERM "-$p" 2>/dev/null || :
+    done
+  fi
+  # Reliable direct-child TERM.
+  if [ "${#_BATCH_PIDS[@]}" -gt 0 ]; then
+    for p in "${_BATCH_PIDS[@]}"; do
+      [ -n "$p" ] && kill -TERM "$p" 2>/dev/null || :
+    done
+  fi
+  # Brief grace, then hard kill any survivors.
+  local waited=0
+  while [ "$waited" -lt 10 ]; do
+    local alive=0
+    if [ "${#_BATCH_PIDS[@]}" -gt 0 ]; then
+      for p in "${_BATCH_PIDS[@]}"; do
+        [ -n "$p" ] && kill -0 "$p" 2>/dev/null && alive=1
+      done
+    fi
+    [ "$alive" -eq 0 ] && break
+    sleep 0.1; waited=$((waited+1))
+  done
+  if [ "${#_BATCH_PGIDS[@]}" -gt 0 ]; then
+    for p in "${_BATCH_PGIDS[@]}"; do [ -n "$p" ] && kill -KILL "-$p" 2>/dev/null || :; done
+  fi
+  if [ "${#_BATCH_PIDS[@]}" -gt 0 ]; then
+    for p in "${_BATCH_PIDS[@]}";  do [ -n "$p" ] && kill -KILL "$p"  2>/dev/null || :; done
+  fi
+  wait 2>/dev/null || :
+  # Explicitly close the token-bucket FIFO fd so no reader/writer keeps it open.
+  exec 9>&- 2>/dev/null || :
+  exec 9<&- 2>/dev/null || :
+  [ -n "${_BATCH_TMP:-}" ] && rm -rf "$_BATCH_TMP"
+  _BATCH_TMP=""
+}
+
+# _batch_on_signal: run cleanup, then exit nonzero — an interrupted batch must NOT fall
+# through into normal aggregation.
+_batch_on_signal() {
+  _batch_shutdown
+  trap - EXIT INT TERM
+  exit 130
+}
+
 # batch_run: run the queue throttled, capture each job's stdout/stderr/rc to a temp
 # dir, then emit per-job stdout in registration order + a === Summary === block.
 # Errexit-safe: this library is SOURCED by wrappers running under `set -euo pipefail`.
@@ -68,22 +123,37 @@ _batch_classify() {
 batch_run() {
   _batch_validate_max_parallel || return 1
 
-  local tmp fifo
-  tmp="$(mktemp -d "${TMPDIR:-/tmp}/review-batch.XXXXXX")"
-  fifo="$tmp/tokens"
+  _BATCH_PIDS=()
+  _BATCH_PGIDS=()
+  _BATCH_TMP="$(mktemp -d "${TMPDIR:-/tmp}/review-batch.XXXXXX")"
+  # Install the cleanup trap IMMEDIATELY after the temp dir is created — BEFORE mkfifo /
+  # `exec 9<>` — so that if any later setup step (mkfifo, fd open) fails, the EXIT trap
+  # still removes the just-created temp dir instead of leaking it. EXIT runs cleanup on any
+  # exit path; INT/TERM run cleanup then exit nonzero (no fall-through into aggregation).
+  # The EXIT trap stays armed through aggregation so an interruption DURING aggregation
+  # still removes the temp dir.
+  trap '_batch_shutdown' EXIT
+  trap '_batch_on_signal' INT TERM
+  local tmp="$_BATCH_TMP" fifo="$_BATCH_TMP/tokens"
   mkfifo "$fifo"
   exec 9<>"$fifo"
+
+  # Enable job control in the LAUNCHER shell so each `job &` below starts in its own process
+  # group (its pid IS its pgid) — this is what makes the OPTIONAL group kill correct where
+  # supported. On platforms where this is a no-op, the direct-child reap still tears down.
+  set -m 2>/dev/null || true
+
   local t
   for ((t=0; t<MAX_PARALLEL; t++)); do printf '\n' >&9; done
 
-  local i
+  local i pid
   for i in "${!_BATCH_LABELS[@]}"; do
     read -r -u 9 _token
     (
       eval "set -- ${_BATCH_ARGV[$i]}"
-      # The reviewer tool may exit nonzero (the expected ERROR case). Capture its rc
+      # The reviewer tool may exit nonzero (the expected ERROR case); capture its rc
       # explicitly so errexit cannot abort this job, write the rc file BEFORE returning
-      # the token, then return the token.
+      # the token.
       set +e
       "$BATCH_DISPATCH_SH" "$@" > "$tmp/$i.out" 2> "$tmp/$i.err"
       _jrc=$?
@@ -91,18 +161,34 @@ batch_run() {
       printf '%s' "$_jrc" > "$tmp/$i.rc"
       printf '\n' >&9
     ) &
+    pid=$!
+    _BATCH_PIDS+=("$pid")
+    # Candidate pgid: valid ONLY because the launcher enabled job control before `&` above,
+    # so the job started as its own group leader (pid == pgid). Where job control is a
+    # no-op the negative-pid signal simply fails harmlessly; the direct PID is reaped anyway.
+    _BATCH_PGIDS+=("$pid")
   done
-  # A child exiting nonzero must not abort the batch under errexit.
+  # Re-disable launcher job control so the rest of batch_run runs normally. A child exiting
+  # nonzero must not abort the batch under errexit.
+  set +m 2>/dev/null || true
   wait || :
   exec 9>&-
+  # All jobs have been reaped by `wait`. Clear the PID/PGID arrays BEFORE aggregation so that
+  # if INT/TERM fires DURING aggregation (the trap stays armed), _batch_shutdown does not
+  # signal already-reaped PIDs — which may have been reused by unrelated processes. The
+  # temp-dir cleanup stays armed (EXIT is NOT disarmed); only the now-meaningless kill targets
+  # are emptied.
+  _BATCH_PIDS=()
+  _BATCH_PGIDS=()
+  # NOTE: do NOT disarm the EXIT trap here — cleanup must stay armed through aggregation so an
+  # interruption during aggregation still removes the temp dir. INT/TERM are likewise left
+  # armed; an interrupt during aggregation runs _batch_on_signal (cleanup + nonzero exit).
 
-  # Aggregate in registration order.
   local rc frag summary="" rc_all=0
   for i in "${!_BATCH_LABELS[@]}"; do
     rc="$(cat "$tmp/$i.rc" 2>/dev/null || printf '1')"
     printf '## %s\n' "${_BATCH_LABELS[$i]}"
     cat "$tmp/$i.out" 2>/dev/null
-    # For ERROR jobs (no verdict + nonzero), append a stderr excerpt to the section.
     if ! grep -Eq '^(Status|Verdict):' "$tmp/$i.out" 2>/dev/null && [ "$rc" -ne 0 ]; then
       printf '\n[stderr excerpt]\n'
       tail -20 "$tmp/$i.err" 2>/dev/null
@@ -116,6 +202,10 @@ batch_run() {
   printf '=== Summary ===\n'
   printf '%s' "$summary"
 
+  # Success path: remove the temp dir and clear _BATCH_TMP so the still-armed EXIT trap's
+  # cleanup is an idempotent no-op. Then disarm the traps and return.
   rm -rf "$tmp"
+  _BATCH_TMP=""
+  trap - EXIT INT TERM
   return "$rc_all"
 }

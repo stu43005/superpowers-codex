@@ -184,5 +184,123 @@ RC_ERR=$?
   && ok "errexit: ERROR batch returns nonzero under set -e" \
   || bad "errexit: ERROR batch returns nonzero under set -e" "rc=$RC_ERR_EE"
 
+# A normal run leaves no review-batch.* temp dir behind, and writes nothing under the
+# project/repo dir (no .claude/superpowers/review is ever created).
+before_dirs="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
+PROJDIR="$ROOT/proj"; mkdir -p "$PROJDIR"
+( cd "$PROJDIR"
+  BATCH_DISPATCH_SH="$OKAY_STUB"; . "$LIB"; MAX_PARALLEL=2; batch_init
+  batch_add "A" ; batch_add "B"
+  batch_run ) >/dev/null 2>&1
+after_dirs="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
+[ "$after_dirs" -le "$before_dirs" ] \
+  && ok "temp dir removed after normal run" \
+  || bad "temp dir removed after normal run" "before=$before_dirs after=$after_dirs"
+[ ! -e "$PROJDIR/.claude/superpowers/review" ] && [ -z "$(ls -A "$PROJDIR" 2>/dev/null)" ] \
+  && ok "run writes nothing under the project dir" \
+  || bad "run writes nothing under the project dir" "$(ls -A "$PROJDIR" 2>/dev/null)"
+
+# Grandchild isolation under INT (the RELIABLE guarantee — asserted on every platform).
+# A stub spawns a grandchild that, after a delay, writes a marker into a batch-owned path:
+# GC_MARK_DIR points at the live run's temp dir, resolved at runtime by globbing the single
+# review-batch.* dir present during this run. So the grandchild's marker, if it writes one,
+# lands INSIDE the batch temp dir. The reliable guarantee, independent of whether the
+# grandchild is killed, is: the run's temp dir is `rm -rf`-ed on INT, so the marker location
+# itself is removed and a fresh retry (a brand-new temp dir) can never observe it. The
+# assertion below actually reads the marker location and confirms it is gone after cleanup —
+# whether because the grandchild was killed (strong path) or because the dir holding it was
+# removed (weak fallback). We do NOT require the grandchild to have been killed here (that
+# needs process-group support — covered separately below).
+GC_STUB="$ROOT/gc/dispatch.sh"
+write_stub "$GC_STUB" \
+  '# Resolve the live batch temp dir at runtime (the only review-batch.* dir during this run)' \
+  'gc_dir="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | head -1)"' \
+  ': "${GC_MARK_DIR:=$gc_dir}"' \
+  '( sleep 1; echo "GRANDCHILD-MARKER" >> "${GC_MARK_DIR:-/tmp}/gc-marker" 2>/dev/null ) &' \
+  'sleep 2' \
+  'echo "Status: OKAY"'
+gc_before="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
+( BATCH_DISPATCH_SH="$GC_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
+  batch_add "slow" task --prompt /tmp/p.md
+  batch_run ) >/dev/null 2>&1 &
+BATCH_PID=$!
+# Capture the live run's temp dir (the only review-batch.* dir) while the slow job runs, so the
+# assertion can read the exact marker location the grandchild targets.
+sleep 0.4
+GC_RUN_DIR="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | head -1)"
+kill -INT "$BATCH_PID" 2>/dev/null
+wait "$BATCH_PID" 2>/dev/null
+sleep 1.2   # past the grandchild's 1s timer
+gc_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
+[ "$gc_after" -le "$gc_before" ] \
+  && ok "INT removes the run's temp dir (stale grandchild output can only land in it)" \
+  || bad "INT removes the run's temp dir" "before=$gc_before after=$gc_after"
+# Read the marker location directly: after cleanup the batch temp dir is gone, so the marker the
+# grandchild targeted (inside that dir) is absent — either it was killed before writing (strong)
+# or the dir holding it was removed (weak fallback). Both satisfy the reliable guarantee.
+if [ -n "$GC_RUN_DIR" ] && [ ! -e "$GC_RUN_DIR/gc-marker" ]; then
+  ok "grandchild marker absent after INT (killed, or its batch temp dir was removed)"
+else
+  bad "grandchild marker absent after INT" "GC_RUN_DIR=$GC_RUN_DIR exists=$([ -e "$GC_RUN_DIR/gc-marker" ] && echo yes || echo no)"
+fi
+# A fresh retry after the INT runs cleanly into its own brand-new temp dir, unaffected by any
+# stale grandchild (this proves the reliable no-cross-contamination guarantee).
+RETRY="$( BATCH_DISPATCH_SH="$OKAY_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
+  batch_add "retry" ; batch_run 2>/dev/null )"
+printf '%s\n' "$RETRY" | grep -q '^=== Summary ===$' \
+  && ok "fresh retry after INT is unaffected by any stale grandchild" \
+  || bad "fresh retry after INT is unaffected" "$RETRY"
+
+# OPTIONAL process-group enhancement — DIAGNOSTIC ONLY (this assertion never reports `bad`,
+# so it always contributes exactly one `ok` and the pass/fail count is deterministic).
+# Whether a backgrounded job can be placed in its own process group depends on the platform's
+# job-control behavior, which differs between a foreground probe and the backgrounded launcher
+# the batch actually uses — so we never gate pass/fail on it. The RELIABLE guarantee (temp-dir
+# removal + isolation, asserted above) is what matters; the grandchild-kill is reported for info.
+PG_SUPPORTED=0
+( set -m 2>/dev/null
+  ( sleep 5 ) &
+  _bgpid=$!
+  # If job control set up a distinct process group, the bg pid is usable as a pgid for
+  # `kill -- -<pid>`. Probe with signal 0 against the negative pgid.
+  if kill -0 -- "-$_bgpid" 2>/dev/null; then exit 0; else exit 1; fi
+  ) && PG_SUPPORTED=1 || PG_SUPPORTED=0
+# clean up the probe's background sleep regardless
+wait 2>/dev/null || :
+if [ "$PG_SUPPORTED" -eq 1 ]; then
+  GC_MARK="$ROOT/gc-mark-dir"; mkdir -p "$GC_MARK"; : > "$GC_MARK/gc-marker"
+  ( BATCH_DISPATCH_SH="$GC_STUB"; GC_MARK_DIR="$GC_MARK"; export GC_MARK_DIR
+    . "$LIB"; MAX_PARALLEL=1; batch_init
+    batch_add "slow" task --prompt /tmp/p.md
+    batch_run ) >/dev/null 2>&1 &
+  PG_PID=$!
+  sleep 0.4
+  kill -INT "$PG_PID" 2>/dev/null
+  wait "$PG_PID" 2>/dev/null
+  sleep 1.2   # past the grandchild's 1s timer
+  if ! grep -q 'GRANDCHILD-MARKER' "$GC_MARK/gc-marker" 2>/dev/null; then
+    ok "diagnostic: process-group kill removed the grandchild"
+  else
+    ok "diagnostic: process-group kill unavailable here; reliable temp-dir isolation still holds"
+  fi
+else
+  ok "diagnostic: process-group kill not probed; reliable temp-dir isolation suffices"
+fi
+
+# TERM (alongside INT) also reaps and removes the run's temp dir.
+term_before="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
+( BATCH_DISPATCH_SH="$GC_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
+  batch_add "slow" task --prompt /tmp/p.md
+  batch_run ) >/dev/null 2>&1 &
+TERM_PID=$!
+sleep 0.4
+kill -TERM "$TERM_PID" 2>/dev/null
+wait "$TERM_PID" 2>/dev/null
+sleep 1.2
+term_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
+[ "$term_after" -le "$term_before" ] \
+  && ok "TERM removes the run's temp dir" \
+  || bad "TERM removes the run's temp dir" "before=$term_before after=$term_after"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

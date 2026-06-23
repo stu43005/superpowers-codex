@@ -44,34 +44,77 @@ _batch_validate_max_parallel() {
   return 0
 }
 
-# batch_run: run the queue with a FIFO token-bucket so at most MAX_PARALLEL jobs run
-# concurrently. Preload N tokens into a FIFO; each job reads one before starting and
-# writes one back on finish. Works on bash 3.2 (no `wait -n`).
+# _batch_classify <out-file> <err-file> <rc> : print the Summary status fragment.
+_batch_classify() {
+  local out="$1" err="$2" rc="$3" verdict
+  verdict="$(grep -E '^(Status|Verdict):' "$out" 2>/dev/null | tail -1)"
+  if [ -n "$verdict" ]; then
+    if [ "$rc" -ne 0 ]; then printf '%s (tool exit %s)' "$verdict" "$rc"
+    else printf '%s' "$verdict"; fi
+    return 0
+  fi
+  if [ "$rc" -ne 0 ]; then
+    printf 'ERROR (tool failed, exit %s)' "$rc"
+  else
+    printf '(prose — 見全文)'
+  fi
+}
+
+# batch_run: run the queue throttled, capture each job's stdout/stderr/rc to a temp
+# dir, then emit per-job stdout in registration order + a === Summary === block.
+# Errexit-safe: this library is SOURCED by wrappers running under `set -euo pipefail`.
+# A reviewer tool returning nonzero is the EXPECTED error case, so each dispatch call
+# and the `wait` are wrapped so errexit can never abort the batch.
 batch_run() {
   _batch_validate_max_parallel || return 1
 
-  local fifo_dir fifo
-  fifo_dir="$(mktemp -d "${TMPDIR:-/tmp}/review-batch.XXXXXX")"
-  fifo="$fifo_dir/tokens"
+  local tmp fifo
+  tmp="$(mktemp -d "${TMPDIR:-/tmp}/review-batch.XXXXXX")"
+  fifo="$tmp/tokens"
   mkfifo "$fifo"
-  # Open the FIFO read+write on fd 9 so writes don't block on a reader and the bucket
-  # persists for the whole run.
   exec 9<>"$fifo"
   local t
   for ((t=0; t<MAX_PARALLEL; t++)); do printf '\n' >&9; done
 
   local i
   for i in "${!_BATCH_LABELS[@]}"; do
-    # Block until a token is available, then launch the job in the background.
     read -r -u 9 _token
     (
       eval "set -- ${_BATCH_ARGV[$i]}"
-      "$BATCH_DISPATCH_SH" "$@"
-      printf '\n' >&9    # return the token on finish
+      # The reviewer tool may exit nonzero (the expected ERROR case). Capture its rc
+      # explicitly so errexit cannot abort this job, write the rc file BEFORE returning
+      # the token, then return the token.
+      set +e
+      "$BATCH_DISPATCH_SH" "$@" > "$tmp/$i.out" 2> "$tmp/$i.err"
+      _jrc=$?
+      set -e
+      printf '%s' "$_jrc" > "$tmp/$i.rc"
+      printf '\n' >&9
     ) &
   done
-  wait
-
+  # A child exiting nonzero must not abort the batch under errexit.
+  wait || :
   exec 9>&-
-  rm -rf "$fifo_dir"
+
+  # Aggregate in registration order.
+  local rc frag summary="" rc_all=0
+  for i in "${!_BATCH_LABELS[@]}"; do
+    rc="$(cat "$tmp/$i.rc" 2>/dev/null || printf '1')"
+    printf '## %s\n' "${_BATCH_LABELS[$i]}"
+    cat "$tmp/$i.out" 2>/dev/null
+    # For ERROR jobs (no verdict + nonzero), append a stderr excerpt to the section.
+    if ! grep -Eq '^(Status|Verdict):' "$tmp/$i.out" 2>/dev/null && [ "$rc" -ne 0 ]; then
+      printf '\n[stderr excerpt]\n'
+      tail -20 "$tmp/$i.err" 2>/dev/null
+    fi
+    printf '\n'
+    frag="$(_batch_classify "$tmp/$i.out" "$tmp/$i.err" "$rc")"
+    summary="$summary- ${_BATCH_LABELS[$i]}: $frag
+"
+  done
+  printf '=== Summary ===\n'
+  printf '%s' "$summary"
+
+  rm -rf "$tmp"
+  return 0
 }

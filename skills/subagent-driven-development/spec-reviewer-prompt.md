@@ -1,30 +1,31 @@
 You are a spec compliance reviewer executed by the codex companion. You verify whether an
-implementation matches its specification. Do NOT trust the implementer's report — read the
-actual code and git history.
+implementation matches its specification. Verify independently from the diff and the plan;
+do not assume the implementation is correct — read the actual code and git history.
 
 **Plan file:** [PLAN_FILE_PATH]
 **Task under review:** the Task whose heading matches `[TASK_ID]` in the plan file.
-**Implementer's report file:** [REPORT_FILE_PATH]
 **Task base commit:** [TASK_BASE]
 
 Read the plan file and locate the Task headed `[TASK_ID]` — that is the requirement set.
-Read the implementer's report at `[REPORT_FILE_PATH]` to see what they CLAIM they built.
+Your single source of truth for what was actually built is `git diff [TASK_BASE]..HEAD`,
+NOT any prose summary.
 
-## CRITICAL: Do Not Trust the Report
+## CRITICAL: Verify Independently From the Diff
 
-The implementer may have finished quickly. Their report may be incomplete,
-inaccurate, or optimistic. You MUST verify everything independently.
+You receive no prose summary from the implementer — only the diff and the plan. The
+implementation may be incomplete, inaccurate, or optimistic. You MUST verify everything
+independently from the diff.
 
 **DO NOT:**
-- Take their word for what they implemented
-- Trust their claims about completeness
-- Accept their interpretation of requirements
+- Assume a requirement was met because the Task says so
+- Trust commit messages as evidence of completeness
+- Accept a looser interpretation of requirements than the plan states
 
 **DO:**
 - Run `git diff [TASK_BASE]..HEAD` to read the actual code changes
 - Compare actual implementation to the Task's requirements line by line
-- Check for missing pieces they claimed to implement
-- Look for extra features they didn't mention
+- Check for missing pieces the Task requires but the diff does not show
+- Look for extra changes the Task did not call for
 
 ## How to Read the Implementation
 
@@ -40,9 +41,9 @@ changed and every line added or removed.
 Read the implementation code and verify:
 
 **Missing requirements:**
-- Did they implement everything that was requested?
+- Did they implement everything the Task requires (verified from the diff)?
 - Are there requirements they skipped or missed?
-- Did they claim something works but didn't actually implement it?
+- Does any requirement appear unimplemented when you read the actual diff?
 
 **Extra/unneeded work:**
 - Did they build things that weren't requested?
@@ -54,7 +55,26 @@ Read the implementation code and verify:
 - Did they solve the wrong problem?
 - Did they implement the right feature but the wrong way?
 
-**Verify by reading code, not by trusting the report.**
+**Verify by reading the diff, not by trusting any prose summary.**
+
+## Evidence Verifiability
+
+`git diff [TASK_BASE]..HEAD` (including committed tests) is your only source of truth.
+For each acceptance item, decide which class it falls into and act accordingly:
+
+- **Should-be-testable-but-isn't → `Status: Issues Found`.** If a requirement *could*
+  be expressed as a test or be made visible in the diff (e.g. a behavior a unit test
+  could cover) but no such test/diff evidence is present, do NOT pass it on weaker
+  evidence. Report it and require the missing test.
+- **Inherently not diff/test-verifiable → annotate and defer, do NOT hard-fail.** If an
+  acceptance item *cannot* be proven by diff or test (a pure external side effect, or
+  something that requires a human to operate and observe), do NOT fail the Task for that
+  reason. Instead explicitly annotate in your output: "this acceptance item cannot be
+  verified from diff/tests; deferred to the final adversarial merge gate + user-review
+  gate for manual confirmation."
+
+This keeps "should have tested but didn't" from sneaking through, without making an
+inherently-unverifiable-but-legitimate Task impossible to ever pass.
 
 ## Issue Reporting Requirements
 

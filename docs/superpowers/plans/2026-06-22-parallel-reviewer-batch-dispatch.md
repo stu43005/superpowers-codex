@@ -58,6 +58,19 @@ amendment below is authoritative where it conflicts with the original Task 10–
    (`${#MAX_PARALLEL} -gt ${#_BATCH_MAX_CAP}`) clamps over-length values to the cap BEFORE the
    numeric comparison runs (the `-gt` is only evaluated when the length is in range), with a
    regression test for the huge value. Final suite: **62 passed, 0 failed**.
+8. **Final-gate close-out (two findings; user-decided).** A later gate pass raised: (a) [high] the
+   wrappers honor an inherited `BATCH_DISPATCH_SH`, which a malicious/stale env could point at a
+   stub to bypass the gate; and (b) [medium] the test harness assigned `ROOT="$(mktemp -d)"`
+   unchecked, so an empty `ROOT` could build filesystem-root paths / `rm -rf "/"`. Resolutions:
+   (a) **keep the hook** — `BATCH_DISPATCH_SH` is the deliberate, load-bearing TEST SEAM the whole
+   hermetic suite relies on; these are developer-workflow tools (not a security boundary) and the
+   `:-` default uses the real `dispatch.sh`. Each wrapper now carries a comment marking it as a
+   test seam (user decision: keep). (b) **fixed** — `ROOT` creation now fails closed (checked
+   `mktemp`, rejects empty/`/`, asserts a directory). The gate had by then surfaced increasingly
+   edge-case findings over four rounds; with the three real bugs fixed (tool-exit masking,
+   `_batch_classify` errexit-safety, huge `--max-parallel` hang), the harness hardened, and (a)
+   accepted as an intentional design seam, the work was concluded per user direction (no further
+   gate loop). Final suite: **62 passed, 0 failed**.
 
 ---
 

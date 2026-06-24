@@ -124,7 +124,12 @@ nothing extra is created, passed, or cleaned up between implementer and reviewer
 3. **If either reviewer is ERROR** → **re-run the entire `review-impl.sh` call** (same
    `--plan`/`--task`/`--task-base`). Do not treat ERROR as a review failure and do not discard
    stdout.
-4. **Otherwise**, if either reviewer has a blocking finding, the implementer fixes ALL findings
+4. **If a reviewer's Summary line carries a `(tool exit N)` annotation** (a `Status:`/`Verdict:`
+   was produced but the tool then exited nonzero), the result exists but its output may be
+   incomplete: read that reviewer's full `## <label>` section and use judgment — re-run the whole
+   `review-impl.sh` call if the output looks truncated, otherwise act on the result shown. Neither
+   an automatic pass nor a forced rerun.
+5. **Otherwise**, if either reviewer has a blocking finding, the implementer fixes ALL findings
    from both reviewers in one pass, re-commits, and you re-run the whole `review-impl.sh` call
    (both reviewers re-run against the same `<TASK_BASE>` and the new HEAD). The Task passes only
    when, in a single batch with no further edits, spec-compliance is `Status: OKAY` and
@@ -154,6 +159,9 @@ emits a structured `Verdict:` line:
   repeat until `Verdict: approve`.
 - `ERROR (tool failed, ...)` → a tool failure, not a review result; re-run the whole
   `review-final.sh` call (same `--base`).
+- `Verdict: ... (tool exit N)` → the verdict was produced but the tool then exited nonzero, so the
+  output may be incomplete; read the full `## final-adversarial` section and use judgment — re-run
+  `review-final.sh` if it looks truncated, otherwise act on the verdict shown.
 
 **Caller HEAD contract:** Do not advance `HEAD` while `review-final.sh` is running — the reviewer
 diffs `<IMPL_BASE>..HEAD`. Commit any fixes before re-running the gate, not while it runs.

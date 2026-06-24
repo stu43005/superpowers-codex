@@ -184,6 +184,26 @@ RC_ERR=$?
   && ok "errexit: ERROR batch returns nonzero under set -e" \
   || bad "errexit: ERROR batch returns nonzero under set -e" "rc=$RC_ERR_EE"
 
+# A job that emits a verdict THEN exits nonzero (e.g. a teardown/streaming crash) is a tool
+# failure (dispatch.sh exits nonzero only on a real tool error, never to signal findings). The
+# engine must: keep the verdict and annotate it "(tool exit N)", show the stderr excerpt so the
+# caller can judge whether the output is incomplete, and set the batch's nonzero exit.
+VEXIT_STUB="$ROOT/vexit/dispatch.sh"
+write_stub "$VEXIT_STUB" 'echo "Verdict: approve"' 'echo "late boom on stderr" >&2' 'exit 3'
+TVE="$( BATCH_DISPATCH_SH="$VEXIT_STUB"; . "$LIB"; MAX_PARALLEL=2; batch_init
+  batch_add "V-exit" ; batch_run 2>/dev/null )"
+printf '%s\n' "$TVE" | sed -n '/^=== Summary ===$/,$p' | grep -q 'V-exit:.*Verdict: approve (tool exit 3)' \
+  && ok "verdict + nonzero keeps verdict, annotates (tool exit N)" \
+  || bad "verdict + nonzero keeps verdict, annotates (tool exit N)" "$TVE"
+printf '%s\n' "$TVE" | grep -q 'late boom on stderr' \
+  && ok "verdict + nonzero shows stderr excerpt (caller can judge incompleteness)" \
+  || bad "verdict + nonzero shows stderr excerpt" "$TVE"
+( BATCH_DISPATCH_SH="$VEXIT_STUB"; . "$LIB"; MAX_PARALLEL=2; batch_init
+  batch_add "V-exit" ; batch_run ) >/dev/null 2>&1
+RC_VEXIT=$?
+[ "$RC_VEXIT" -ne 0 ] && ok "verdict + nonzero marks batch nonzero (tool failure surfaced)" \
+  || bad "verdict + nonzero marks batch nonzero" "rc=$RC_VEXIT"
+
 # A normal run leaves no review-batch.* temp dir behind, and writes nothing under the
 # project/repo dir (no .claude/superpowers/review is ever created).
 before_dirs="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
@@ -424,7 +444,7 @@ if [ "$RC_FINAL" -ne 0 ] \
   ok "review-final: missing --base value fails with a clear wrapper error"
 else bad "review-final: missing --base value fails with a clear wrapper error" "rc=$RC_FINAL out=$FINAL_ERR"; fi
 
-# decide_action <stdout-blob> <exit-code> : print PROCEED | RERUN_WRAPPER | FIX_AND_REREVIEW.
+# decide_action <stdout-blob> <exit-code> : print PROCEED | RERUN_WRAPPER | FIX_AND_REREVIEW | INSPECT.
 # The exit code is accepted but NOT used to decide — the decision is read from the stdout, which
 # is authoritative at any exit code. This is the reference parser the SKILL.md callers model.
 #
@@ -440,6 +460,14 @@ decide_action() {
   sumlines="$(printf '%s\n' "$blob" | sed -n '/^=== Summary ===$/,$p')"
   if printf '%s\n' "$sumlines" | grep -q 'ERROR (tool failed'; then
     printf 'RERUN_WRAPPER'; return 0
+  fi
+  # A verdict/status line annotated "(tool exit N)" means the reviewer produced a result (it has a
+  # Status/Verdict) but the tool then exited nonzero, so the output MAY be incomplete. This is NOT
+  # auto-PROCEED and NOT a forced rerun: the caller inspects the full "## <label>" section and uses
+  # judgment (re-run if truncated, otherwise act on the result). Checked BEFORE the findings branch
+  # so a findings verdict whose tool also failed (its findings may be truncated) still -> INSPECT.
+  if printf '%s\n' "$sumlines" | grep -q '(tool exit '; then
+    printf 'INSPECT'; return 0
   fi
   if printf '%s\n' "$sumlines" | grep -Eq 'Status: Issues Found|Verdict: needs-attention'; then
     printf 'FIX_AND_REREVIEW'; return 0
@@ -460,6 +488,9 @@ decide_action() {
 # three SKILL.md callers' control-flow is decidable from (stdout, exit-code). decide_action reads
 # the Summary from stdout REGARDLESS of the exit code and returns the documented action:
 #   - any "ERROR (tool failed" Summary line -> RERUN_WRAPPER (tool failure, not a review result)
+#   - else any "(tool exit N)" annotation on a verdict/status line -> INSPECT (a result exists but
+#     the tool failed afterward; output may be incomplete; caller reads the full section and judges
+#     re-run vs act-on-result — not auto-PROCEED, not forced rerun)
 #   - else any "Status: Issues Found" / "Verdict: needs-attention" -> FIX_AND_REREVIEW
 #   - else a code-quality reviewer whose Summary is prose ("(prose — 見全文)") but whose
 #     "## code-quality" body carries a BLOCKING finding -> FIX_AND_REREVIEW (prose is NOT
@@ -563,6 +594,29 @@ FN_FIND="$(printf '%s\n' \
   '=== Summary ===' \
   '- final-adversarial: Verdict: needs-attention')"; FN_FIND_RC=0
 
+# --- tool-exit annotation: a verdict/status WAS produced (the review completed, a result exists)
+# but the tool then exited nonzero, so the Summary line carries a "(tool exit N)" annotation and
+# the output may be incomplete. Decision: INSPECT — read the full "## <label>" section and use
+# judgment (re-run if truncated, otherwise act on the result). NOT auto-PROCEED, NOT forced rerun.
+FN_TOOLEXIT="$(printf '%s\n' \
+  '## final-adversarial' 'Verdict: approve' '' \
+  '[stderr excerpt]' 'late boom' '' \
+  '=== Summary ===' \
+  '- final-adversarial: Verdict: approve (tool exit 1)')"; FN_TOOLEXIT_RC=1
+# Tool-exit takes precedence over a findings verdict: needs-attention WITH (tool exit N) still
+# decides INSPECT, because the findings list itself may be truncated by the tool failure.
+FN_NA_TOOLEXIT="$(printf '%s\n' \
+  '## final-adversarial' 'Verdict: needs-attention' '' \
+  '=== Summary ===' \
+  '- final-adversarial: Verdict: needs-attention (tool exit 1)')"; FN_NA_TOOLEXIT_RC=1
+# impl shape: spec-compliance Status annotated with a tool exit -> INSPECT.
+IM_TOOLEXIT="$(printf '%s\n' \
+  '## spec-compliance' 'Status: OKAY' '' \
+  '## code-quality' 'looks fine' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: OKAY (tool exit 2)' \
+  '- code-quality: (prose — 見全文)')"; IM_TOOLEXIT_RC=2
+
 # expect_action <name> <blob> <rc> <expected-action> : assert decide_action(stdout, rc) matches.
 expect_action() {
   local name="$1" blob="$2" rc="$3" want="$4" got
@@ -589,6 +643,11 @@ expect_action "impl code-quality BLOCKING after internal heading (rc 0)" "$IM_CQ
 expect_action "final all-clear (rc 0)"             "$FN_OK"   "$FN_OK_RC"   "PROCEED"
 expect_action "final ERROR (rc nonzero)"           "$FN_ERR"  "$FN_ERR_RC"  "RERUN_WRAPPER"
 expect_action "final needs-attention (rc 0)"       "$FN_FIND" "$FN_FIND_RC" "FIX_AND_REREVIEW"
+# A "(tool exit N)" annotation on a verdict/status line -> INSPECT (a result exists but the tool
+# failed; output may be incomplete; the caller judges inspect vs re-run — not auto-PROCEED).
+expect_action "final approve + tool exit -> INSPECT"         "$FN_TOOLEXIT"    "$FN_TOOLEXIT_RC"    "INSPECT"
+expect_action "final needs-attention + tool exit -> INSPECT" "$FN_NA_TOOLEXIT" "$FN_NA_TOOLEXIT_RC" "INSPECT"
+expect_action "impl spec-compliance + tool exit -> INSPECT"  "$IM_TOOLEXIT"    "$IM_TOOLEXIT_RC"    "INSPECT"
 
 # stdout is parsed REGARDLESS of exit code: a findings Summary delivered with a NONZERO rc still
 # decides FIX_AND_REREVIEW from stdout (the rc must not override the stdout verdict). This proves

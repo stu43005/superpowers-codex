@@ -189,7 +189,14 @@ batch_run() {
     rc="$(cat "$tmp/$i.rc" 2>/dev/null || printf '1')"
     printf '## %s\n' "${_BATCH_LABELS[$i]}"
     cat "$tmp/$i.out" 2>/dev/null
-    if ! grep -Eq '^(Status|Verdict):' "$tmp/$i.out" 2>/dev/null && [ "$rc" -ne 0 ]; then
+    # Any nonzero child exit is a tool failure: dispatch.sh exits nonzero only on a fatal tool
+    # error, never to signal review findings. Mark it regardless of whether a Status/Verdict line
+    # is present — a verdict emitted before a teardown/streaming crash still means the tool failed
+    # and its output may be incomplete. Append the stderr excerpt so the caller can judge that, and
+    # set the batch's nonzero exit. The verdict itself is preserved in the Summary by
+    # _batch_classify, annotated "(tool exit N)"; the caller (not this engine) decides whether to
+    # re-run.
+    if [ "$rc" -ne 0 ]; then
       printf '\n[stderr excerpt]\n'
       tail -20 "$tmp/$i.err" 2>/dev/null
       rc_all=1

@@ -9,7 +9,14 @@ PASS=0; FAIL=0
 ok()  { PASS=$((PASS+1)); printf 'ok   - %s\n' "$1"; }
 bad() { FAIL=$((FAIL+1)); printf 'FAIL - %s\n   %s\n' "$1" "${2:-}"; }
 
-ROOT="$(mktemp -d)"
+ROOT="$(mktemp -d)" || { printf 'FATAL: mktemp -d failed\n' >&2; exit 1; }
+# Fail CLOSED if ROOT is empty or unsafe: every fixture path is built as "$ROOT/<dir>/...", so an
+# empty ROOT would resolve to filesystem-root paths (/echo/dispatch.sh, …) and the EXIT trap's
+# `rm -rf "$ROOT"` would target "/". Refuse to run unless ROOT is a real, non-root directory.
+case "$ROOT" in
+  ''|/) printf 'FATAL: refusing to run with unsafe ROOT=[%s]\n' "$ROOT" >&2; exit 1 ;;
+esac
+[ -d "$ROOT" ] || { printf 'FATAL: ROOT is not a directory: [%s]\n' "$ROOT" >&2; exit 1; }
 trap 'rm -rf "$ROOT"' EXIT
 
 # write_stub <file> <body-lines...> : create an executable stub dispatch.sh.

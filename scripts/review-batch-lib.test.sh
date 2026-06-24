@@ -53,6 +53,15 @@ for bad_mp in 0 "" abc 3x 03; do
   else bad "invalid --max-parallel '$bad_mp' fails fast" "rc=0"; fi
 done
 
+# A huge, all-digit but out-of-range --max-parallel must NOT bypass the cap. The `-gt` numeric
+# comparison errors ("integer expression expected") on values beyond the shell integer range; if
+# that error is treated as "not greater" the value stays huge and the token-fill loop hangs. It
+# must clamp to the cap like any other over-cap value (16), validated by reading MAX_PARALLEL back.
+HUGE_MP="$( . "$LIB"; MAX_PARALLEL="999999999999999999999"
+  _batch_validate_max_parallel 2>/dev/null; printf '%s' "$MAX_PARALLEL" )"
+[ "$HUGE_MP" = "16" ] && ok "huge --max-parallel clamps to cap (no out-of-range bypass)" \
+  || bad "huge --max-parallel clamps to cap" "got=$HUGE_MP"
+
 # Peak concurrency reaches exactly the cap and never exceeds it.
 # The stub appends "+" on start and "-" on finish to a shared file, with a short sleep,
 # so a post-hoc scan of the running count reveals the true peak.

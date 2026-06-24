@@ -37,7 +37,12 @@ _batch_validate_max_parallel() {
   case "$MAX_PARALLEL" in
     ''|*[!0-9]*|0*) printf 'review-batch: --max-parallel must be a positive integer, got: %s\n' "${MAX_PARALLEL:-<empty>}" >&2; return 1 ;;
   esac
-  if [ "$MAX_PARALLEL" -gt "$_BATCH_MAX_CAP" ]; then
+  # Bounded check FIRST: a value with more digits than the cap cannot be <= cap (leading zeros are
+  # already rejected above), so clamp by digit-length WITHOUT a numeric `-gt` — the arithmetic
+  # comparison errors ("integer expression expected") on values beyond the shell integer range,
+  # which would otherwise be treated as "not greater" and leave MAX_PARALLEL huge (hanging the
+  # token-fill loop). Only when the length is in range is the numeric comparison safe to run.
+  if [ "${#MAX_PARALLEL}" -gt "${#_BATCH_MAX_CAP}" ] || [ "$MAX_PARALLEL" -gt "$_BATCH_MAX_CAP" ]; then
     printf 'review-batch: --max-parallel %s exceeds cap %s; clamping to %s\n' "$MAX_PARALLEL" "$_BATCH_MAX_CAP" "$_BATCH_MAX_CAP" >&2
     MAX_PARALLEL="$_BATCH_MAX_CAP"
   fi

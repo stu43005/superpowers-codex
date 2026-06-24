@@ -43,7 +43,14 @@ amendment below is authoritative where it conflicts with the original Task 10–
    stderr excerpt shown); the `decide_action` reference parser gained an `INSPECT` outcome for a
    `(tool exit N)` annotation; and all three SKILL.md callers' control-flow gained a "verdict +
    `(tool exit N)` → read the full section and use judgment (re-run if truncated, else act on the
-   result)" branch — neither auto-pass nor forced rerun. Final suite: **60 passed, 0 failed**.
+   result)" branch — neither auto-pass nor forced rerun.
+6. **Final-gate finding — `_batch_classify` errexit-safety.** A later gate pass noted the
+   `verdict="$(grep … | tail -1)"` line could abort under `set -euo pipefail` when a reviewer emits
+   prose with no `Status:`/`Verdict:` line (grep exits 1; pipefail propagates it). In practice
+   `batch_run` shields this by calling `_batch_classify` via `$(...)` (errexit is not inherited into
+   command substitutions by default), but the function should not depend on its call shape — a
+   `|| :` guard was added so the no-match path is non-fatal even on a direct call under errexit, with
+   a regression test exercising that direct-call path. Final suite: **61 passed, 0 failed**.
 
 ---
 

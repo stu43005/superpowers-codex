@@ -50,7 +50,14 @@ amendment below is authoritative where it conflicts with the original Task 10–
    `batch_run` shields this by calling `_batch_classify` via `$(...)` (errexit is not inherited into
    command substitutions by default), but the function should not depend on its call shape — a
    `|| :` guard was added so the no-match path is non-fatal even on a direct call under errexit, with
-   a regression test exercising that direct-call path. Final suite: **61 passed, 0 failed**.
+   a regression test exercising that direct-call path.
+7. **Final-gate finding — bounded `--max-parallel` validation.** A huge all-digit value (beyond the
+   shell integer range, e.g. `999999999999999999999`) passed the digit-only `case` check but then
+   broke the `[ "$MAX_PARALLEL" -gt "$_BATCH_MAX_CAP" ]` clamp (`integer expression expected`),
+   leaving `MAX_PARALLEL` huge and hanging the token-fill loop. Fix: a digit-length short-circuit
+   (`${#MAX_PARALLEL} -gt ${#_BATCH_MAX_CAP}`) clamps over-length values to the cap BEFORE the
+   numeric comparison runs (the `-gt` is only evaluated when the length is in range), with a
+   regression test for the huge value. Final suite: **62 passed, 0 failed**.
 
 ---
 

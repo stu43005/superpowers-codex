@@ -184,7 +184,12 @@ rounds where the Coverage Verifier has dropped out (principle 3). At least one `
    blocking observation as a finding), or `ERROR (tool failed, ...)`.
 3. **If any reviewer is ERROR** → **re-run the entire `review-plan.sh` call** with the same
    `--task`/`--coverage` set. Do not treat ERROR as a review failure and do not discard stdout.
-4. **Otherwise** apply the unified re-run policy below: fix all issues and gaps, commit, and
+4. **If any reviewer's Summary line carries a `(tool exit N)` annotation** (a `Status:` was
+   produced but the tool then exited nonzero), the result exists but its output may be incomplete:
+   read that reviewer's full `## <label>` section and use judgment — re-run the whole wrapper if the
+   output looks truncated, otherwise act on the result shown. Neither an automatic pass nor a forced
+   rerun.
+5. **Otherwise** apply the unified re-run policy below: fix all issues and gaps, commit, and
    re-run next round with the next round's active `--task`/`--coverage` set; the loop ends
    when every active reviewer returns `Status: OKAY` in a single round.
 

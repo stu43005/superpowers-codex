@@ -204,6 +204,22 @@ RC_VEXIT=$?
 [ "$RC_VEXIT" -ne 0 ] && ok "verdict + nonzero marks batch nonzero (tool failure surfaced)" \
   || bad "verdict + nonzero marks batch nonzero" "rc=$RC_VEXIT"
 
+# _batch_classify must be errexit-safe even when called DIRECTLY (not via command substitution)
+# under `set -euo pipefail`. A prose-only stdout (no Status/Verdict line) makes the internal grep
+# exit 1; under pipefail the no-match must NOT abort the function before it prints the prose
+# classification. (batch_run currently shields this by calling _batch_classify via $(...), where
+# errexit is not inherited — but the function must be robust on its own so the contract does not
+# depend on that call shape.)
+printf 'free-form prose, no verdict line\n' > "$ROOT/prose.in"
+PC_OUT="$ROOT/prose-classify.out"
+( set -euo pipefail
+  . "$LIB"
+  _batch_classify "$ROOT/prose.in" /dev/null 0 > "$PC_OUT"
+) ; PC_RC=$?
+if [ "$PC_RC" -eq 0 ] && grep -q 'prose — 見全文' "$PC_OUT"; then
+  ok "_batch_classify errexit-safe on prose-only input (direct call under set -euo pipefail)"
+else bad "_batch_classify errexit-safe on prose-only input" "rc=$PC_RC out=$(cat "$PC_OUT" 2>/dev/null)"; fi
+
 # A normal run leaves no review-batch.* temp dir behind, and writes nothing under the
 # project/repo dir (no .claude/superpowers/review is ever created).
 before_dirs="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"

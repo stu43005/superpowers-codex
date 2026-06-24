@@ -47,7 +47,13 @@ _batch_validate_max_parallel() {
 # _batch_classify <out-file> <err-file> <rc> : print the Summary status fragment.
 _batch_classify() {
   local out="$1" err="$2" rc="$3" verdict
-  verdict="$(grep -E '^(Status|Verdict):' "$out" 2>/dev/null | tail -1)"
+  # `|| :` keeps the no-match case non-fatal: when the reviewer emits prose with no Status/Verdict
+  # line, grep exits 1 and (under pipefail) so does the pipeline. Without the guard, calling this
+  # function directly under `set -euo pipefail` would abort on the assignment before reaching the
+  # prose/ERROR fallback. The guard makes errexit-safety independent of the call shape (batch_run
+  # happens to call this via $(...), where errexit is not inherited, but the function must not rely
+  # on that).
+  verdict="$(grep -E '^(Status|Verdict):' "$out" 2>/dev/null | tail -1 || :)"
   if [ -n "$verdict" ]; then
     if [ "$rc" -ne 0 ]; then printf '%s (tool exit %s)' "$verdict" "$rc"
     else printf '%s' "$verdict"; fi

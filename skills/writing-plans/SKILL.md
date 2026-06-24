@@ -131,8 +131,8 @@ You **must** have a written, reviewed, user-approved plan before a single line o
 
 After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch all reviewers with ONE `review-plan.sh` call (see **Dispatch mechanism** below). There are two reviewer roles:
 
-- **Per-Task reviewer:** reviews one Task at a time using `plan-document-reviewer-prompt.md`, registered by `review-plan.sh` as one `--task "Task N"` per active Task (read-only).
-- **Coverage Verifier:** reviews the whole plan against the whole spec using `coverage-verifier-prompt.md`, registered by `review-plan.sh` via `--coverage` (read-only).
+- **Per-Task reviewer:** reviews one Task at a time, registered by `review-plan.sh` as one `--task "Task N"` per active Task (read-only).
+- **Coverage Verifier:** reviews the whole plan against the whole spec, registered by `review-plan.sh` via `--coverage` (read-only).
 
 If the superpowers-codex plugin is not installed, stop and ask the user to run `/plugin install`. Do not fall back to inline self-review or any other substitute.
 
@@ -169,10 +169,9 @@ stdout. Substitute the real task ids and paths; do not run verbatim:
   --coverage
 ```
 
-Each `--task "Task N"` becomes a per-Task reviewer (label `per-task Task N`, using
-`plan-document-reviewer-prompt.md`); the reviewer reads the plan file and treats every other
-Task as sibling context (no Task text is pasted). `--coverage` adds the Coverage Verifier
-(`coverage-verifier-prompt.md`) over the whole plan vs. whole spec. Omit `--coverage` in
+Each `--task "Task N"` becomes a per-Task reviewer (label `per-task Task N`); the reviewer reads
+the plan file and treats every other Task as sibling context (no Task text is pasted).
+`--coverage` adds the Coverage Verifier over the whole plan vs. whole spec. Omit `--coverage` in
 rounds where the Coverage Verifier has dropped out (principle 3). At least one `--task` or
 `--coverage` must be present.
 
@@ -204,8 +203,8 @@ its content is not edited again.
 ### Coverage Verifier
 
 In **addition** to the per-Task reviews, add `--coverage` to the same `review-plan.sh` call each
-round the Coverage Verifier is active (it uses `coverage-verifier-prompt.md` over the whole plan
-file and whole spec file, read-only, comparing them globally).
+round the Coverage Verifier is active (it reviews the whole plan file and whole spec file,
+read-only, comparing them globally).
 
 If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Tasks, or amend the
 spec. Any newly added or substantially changed Task re-enters per-Task review next round (as a new
@@ -215,7 +214,7 @@ spec. Any newly added or substantially changed Task re-enters per-Task review ne
 
 Per-Task reviewers and the Coverage Verifier all run **in parallel** within a round via ONE `review-plan.sh` call — pass every active Task as a `--task "Task N"` and add `--coverage` while the Coverage Verifier is active. The wrapper returns ALL reviewers' output on stdout in one shot; read its `=== Summary ===` on any exit code. Once you have parsed every reviewer's result, fix all issues and gaps together, then start the next round.
 
-Use the **Dispatch mechanism** `review-plan.sh` invocation above exactly as written — do NOT pre-probe `review-plan.sh` or `dispatch.sh` with `--help`, `ls`/`find`, or source greps before dispatching.
+Use the **Dispatch mechanism** `review-plan.sh` invocation above exactly as written — do NOT pre-probe `review-plan.sh` with `--help`, `ls`/`find`, or source greps before dispatching.
 
 The loop ends when, within a single round, every active Per-Task reviewer returns `Status: OKAY` and the Coverage Verifier (if still active) returns `Status: OKAY`.
 

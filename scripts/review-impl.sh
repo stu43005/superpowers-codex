@@ -6,6 +6,8 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# BATCH_DISPATCH_SH is a deliberate TEST SEAM: review-batch-lib.test.sh injects a stub dispatch.sh
+# through it for hermetic testing. With no override it resolves to the real dispatch.sh; keep it.
 BATCH_DISPATCH_SH="${BATCH_DISPATCH_SH:-$SCRIPT_DIR/dispatch.sh}"
 PLUGIN_ROOT="${PLUGIN_ROOT:-$SCRIPT_DIR/..}"
 export BATCH_DISPATCH_SH

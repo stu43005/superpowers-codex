@@ -399,5 +399,30 @@ if printf '%s\n' "$T8" | grep -q '^## code-quality$' \
   ok "review-impl: code-quality argv matches expected wrapper contract"
 else bad "review-impl: code-quality argv" "$T8"; fi
 
+# review-final.sh assembles the final adversarial reviewer's dispatch argv from its CLI.
+FINAL_W="$HERE/review-final.sh"
+PROOT="${PROOT:-$ROOT/plugin}"   # fixture plugin root (defined locally)
+mkdir -p "$PROOT/skills/subagent-driven-development"
+: > "$PROOT/skills/subagent-driven-development/final-code-reviewer-focus.md"
+T_FINAL="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+       bash "$FINAL_W" --base IMPLBASE 2>/dev/null )"
+# final-adversarial: adversarial --base <IMPL_BASE> --focus <root>/.../final-code-reviewer-focus.md
+if printf '%s\n' "$T_FINAL" | grep -q '^## final-adversarial$' \
+   && printf '%s\n' "$T_FINAL" | grep -qx 'ARG:adversarial' \
+   && printf '%s\n' "$T_FINAL" | grep -qx 'ARG:--base' \
+   && printf '%s\n' "$T_FINAL" | grep -qx 'ARG:IMPLBASE' \
+   && printf '%s\n' "$T_FINAL" | grep -qx 'ARG:--focus' \
+   && printf '%s\n' "$T_FINAL" | grep -qx "ARG:$PROOT/skills/subagent-driven-development/final-code-reviewer-focus.md"; then
+  ok "review-final: final-adversarial argv matches expected wrapper contract"
+else bad "review-final: final-adversarial argv" "$T_FINAL"; fi
+# require --base; missing value fails with a clear wrapper error, not a set -u crash
+FINAL_ERR="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" bash "$FINAL_W" --base 2>&1 )"
+RC_FINAL=$?
+if [ "$RC_FINAL" -ne 0 ] \
+   && printf '%s\n' "$FINAL_ERR" | grep -q 'review-final: --base requires a value' \
+   && ! printf '%s\n' "$FINAL_ERR" | grep -qi 'unbound variable'; then
+  ok "review-final: missing --base value fails with a clear wrapper error"
+else bad "review-final: missing --base value fails with a clear wrapper error" "rc=$RC_FINAL out=$FINAL_ERR"; fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

@@ -129,10 +129,10 @@ You **must** have a written, reviewed, user-approved plan before a single line o
 
 ## Plan Review Loop
 
-After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch reviewers via `dispatch.sh` (see **Dispatch mechanism** below). There are two reviewer roles:
+After writing and saving the complete plan, do **not** perform an inline self-review. Instead, dispatch all reviewers with ONE `review-plan.sh` call (see **Dispatch mechanism** below). There are two reviewer roles:
 
-- **Per-Task reviewer:** reviews one Task at a time using `plan-document-reviewer-prompt.md`, dispatched via `dispatch.sh` (see **Dispatch mechanism**) (read-only).
-- **Coverage Verifier:** reviews the whole plan against the whole spec using `coverage-verifier-prompt.md`, dispatched via `dispatch.sh` (see **Dispatch mechanism**) (read-only).
+- **Per-Task reviewer:** reviews one Task at a time using `plan-document-reviewer-prompt.md`, registered by `review-plan.sh` as one `--task "Task N"` per active Task (read-only).
+- **Coverage Verifier:** reviews the whole plan against the whole spec using `coverage-verifier-prompt.md`, registered by `review-plan.sh` via `--coverage` (read-only).
 
 If the superpowers-codex plugin is not installed, stop and ask the user to run `/plugin install`. Do not fall back to inline self-review or any other substitute.
 
@@ -150,52 +150,72 @@ Both cases of "fix A breaks B" are therefore covered:
 - If B's content was edited → B re-enters per-Task review (principle 1).
 - If B's content was not edited but A's change could break B → A's reviewer catches it (principle 2).
 
-### Dispatch mechanism (shared `dispatch.sh`)
+### Dispatch mechanism (shared `review-plan.sh`)
 
-All reviewers go through the plugin's shared script, **run from the repository root**.
-`${CLAUDE_PLUGIN_ROOT}` is inline-expanded inside this SKILL.md at load time, so the paths
-below become absolute plugin-cache paths; plan/spec paths stay repo-root-relative.
+All reviewers go through ONE batch wrapper call, **run from the repository root**.
+`${CLAUDE_PLUGIN_ROOT}` is inline-expanded inside this SKILL.md at load time; plan/spec
+paths stay repo-root-relative.
 
-Each reviewer is a **separate** `run_in_background: true` Bash call (its own shell), so each
-block below invokes `dispatch.sh` directly via `${CLAUDE_PLUGIN_ROOT}` (the skill is assumed
-to be installed as a plugin).
-
-Per-Task reviewer — one per active Task:
+Pass one `--task "Task N"` per active Task this round, and add `--coverage` when the Coverage
+Verifier is active. The wrapper runs every reviewer in parallel and returns ALL output on
+stdout. Substitute the real task ids and paths; do not run verbatim:
 
 ```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
-  --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/plan-document-reviewer-prompt.md" \
-  --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
-  --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md \
-  --set TASK_ID="Task N"
+"${CLAUDE_PLUGIN_ROOT}/scripts/review-plan.sh" \
+  --plan docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
+  --spec docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md \
+  --task "Task 1" \
+  --task "Task 3" \
+  --coverage
 ```
 
-Coverage Verifier — once per round while active:
+Each `--task "Task N"` becomes a per-Task reviewer (label `per-task Task N`, using
+`plan-document-reviewer-prompt.md`); the reviewer reads the plan file and treats every other
+Task as sibling context (no Task text is pasted). `--coverage` adds the Coverage Verifier
+(`coverage-verifier-prompt.md`) over the whole plan vs. whole spec. Omit `--coverage` in
+rounds where the Coverage Verifier has dropped out (principle 3). At least one `--task` or
+`--coverage` must be present.
 
-```bash
-"${CLAUDE_PLUGIN_ROOT}/scripts/dispatch.sh" task \
-  --prompt "${CLAUDE_PLUGIN_ROOT}/skills/writing-plans/coverage-verifier-prompt.md" \
-  --set PLAN_FILE_PATH=docs/superpowers/plans/<YYYY-MM-DD-topic>-plan.md \
-  --set SPEC_FILE_PATH=docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
-```
+**Caller control-flow (read stdout on ANY exit code):**
+
+1. **Regardless of the wrapper's exit code, read and parse its entire stdout** and locate the
+   `=== Summary ===` section — stdout is preserved in full even on a nonzero exit.
+2. Classify each reviewer from its Summary line: `Status: OKAY` / `Status: Issues Found`,
+   `(prose — 見全文)` (a no-verdict reviewer — read its full `## <label>` section and treat any
+   blocking observation as a finding), or `ERROR (tool failed, ...)`.
+3. **If any reviewer is ERROR** → **re-run the entire `review-plan.sh` call** with the same
+   `--task`/`--coverage` set. Do not treat ERROR as a review failure and do not discard stdout.
+4. **Otherwise** apply the unified re-run policy below: fix all issues and gaps, commit, and
+   re-run next round with the next round's active `--task`/`--coverage` set; the loop ends
+   when every active reviewer returns `Status: OKAY` in a single round.
 
 ### Per-Task Review
 
-For **each Task** in the plan, dispatch a per-Task reviewer using the Per-Task invocation in **Dispatch mechanism** above. Each reviewer call passes `--set TASK_ID="Task N"`; the reviewer reads the plan file, locates that Task, and treats every other Task in the file as sibling context — no Task text is pasted.
+Every active Task this round is reviewed by one per-Task reviewer, registered as a single
+`--task "Task N"` on the one `review-plan.sh` call in **Dispatch mechanism** above (the wrapper
+translates each `--task` into the reviewer's task id for you — you never pass any `--set` flag
+yourself). The reviewer reads the plan file, locates that Task, and treats every other Task in
+the file as sibling context — no Task text is pasted.
 
-A Task that has not yet received `Status: OKAY` gets a reviewer dispatched each round. A Task drops out of the loop once its reviewer reports `Status: OKAY` and its content is not edited again.
+A Task that has not yet received `Status: OKAY` is passed as a `--task` each round. A Task drops
+out of the loop (its `--task` is omitted next round) once its reviewer reports `Status: OKAY` and
+its content is not edited again.
 
 ### Coverage Verifier
 
-In **addition** to the per-Task reviews, dispatch one Coverage Verifier each round using the Coverage Verifier invocation in **Dispatch mechanism** above. It reads the whole plan file and whole spec file (read-only) and compares them globally.
+In **addition** to the per-Task reviews, add `--coverage` to the same `review-plan.sh` call each
+round the Coverage Verifier is active (it uses `coverage-verifier-prompt.md` over the whole plan
+file and whole spec file, read-only, comparing them globally).
 
-If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Tasks, or amend the spec. Any newly added or substantially changed Task re-enters per-Task review in the next round. The Coverage Verifier re-runs next round only if gaps were fixed this round.
+If it returns coverage gaps, fill every gap: add Tasks, strengthen existing Tasks, or amend the
+spec. Any newly added or substantially changed Task re-enters per-Task review next round (as a new
+`--task`). Keep `--coverage` on next round only if gaps were fixed this round; otherwise omit it.
 
 ### The Round Loop
 
-Per-Task reviewers and the Coverage Verifier are dispatched **in parallel** within a round using separate Bash calls with `run_in_background: true`. Do not wait for all per-Task reviews to finish before launching the Coverage Verifier. When a backgrounded dispatch finishes, Claude Code notifies you automatically — do NOT poll BashOutput in a loop or otherwise wait for the output to have a value. Wait for each completion notification, then read that task's output once. Once all results are in, fix all issues and gaps together, then start the next round.
+Per-Task reviewers and the Coverage Verifier all run **in parallel** within a round via ONE `review-plan.sh` call — pass every active Task as a `--task "Task N"` and add `--coverage` while the Coverage Verifier is active. The wrapper returns ALL reviewers' output on stdout in one shot; read its `=== Summary ===` on any exit code. Once you have parsed every reviewer's result, fix all issues and gaps together, then start the next round.
 
-Use the **Dispatch mechanism** invocations above exactly as written — do NOT pre-probe dispatch.sh with `--help`, `ls`/`find`, or source greps before dispatching.
+Use the **Dispatch mechanism** `review-plan.sh` invocation above exactly as written — do NOT pre-probe `review-plan.sh` or `dispatch.sh` with `--help`, `ls`/`find`, or source greps before dispatching.
 
 The loop ends when, within a single round, every active Per-Task reviewer returns `Status: OKAY` and the Coverage Verifier (if still active) returns `Status: OKAY`.
 
@@ -207,13 +227,21 @@ active_tasks = all plan tasks   # first round: every task
 coverage_active = True
 
 while True:
-    # Dispatch in parallel
-    task_results = parallel(
-        # reviewer reads the plan file itself for sibling-Task context (no Task text pasted)
-        [dispatch_task_reviewer(task) for task in active_tasks],
-        dispatch_coverage_verifier(spec_file, plan_file) if coverage_active else [],
+    # ONE review-plan.sh call dispatches every active reviewer in parallel and returns
+    # all output on stdout; the reviewer reads the plan file itself for sibling-Task
+    # context (no Task text pasted).
+    summary = run_review_plan(
+        plan_file, spec_file,
+        tasks=active_tasks,
+        coverage=coverage_active,
     )
+    task_results = parse_summary(summary)   # read === Summary === on any exit code
 
+    # ERROR is a tool failure, NOT a review result: re-run the WHOLE wrapper, same args.
+    if any(r is "ERROR (tool failed…)" for r in task_results):
+        continue   # same active_tasks / coverage_active — do not enter the fix loop
+
+    # Only real reviewer results (Issues Found / coverage gaps / prose findings) reach here.
     issues = collect_issues(task_results)
     gaps   = collect_gaps(task_results)
 
@@ -245,8 +273,7 @@ After all active Per-Task reviewers and the Coverage Verifier report `Status: OK
 If the user requests any changes:
 
 1. Make the requested changes.
-2. Re-run the per-Task reviewer for every **affected Task** using the Per-Task invocation in **Dispatch mechanism** above; pass only `--set TASK_ID="Task N"` so the reviewer reads sibling Task context from the plan file.
-3. Re-run the Coverage Verifier over the whole plan vs. the whole spec (edits can introduce new coverage gaps).
+2. Re-run review with ONE `review-plan.sh` call: pass one `--task "Task N"` for every **affected Task** so each reviewer reads sibling Task context from the plan file, and add `--coverage` to also re-run the Coverage Verifier over the whole plan vs. the whole spec (edits can introduce new coverage gaps).
 4. Apply the unified re-run policy: loop each reviewer until `Status: OKAY`, with zero tolerance — nothing may be deferred.
 5. Commit the fixed plan.
 6. Report the result back to the user and **wait for their next reply**.

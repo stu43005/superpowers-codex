@@ -154,7 +154,12 @@ ALL output on stdout.
    section and treat any blocking finding there the same as `Issues Found`.
 3. **If any reviewer is ERROR** → **re-run the entire `review-brainstorm.sh` call** (same
    arguments). Do not treat ERROR as a review failure and do not discard stdout.
-4. **Otherwise** apply the round loop: if either reviewer reports a finding, fix ALL findings,
+4. **If any reviewer's Summary line carries a `(tool exit N)` annotation** (a verdict WAS produced
+   but the tool then exited nonzero), the result exists but its output may be incomplete: read that
+   reviewer's full `## <label>` section and use judgment — re-run the whole wrapper if the output
+   looks truncated, otherwise act on the verdict shown. This is neither an automatic pass nor a
+   forced rerun.
+5. **Otherwise** apply the round loop: if either reviewer reports a finding, fix ALL findings,
    commit, and re-run the whole wrapper next round; when structural-completeness is
    `Status: OKAY` AND design-soundness is `Verdict: approve` in the same round, the loop ends.
 

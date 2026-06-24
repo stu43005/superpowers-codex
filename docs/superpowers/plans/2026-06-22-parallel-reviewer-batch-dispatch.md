@@ -10,6 +10,34 @@
 
 ---
 
+## Post-Approval Design Amendment (supersedes parts of Tasks 10–13)
+
+After the plan was approved and Tasks 1–13 were implemented, the user refined the design. The
+amendment below is authoritative where it conflicts with the original Task 10–13 text:
+
+1. **Skills only ever call the `review-*.sh` wrappers.** The three SKILL.md files must NOT
+   reference `dispatch.sh` directly, nor name any internal reviewer prompt/focus sidecar
+   (`spec-document-reviewer-prompt.md`, `adversarial-spec-review-focus.md`,
+   `plan-document-reviewer-prompt.md`, `coverage-verifier-prompt.md`, `spec-reviewer-prompt.md`,
+   `final-code-reviewer-focus.md`). Those are wrapper internals invisible to the calling agent.
+   Tasks 10 and 11 were amended to strip the leftover `dispatch.sh`/prompt/focus mentions.
+2. **A fourth wrapper, `scripts/review-final.sh`, was added** for the final adversarial merge
+   gate: `review-final.sh --base <IMPL_BASE>` registers one `final-adversarial` job
+   (`adversarial --base <IMPL_BASE> --focus .../final-code-reviewer-focus.md`) and delegates to
+   the engine. Task 12's final gate now calls `review-final.sh` instead of the direct
+   `dispatch.sh adversarial` call — so `skills/subagent-driven-development/SKILL.md` references no
+   `dispatch.sh` at all.
+3. **`implementer-prompt.md` is retained as a special case** in subagent-driven-development: the
+   implementer is a Claude subagent the controller dispatches directly (it is not a codex review),
+   so the skill still names `implementer-prompt.md`.
+4. **Test-count deltas:** `review-final.sh` added 2 wrapper tests (pre-Task-13 count 35 → 37), and
+   a Task-13 follow-up added a `review-final` caller shape (3 fixtures) plus a regression fixture
+   (code-quality prose containing an internal `## ` heading before a `BLOCKING:` line) and the
+   matching `decide_action` awk fix (extract the `## code-quality` body through to
+   `=== Summary ===`, not stopping at internal headings). Final suite: **54 passed, 0 failed**.
+
+---
+
 ## File Structure
 
 | File | Create/Modify | Responsibility |
@@ -17,12 +45,13 @@
 | `scripts/review-batch-lib.sh` | Create | Sourced batch engine: `batch_init`, `batch_add`, `batch_run` — job registration, `--max-parallel` validation, FIFO token-bucket throttle, temp-dir capture, stdout aggregation + Summary classification, exit-code semantics, shutdown trap. |
 | `scripts/review-brainstorm.sh` | Create | Thin wrapper for brainstorming: parse `--spec`/`--base`/`--max-parallel`, register the two fixed reviewers (`structural-completeness`, `design-soundness`), `batch_run`. |
 | `scripts/review-plan.sh` | Create | Thin wrapper for writing-plans: parse repeated `--task`, `--plan`, `--spec`, optional `--coverage`/`--max-parallel`, register per-Task + optional coverage jobs, `batch_run`. |
-| `scripts/review-impl.sh` | Create | Thin wrapper for subagent-driven-development: parse `--plan`/`--task`/`--task-base`/`--max-parallel`, register `spec-compliance` + `code-quality` jobs (no `--report-file`), `batch_run`. |
+| `scripts/review-impl.sh` | Create | Thin wrapper for subagent-driven-development per-task review: parse `--plan`/`--task`/`--task-base`/`--max-parallel`, register `spec-compliance` + `code-quality` jobs (no `--report-file`), `batch_run`. |
+| `scripts/review-final.sh` | Create (amendment) | Thin wrapper for the subagent-driven-development final adversarial merge gate: parse `--base`/`--max-parallel`, register one `final-adversarial` job, `batch_run`. |
 | `scripts/review-batch-lib.test.sh` | Create | Hermetic plain-bash tests for the engine and all three wrappers, using a stub `dispatch.sh` injected via `BATCH_DISPATCH_SH` and a fixture `PLUGIN_ROOT`. |
 | `skills/subagent-driven-development/spec-reviewer-prompt.md` | Modify | Remove `[REPORT_FILE_PATH]` + report-reading lines; add calibrated evidence-verifiability rule; keep `..HEAD` diff range and `Status:` Output Contract. |
 | `skills/brainstorming/SKILL.md` | Modify | Replace the two-background-call spec-review dispatch with a single `review-brainstorm.sh` call + caller control-flow. |
 | `skills/writing-plans/SKILL.md` | Modify | Replace the per-Task + Coverage background dispatch with a single `review-plan.sh` call + caller control-flow. |
-| `skills/subagent-driven-development/SKILL.md` | Modify | Replace two-stage per-task review with a single `review-impl.sh` call; remove the report-file (`mktemp`→`--report-file`→`rm`) wiring; keep the final adversarial gate; add caller control-flow. |
+| `skills/subagent-driven-development/SKILL.md` | Modify | Replace two-stage per-task review with a single `review-impl.sh` call; remove the report-file (`mktemp`→`--report-file`→`rm`) wiring; route the final adversarial gate through `review-final.sh` (amendment); add caller control-flow. |
 
 ---
 

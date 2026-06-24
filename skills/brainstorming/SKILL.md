@@ -120,10 +120,10 @@ SPEC_BASE="$(git rev-parse HEAD)"
 
 Store this value — it is the parent commit of the spec commit and must not change across rounds.
 
-**Structural Completeness reviewer** (`dispatch.sh task`, read-only):
+**Structural Completeness reviewer** (read-only):
 Checks: placeholder scan, internal consistency, scope check, ambiguity check, YAGNI. Returns `Status: OKAY` or `Status: Issues Found`.
 
-**Design Soundness reviewer** (`dispatch.sh adversarial`):
+**Design Soundness reviewer** (read-only):
 Challenges design-level soundness: failure paths / partial failure / rollback, concurrency and ordering assumptions, boundary and empty states, compatibility / migration risk, unstated critical assumptions. Returns `Verdict: approve` or `Verdict: needs-attention`.
 
 **Single batched dispatch per round:**
@@ -139,9 +139,8 @@ run verbatim:
   --base <SPEC_BASE>
 ```
 
-This runs the structural-completeness reviewer (`dispatch.sh task`, spec-document-reviewer
-sidecar) and the design-soundness reviewer (`dispatch.sh adversarial`,
-`adversarial-spec-review-focus.md`) in parallel and returns ALL output on stdout.
+This runs the structural-completeness and design-soundness reviewers in parallel and returns
+ALL output on stdout.
 
 **Caller control-flow (read stdout on ANY exit code):**
 

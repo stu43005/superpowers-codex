@@ -34,7 +34,16 @@ amendment below is authoritative where it conflicts with the original Task 10–
    a Task-13 follow-up added a `review-final` caller shape (3 fixtures) plus a regression fixture
    (code-quality prose containing an internal `## ` heading before a `BLOCKING:` line) and the
    matching `decide_action` awk fix (extract the `## code-quality` body through to
-   `=== Summary ===`, not stopping at internal headings). Final suite: **54 passed, 0 failed**.
+   `=== Summary ===`, not stopping at internal headings).
+5. **Final-gate finding — tool-exit handling (spec §4.4 / §4.5 amended).** The final adversarial
+   gate flagged that a reviewer emitting a verdict and THEN exiting nonzero (a teardown crash) was
+   classified as a clean pass with the batch still exiting 0, silently masking a partial tool
+   failure. Resolution (Option C — faithful report, caller judges): `batch_run` now sets a nonzero
+   batch exit on ANY nonzero child exit (the verdict is kept and annotated `(tool exit N)`, with the
+   stderr excerpt shown); the `decide_action` reference parser gained an `INSPECT` outcome for a
+   `(tool exit N)` annotation; and all three SKILL.md callers' control-flow gained a "verdict +
+   `(tool exit N)` → read the full section and use judgment (re-run if truncated, else act on the
+   result)" branch — neither auto-pass nor forced rerun. Final suite: **60 passed, 0 failed**.
 
 ---
 

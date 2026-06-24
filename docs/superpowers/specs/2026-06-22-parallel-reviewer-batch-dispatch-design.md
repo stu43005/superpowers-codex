@@ -169,15 +169,24 @@ companion 例外等），此時通常沒有可解析的 verdict 行。
 2. 若**無**此類 verdict 行**且退出碼非零** → `ERROR (tool failed, exit <rc>)`（工具失敗，在其
    區段附 stderr 摘要）——這才是需要 caller **重跑整個 wrapper** 的情形。
 3. 若退出碼為零但無 verdict 行（例如 code-quality reviewer 為 prose）→ `(prose — 見全文)`。
-4. 邊界：退出碼非零但仍有可解析 verdict 行 → 以 verdict 為準，退出碼僅附註於行尾。
+4. 邊界：退出碼非零但仍有可解析 verdict 行 → **保留該 verdict**（代表審查已跑完、有結果），並在
+   Summary 行尾附註 `(tool exit <rc>)`，同時在其區段附 stderr 摘要。這代表「有結果但工具中途
+   失敗、輸出可能不完整」：該 job 的非零退出**仍使批次非零退出**（§4.5，標記工具層失敗），但
+   **是否重跑由 caller 讀該區段全文判斷**（既非自動通過、亦非強制重跑——見 §4.5 的 INSPECT）。
+
+> **設計修正（核准後）**：早期版本在此邊界「以 verdict 為準、退出碼僅附註、批次仍退出 0」，會讓
+> 「verdict 產生後工具於 teardown 崩潰」的部分失敗悄悄通過閘門。修正後：verdict 仍保留（不丟棄
+> 已完成的結果），但工具非零退出一律標記於批次退出碼，重跑與否交由 caller 判斷。
 
 ### 4.5 退出碼與 caller contract
 
 `batch_run` 的退出碼**只反映工具層面是否有失敗**，**不**反映審查結論：
 
-- **有任一 job 為 ERROR**（§4.4 第 2 點：無 verdict 行的工具失敗）→ `batch_run` **非零退出**
-  （其餘 job 結果仍照原樣出現在 stdout）。
-- **所有 job 都成功產生 verdict 行**（即使內容是 `Issues Found` / `needs-attention`）→
+- **有任一 job 退出碼非零** → `batch_run` **非零退出**（其餘 job 結果仍照原樣出現在 stdout）。
+  這涵蓋兩種情形：(a) §4.4 第 2 點——無 verdict 行的工具失敗（Summary 標 `ERROR`）；(b) §4.4
+  第 4 點——有 verdict 行但工具中途非零退出（Summary 標 `<verdict> (tool exit <rc>)`）。兩者都是
+  工具層失敗，都要讓批次退出碼非零以利上層察覺。
+- **所有 job 退出碼皆為零**（即使 verdict 內容是 `Issues Found` / `needs-attention`）→
   **退出 0**。reviewer 找到問題是**正常結果**，由 SKILL 的 round loop 讀 verdict 行決定是否
   再迭代，不讓批次退出碼非零。
 
@@ -187,10 +196,13 @@ companion 例外等），此時通常沒有可解析的 verdict 行。
   Claude Code 的 Bash 工具在指令非零退出時仍會完整回傳 stdout 並附退出碼註記。
 - 呼叫端**在任何退出碼下都讀取並解析 wrapper 的 stdout**（§4.4 全文 + Summary），據以判斷
   各 reviewer 是 OKAY / Issues Found / approve / needs-attention / prose / ERROR。
-- **兩種「需要動作」要分清**：(a) **ERROR（工具失敗）** → caller **重跑整個 wrapper**（同一
-  完整 job set；環境/版本/暫時性錯誤，非審查結果）；(b) **reviewer findings** → caller 依
-  round loop **修正後 re-review**。批次非零退出只對應 (a)；(b) 由 stdout 的 verdict 行驅動，
-  與退出碼無關。
+- **三種「需要動作」要分清**：(a) **ERROR（無 verdict 行的工具失敗）** → caller **重跑整個
+  wrapper**（同一完整 job set；環境/版本/暫時性錯誤，非審查結果）；(b) **reviewer findings**
+  （`Issues Found` / `needs-attention`，退出 0）→ caller 依 round loop **修正後 re-review**；
+  (c) **verdict + `(tool exit N)`**（有結果但工具中途非零退出，§4.4 第 4 點）→ caller **讀該
+  區段全文判斷**：輸出看似截斷就重跑整個 wrapper，否則依該 verdict 行動（**INSPECT**：既非
+  自動通過，亦非強制重跑）。批次非零退出對應 (a) 與 (c)（工具層失敗）；(b) 退出 0、由 stdout
+  的 verdict 行驅動，與退出碼無關。
 
 ## 5. 三個 wrapper 的 CLI
 

@@ -424,5 +424,189 @@ if [ "$RC_FINAL" -ne 0 ] \
   ok "review-final: missing --base value fails with a clear wrapper error"
 else bad "review-final: missing --base value fails with a clear wrapper error" "rc=$RC_FINAL out=$FINAL_ERR"; fi
 
+# decide_action <stdout-blob> <exit-code> : print PROCEED | RERUN_WRAPPER | FIX_AND_REREVIEW.
+# The exit code is accepted but NOT used to decide — the decision is read from the stdout, which
+# is authoritative at any exit code. This is the reference parser the SKILL.md callers model.
+#
+# A code-quality reviewer is PROSE: its Summary line is "(prose — 見全文)", which is NOT
+# automatically a pass. Per review-impl.sh's contract the caller MUST read the "## code-quality"
+# section body and treat any blocking-severity defect there as a finding. The fixtures mark such a
+# defect with a "BLOCKING:" line (the senior-engineer must-fix severity), so the parser inspects
+# the code-quality section body for it. (An all-clear prose body like "No blocking issues found."
+# has no "BLOCKING:" line and stays PROCEED.)
+decide_action() {
+  local blob="$1" rc="$2" sumlines cqbody   # rc accepted to make "stdout is authoritative" explicit
+  : "$rc"                                    # intentionally unused: stdout drives the decision
+  sumlines="$(printf '%s\n' "$blob" | sed -n '/^=== Summary ===$/,$p')"
+  if printf '%s\n' "$sumlines" | grep -q 'ERROR (tool failed'; then
+    printf 'RERUN_WRAPPER'; return 0
+  fi
+  if printf '%s\n' "$sumlines" | grep -Eq 'Status: Issues Found|Verdict: needs-attention'; then
+    printf 'FIX_AND_REREVIEW'; return 0
+  fi
+  # Prose code-quality body: extract the "## code-quality" section and treat a BLOCKING-severity
+  # line as a finding. code-quality is the LAST "## <label>" section before "=== Summary ===", so
+  # the section runs to the "=== Summary ===" line — an internal Markdown heading inside the prose
+  # body (e.g. "## Notes") is NOT a boundary, or a BLOCKING line after it would be missed. (awk,
+  # portable on BSD/3.2; no GNU-only sed alternation.)
+  cqbody="$(printf '%s\n' "$blob" | awk '/^## code-quality$/{c=1;next} c&&/^=== Summary ===$/{c=0} c{print}')"
+  if printf '%s\n' "$cqbody" | grep -Eq '^BLOCKING:'; then
+    printf 'FIX_AND_REREVIEW'; return 0
+  fi
+  printf 'PROCEED'
+}
+
+# Acceptance: the wrapper's stdout === Summary === block is machine-parseable and each of the
+# three SKILL.md callers' control-flow is decidable from (stdout, exit-code). decide_action reads
+# the Summary from stdout REGARDLESS of the exit code and returns the documented action:
+#   - any "ERROR (tool failed" Summary line -> RERUN_WRAPPER (tool failure, not a review result)
+#   - else any "Status: Issues Found" / "Verdict: needs-attention" -> FIX_AND_REREVIEW
+#   - else a code-quality reviewer whose Summary is prose ("(prose — 見全文)") but whose
+#     "## code-quality" body carries a BLOCKING finding -> FIX_AND_REREVIEW (prose is NOT
+#     automatically a pass — the caller MUST read the section body for blocking findings)
+#   - else (all OKAY / approve / no-blocking prose) -> PROCEED
+# These are canned wrapper-stdout fixtures plus a modelled rc — no live wrapper runs.
+
+# --- brainstorm caller shape: structural-completeness (Status:) + design-soundness (Verdict:) ---
+BR_OK="$(printf '%s\n' \
+  '## structural-completeness' 'Status: OKAY' '' \
+  '## design-soundness' 'Verdict: approve' '' \
+  '=== Summary ===' \
+  '- structural-completeness: Status: OKAY' \
+  '- design-soundness: Verdict: approve')"; BR_OK_RC=0
+BR_ERR="$(printf '%s\n' \
+  '## structural-completeness' 'Status: OKAY' '' \
+  '## design-soundness' '[stderr excerpt]' 'boom' '' \
+  '=== Summary ===' \
+  '- structural-completeness: Status: OKAY' \
+  '- design-soundness: ERROR (tool failed, exit 1)')"; BR_ERR_RC=1
+BR_FIND="$(printf '%s\n' \
+  '## structural-completeness' 'Status: OKAY' '' \
+  '## design-soundness' 'Verdict: needs-attention' '' \
+  '=== Summary ===' \
+  '- structural-completeness: Status: OKAY' \
+  '- design-soundness: Verdict: needs-attention')"; BR_FIND_RC=0
+
+# --- plan caller shape: per-task (Status:) + coverage-verifier (Status:) ---
+PL_OK="$(printf '%s\n' \
+  '## per-task Task 1' 'Status: OKAY' '' \
+  '## coverage-verifier' 'Status: OKAY' '' \
+  '=== Summary ===' \
+  '- per-task Task 1: Status: OKAY' \
+  '- coverage-verifier: Status: OKAY')"; PL_OK_RC=0
+PL_ERR="$(printf '%s\n' \
+  '## per-task Task 1' '[stderr excerpt]' 'boom' '' \
+  '## coverage-verifier' 'Status: OKAY' '' \
+  '=== Summary ===' \
+  '- per-task Task 1: ERROR (tool failed, exit 2)' \
+  '- coverage-verifier: Status: OKAY')"; PL_ERR_RC=2
+PL_FIND="$(printf '%s\n' \
+  '## per-task Task 1' 'Status: Issues Found' '' \
+  '## coverage-verifier' 'Status: OKAY' '' \
+  '=== Summary ===' \
+  '- per-task Task 1: Status: Issues Found' \
+  '- coverage-verifier: Status: OKAY')"; PL_FIND_RC=0
+
+# --- impl caller shape: spec-compliance (Status:) + code-quality (prose, no verdict line) ---
+IM_OK="$(printf '%s\n' \
+  '## spec-compliance' 'Status: OKAY' '' \
+  '## code-quality' 'Clean implementation. No blocking issues found.' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: OKAY' \
+  '- code-quality: (prose — 見全文)')"; IM_OK_RC=0
+IM_ERR="$(printf '%s\n' \
+  '## spec-compliance' 'Status: OKAY' '' \
+  '## code-quality' '[stderr excerpt]' 'boom' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: OKAY' \
+  '- code-quality: ERROR (tool failed, exit 2)')"; IM_ERR_RC=2
+IM_FIND="$(printf '%s\n' \
+  '## spec-compliance' 'Status: Issues Found' '' \
+  '## code-quality' 'src/x.ts:1 magic number' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: Issues Found' \
+  '- code-quality: (prose — 見全文)')"; IM_FIND_RC=0
+# code-quality is PROSE — a "(prose — 見全文)" Summary line is NOT automatically a pass. Here
+# spec-compliance is OKAY, the Summary shows code-quality as prose, exit 0 — but the
+# "## code-quality" BODY carries a BLOCKING finding (marked "BLOCKING:" — the senior-engineer
+# must-fix severity the reviewer emits). The caller MUST read the section body, so the decision
+# is FIX_AND_REREVIEW, not PROCEED. This is the case review-impl.sh's contract requires.
+IM_CQ_BLOCK="$(printf '%s\n' \
+  '## spec-compliance' 'Status: OKAY' '' \
+  '## code-quality' 'BLOCKING: src/recovery.ts:47 unhandled error path can drop data' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: OKAY' \
+  '- code-quality: (prose — 見全文)')"; IM_CQ_BLOCK_RC=0
+# Regression: the code-quality PROSE body may contain its own Markdown heading (e.g. "## Notes")
+# BEFORE a BLOCKING line. code-quality is the last "## <label>" section before "=== Summary ===",
+# so the parser must NOT treat an internal heading as the section boundary — it must keep reading
+# to "=== Summary ===" and still find the BLOCKING line. Decision: FIX_AND_REREVIEW, not PROCEED.
+IM_CQ_BLOCK_HEADING="$(printf '%s\n' \
+  '## spec-compliance' 'Status: OKAY' '' \
+  '## code-quality' '## Notes' 'general remarks about the change' \
+  'BLOCKING: src/recovery.ts:47 unhandled error path can drop data' '' \
+  '=== Summary ===' \
+  '- spec-compliance: Status: OKAY' \
+  '- code-quality: (prose — 見全文)')"; IM_CQ_BLOCK_HEADING_RC=0
+
+# --- final caller shape: final-adversarial (Verdict:) — single reviewer (review-final.sh) ---
+FN_OK="$(printf '%s\n' \
+  '## final-adversarial' 'Verdict: approve' '' \
+  '=== Summary ===' \
+  '- final-adversarial: Verdict: approve')"; FN_OK_RC=0
+FN_ERR="$(printf '%s\n' \
+  '## final-adversarial' '[stderr excerpt]' 'boom' '' \
+  '=== Summary ===' \
+  '- final-adversarial: ERROR (tool failed, exit 1)')"; FN_ERR_RC=1
+FN_FIND="$(printf '%s\n' \
+  '## final-adversarial' 'Verdict: needs-attention' '' \
+  '=== Summary ===' \
+  '- final-adversarial: Verdict: needs-attention')"; FN_FIND_RC=0
+
+# expect_action <name> <blob> <rc> <expected-action> : assert decide_action(stdout, rc) matches.
+expect_action() {
+  local name="$1" blob="$2" rc="$3" want="$4" got
+  got="$(decide_action "$blob" "$rc")"
+  if [ "$got" = "$want" ]; then ok "$name -> $want"
+  else bad "$name -> $want" "got=$got (rc=$rc)"; fi
+}
+
+# Every caller's three documented decisions (stdout drives the decision at any exit code).
+expect_action "brainstorm all-clear (rc 0)"        "$BR_OK"   "$BR_OK_RC"   "PROCEED"
+expect_action "brainstorm ERROR (rc nonzero)"      "$BR_ERR"  "$BR_ERR_RC"  "RERUN_WRAPPER"
+expect_action "brainstorm needs-attention (rc 0)"  "$BR_FIND" "$BR_FIND_RC" "FIX_AND_REREVIEW"
+expect_action "plan all-clear (rc 0)"              "$PL_OK"   "$PL_OK_RC"   "PROCEED"
+expect_action "plan ERROR (rc nonzero)"            "$PL_ERR"  "$PL_ERR_RC"  "RERUN_WRAPPER"
+expect_action "plan Issues Found (rc 0)"           "$PL_FIND" "$PL_FIND_RC" "FIX_AND_REREVIEW"
+expect_action "impl all-clear prose (rc 0)"        "$IM_OK"   "$IM_OK_RC"   "PROCEED"
+expect_action "impl ERROR (rc nonzero)"            "$IM_ERR"  "$IM_ERR_RC"  "RERUN_WRAPPER"
+expect_action "impl Issues Found (rc 0)"           "$IM_FIND" "$IM_FIND_RC" "FIX_AND_REREVIEW"
+# Prose is NOT auto-PROCEED: a code-quality BLOCKING finding in the body decides FIX_AND_REREVIEW
+# even though its Summary line is "(prose — 見全文)" and exit code is 0.
+expect_action "impl code-quality prose BLOCKING (rc 0)" "$IM_CQ_BLOCK" "$IM_CQ_BLOCK_RC" "FIX_AND_REREVIEW"
+# A BLOCKING line AFTER an internal Markdown heading in the prose body must still be found.
+expect_action "impl code-quality BLOCKING after internal heading (rc 0)" "$IM_CQ_BLOCK_HEADING" "$IM_CQ_BLOCK_HEADING_RC" "FIX_AND_REREVIEW"
+expect_action "final all-clear (rc 0)"             "$FN_OK"   "$FN_OK_RC"   "PROCEED"
+expect_action "final ERROR (rc nonzero)"           "$FN_ERR"  "$FN_ERR_RC"  "RERUN_WRAPPER"
+expect_action "final needs-attention (rc 0)"       "$FN_FIND" "$FN_FIND_RC" "FIX_AND_REREVIEW"
+
+# stdout is parsed REGARDLESS of exit code: a findings Summary delivered with a NONZERO rc still
+# decides FIX_AND_REREVIEW from stdout (the rc must not override the stdout verdict). This proves
+# the caller does not branch on exit code alone.
+expect_action "findings stdout with nonzero rc still FIX_AND_REREVIEW" "$PL_FIND" 7 "FIX_AND_REREVIEW"
+
+# The parser extracts a reviewer's status line from the Summary block.
+printf '%s\n' "$IM_OK" | sed -n '/^=== Summary ===$/,$p' | grep -q '^- spec-compliance: Status: OKAY$' \
+  && ok "parser extracts a reviewer's status from the Summary block" \
+  || bad "parser extracts a reviewer's status from the Summary block" "$IM_OK"
+
+# Engine never inspects HEAD (documented trade-off: it does not detect HEAD movement).
+# The engine source must contain no git/HEAD/rev-parse/reflog references.
+if grep -nE 'git |rev-parse|reflog|HEAD' "$LIB" >/dev/null 2>&1; then
+  bad "engine never inspects HEAD" "$(grep -nE 'git |rev-parse|reflog|HEAD' "$LIB")"
+else
+  ok "engine never inspects HEAD (no git/rev-parse/reflog/HEAD in the engine source)"
+fi
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

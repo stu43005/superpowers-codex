@@ -47,7 +47,7 @@ This structure informs the task decomposition. Each task should produce self-con
 ```markdown
 # [Feature Name] Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers-codex:subagent-driven-development to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** [One sentence describing what this builds]
 
@@ -290,4 +290,6 @@ After the user explicitly approves the plan:
 
 **"Plan complete and saved to `docs/superpowers/plans/<filename>.md`. Ready to start implementation? (using Subagent-Driven Development)"**
 
-On confirmation, invoke the **REQUIRED SUB-SKILL: `superpowers:subagent-driven-development`**. No alternative execution method is offered.
+On confirmation, invoke the **REQUIRED SUB-SKILL: `superpowers-codex:subagent-driven-development`** (this exact plugin-qualified name — do NOT substitute an upstream `superpowers:...` name). No alternative execution method is offered.
+
+**Fail closed:** if that skill cannot be loaded, STOP and tell the user the `superpowers-codex` plugin is not installed correctly. NEVER skip the skill and start implementing the plan on your own.

@@ -54,7 +54,7 @@ digraph process {
     "Dispatch final adversarial reviewer (review-final.sh)" [shape=box];
     "Verdict: approve?" [shape=diamond];
     "Implementer fixes adversarial findings, re-commit" [shape=box];
-    "Use superpowers:finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
+    "Use superpowers-codex:finishing-a-development-branch" [shape=box style=filled fillcolor=lightgreen];
 
     "Capture IMPL_BASE (git rev-parse HEAD)" -> "Read plan, extract all tasks with full text, note context, create TodoWrite";
     "Read plan, extract all tasks with full text, note context, create TodoWrite" -> "Capture TASK_BASE (git rev-parse HEAD)";
@@ -75,7 +75,7 @@ digraph process {
     "Dispatch final adversarial reviewer (review-final.sh)" -> "Verdict: approve?";
     "Verdict: approve?" -> "Implementer fixes adversarial findings, re-commit" [label="no (needs-attention)"];
     "Implementer fixes adversarial findings, re-commit" -> "Dispatch final adversarial reviewer (review-final.sh)" [label="re-review"];
-    "Verdict: approve?" -> "Use superpowers:finishing-a-development-branch" [label="yes"];
+    "Verdict: approve?" -> "Use superpowers-codex:finishing-a-development-branch" [label="yes"];
 }
 ```
 
@@ -153,7 +153,7 @@ value, do not run verbatim:
 Read the wrapper's stdout `=== Summary ===` on any exit code. The final-adversarial reviewer
 emits a structured `Verdict:` line:
 
-- `Verdict: approve` → passes the final gate; proceed to `superpowers:finishing-a-development-branch`.
+- `Verdict: approve` → passes the final gate; proceed to `superpowers-codex:finishing-a-development-branch`.
 - `Verdict: needs-attention` → collect every finding (file, line range, recommendation),
   dispatch the implementer to fix all, then re-run `review-final.sh` with the same `<IMPL_BASE>`;
   repeat until `Verdict: approve`.
@@ -295,7 +295,7 @@ Clean. No issues.
 [Dispatch final adversarial reviewer: review-final.sh --base abc1234]
 Final reviewer: Verdict: approve
 
-Done — proceed to superpowers:finishing-a-development-branch
+Done — proceed to superpowers-codex:finishing-a-development-branch
 ```
 
 ## Advantages
@@ -364,5 +364,5 @@ Done — proceed to superpowers:finishing-a-development-branch
 ## Integration
 
 **Required workflow skills:**
-- **superpowers:writing-plans** - Creates the plan this skill executes
-- **superpowers:finishing-a-development-branch** - Complete development after all tasks
+- **superpowers-codex:writing-plans** - Creates the plan this skill executes
+- **superpowers-codex:finishing-a-development-branch** - Complete development after all tasks

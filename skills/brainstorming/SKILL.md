@@ -28,7 +28,7 @@ You MUST create a task for each of these items and complete them in order:
 5. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
 6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch both reviewers each round with ONE `review-brainstorm.sh` call (it runs the structural-completeness and design-soundness reviewers in parallel); read the wrapper's stdout `=== Summary ===` on any exit code; fix ALL findings; loop until the structural-completeness reviewer returns `Status: OKAY` AND the design-soundness reviewer returns `Verdict: approve` in the same round (see below — do NOT do this inline)
 7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until both pass, then wait for explicit approval
-8. **Transition to implementation** — invoke writing-plans skill to create implementation plan (this is the ONLY next step; never jump straight to code)
+8. **Transition to implementation** — invoke the `superpowers-codex:writing-plans` skill to create implementation plan (this is the ONLY next step; never jump straight to code)
 
 ## Process Flow
 
@@ -42,7 +42,7 @@ digraph brainstorming {
     "Write design doc\n+ capture SPEC_BASE" [shape=box];
     "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" [shape=box];
     "User reviews spec?" [shape=diamond];
-    "Invoke writing-plans skill" [shape=doublecircle];
+    "Invoke superpowers-codex:writing-plans" [shape=doublecircle];
 
     "Explore project context" -> "Ask clarifying questions";
     "Ask clarifying questions" -> "Propose 2-3 approaches";
@@ -54,11 +54,11 @@ digraph brainstorming {
     "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" [label="any finding — fix all, re-run wrapper"];
     "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" -> "User reviews spec?" [label="both OKAY + approve"];
     "User reviews spec?" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" [label="changes requested — re-run dual loop"];
-    "User reviews spec?" -> "Invoke writing-plans skill" [label="explicitly approved"];
+    "User reviews spec?" -> "Invoke superpowers-codex:writing-plans" [label="explicitly approved"];
 }
 ```
 
-**The terminal state is invoking writing-plans.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is writing-plans.
+**The terminal state is invoking `superpowers-codex:writing-plans`.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is `superpowers-codex:writing-plans`.
 
 ## The Process
 
@@ -215,8 +215,9 @@ Only leave this gate and proceed to writing-plans once the user **explicitly app
 
 The mandatory workflow sequence is **brainstorming → spec document → writing-plans → plan document → implementation**, in strict order. Never jump from brainstorming straight to code, and never skip the spec or plan stages — even for "simple" tasks.
 
-- Invoke the writing-plans skill to create a detailed implementation plan.
-- Do NOT invoke any other skill. writing-plans is the ONLY next step after brainstorming.
+- Invoke the `superpowers-codex:writing-plans` skill (this exact plugin-qualified name — do NOT substitute a bare `writing-plans` or an upstream `superpowers:...` name) to create a detailed implementation plan.
+- Do NOT invoke any other skill. `superpowers-codex:writing-plans` is the ONLY next step after brainstorming.
+- **Fail closed:** if that skill cannot be loaded, STOP and tell the user the `superpowers-codex` plugin is not installed correctly. NEVER skip the skill and start planning or implementing on your own.
 
 ## Key Principles
 

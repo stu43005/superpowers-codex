@@ -175,6 +175,20 @@ the plan file and treats every other Task as sibling context (no Task text is pa
 rounds where the Coverage Verifier has dropped out (principle 3). At least one `--task` or
 `--coverage` must be present.
 
+**Invocation discipline (run it as a plain foreground Bash call):**
+
+- **Do NOT set `run_in_background`.** This is a single blocking operation and you have to wait for
+  the review to finish anyway — run it in the foreground.
+- **Do NOT append `echo "EXIT_CODE=$?"`** or any exit-code probe. On a nonzero exit Claude Code
+  surfaces the code to you automatically, and the wrapper's authoritative status is its stdout
+  `=== Summary ===`, not the process exit code.
+- **Do NOT redirect, pipe, or `tee` the output.** You need the full stdout; if it is too long or the
+  call times out, Claude Code writes the complete output to a file on its own — then read that file
+  in segments.
+- **If the foreground call times out**, do NOT re-run it and do NOT poll for its output. It becomes a
+  background task; end your turn and wait for Claude Code's completion notification, then read the
+  captured output file.
+
 **Caller control-flow (read stdout on ANY exit code):**
 
 1. **Regardless of the wrapper's exit code, read and parse its entire stdout** and locate the

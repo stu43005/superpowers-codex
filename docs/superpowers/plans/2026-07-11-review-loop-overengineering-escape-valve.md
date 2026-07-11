@@ -240,7 +240,7 @@ Find this exact line:
 Replace it with (note the explicit parentheses grouping — structural `OKAY` is mandatory in both exit paths):
 
 ```markdown
-6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch both reviewers each round with ONE `review-brainstorm.sh` call (it runs the structural-completeness and design-soundness reviewers in parallel); read the wrapper's stdout `=== Summary ===` on any exit code; maintain the per-round ledger; fix ALL structural-completeness findings; for design-soundness findings apply the escape valve (escalate suspected over-engineering, or any topic flagged three consecutive rounds, via `AskUserQuestion`; `adjudicated-reject` topics are non-blocking); loop until, in the same round, structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve` OR the only remaining design findings map to `adjudicated-reject` topics) (see below — do NOT do this inline)
+6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch both reviewers each round with ONE `review-brainstorm.sh` call (it runs the structural-completeness and design-soundness reviewers in parallel); read the wrapper's stdout `=== Summary ===` on any exit code; maintain the per-round ledger; fix ALL structural-completeness findings; for design-soundness findings apply the escape valve (escalate suspected over-engineering, or any `open` topic flagged three consecutive rounds, via `AskUserQuestion`; `adjudicated-reject` topics are non-blocking); loop until, in the same round, structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve` OR the only remaining design findings map to `adjudicated-reject` topics) (see below — do NOT do this inline)
 ```
 
 - [ ] **Step 2: Replace the ENTIRE Process Flow dot code block**
@@ -268,7 +268,7 @@ digraph brainstorming {
     "User approves design?" -> "Write design doc\n+ capture SPEC_BASE" [label="yes"];
     "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)";
     "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [label="structural finding — fix; design finding — fix"];
-    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "Escalate to user\n(AskUserQuestion)" [label="design finding: over-engineering suspected\nor 3-round backstop"];
+    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "Escalate to user\n(AskUserQuestion)" [label="design finding: over-engineering suspected\nor 3-round backstop (open topic)"];
     "Escalate to user\n(AskUserQuestion)" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [label="adjudicated (implement / reject)"];
     "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "User reviews spec?" [label="structural OKAY + (approve OR remaining design all adjudicated-reject)"];
     "User reviews spec?" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [label="changes requested — re-run dual loop"];
@@ -439,9 +439,10 @@ Expected: every suite prints its `ok - …` lines and the loop exits `0`. A nonz
 
 - [ ] **Step 2: Confirm the change set touched ONLY the two SKILL.md files (no wrapper scripts or reviewer prompts)**
 
-Run (compare against the pre-implementation base — the `IMPL_BASE` SHA captured before Task 1's first commit by subagent-driven-development):
+Substitute the actual pre-implementation base SHA — the `IMPL_BASE` value subagent-driven-development captured before Task 1's first commit (same substitute-the-SHA pattern as `SPEC_BASE`) — then run:
 ```bash
-git diff --name-only <IMPL_BASE>..HEAD
+IMPL_BASE=<paste-the-captured-IMPL_BASE-sha>
+git diff --name-only "$IMPL_BASE"..HEAD
 ```
 Expected: exactly `skills/brainstorming/SKILL.md` and `skills/subagent-driven-development/SKILL.md` (plus this plan file only if it was amended during review). NO path under `scripts/`, and no `*-reviewer-prompt.md`, `*-focus.md`, or `spec-document-reviewer-prompt.md`, may appear. If a wrapper/prompt path appears, an earlier task edited a file it must not — revert that edit in that task.
 

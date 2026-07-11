@@ -224,10 +224,10 @@ git commit -m "feat: rewrite brainstorming round loop with relaxed design-soundn
 
 ---
 
-### Task 3: brainstorming — update Checklist item 6 and the Process Flow diagram
+### Task 3: brainstorming — update Checklist items 6–7, the Process Flow diagram, and remaining exit wording
 
 **Files:**
-- Modify: `skills/brainstorming/SKILL.md` (Checklist item 6; Process Flow dot graph edges)
+- Modify: `skills/brainstorming/SKILL.md` (Checklist items 6 and 7; Process Flow dot graph; Spec Review Loop intro; User Review Gate prose — all brought in line with the relaxed exit)
 
 - [ ] **Step 1: Replace Checklist item 6 (fix the exit-condition grouping so structural `OKAY` is required on BOTH exit paths)**
 
@@ -276,7 +276,59 @@ digraph brainstorming {
 }
 ```
 
-- [ ] **Step 3: Verify the diagram and checklist edits**
+- [ ] **Step 3: Update the remaining stale exit wording elsewhere in the skill**
+
+Four other spots still describe the old "both must pass / until approve" exit and must be brought in line with the relaxed exit. Make each replacement:
+
+**(a) Checklist item 7.** Find:
+
+```markdown
+7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until both pass, then wait for explicit approval
+```
+
+Replace with:
+
+```markdown
+7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until it clears (structural-completeness `Status: OKAY` and design-soundness `Verdict: approve`, or the only remaining design-soundness findings are `adjudicated-reject` topics), then wait for explicit approval
+```
+
+**(b) Spec Review Loop intro sentence.** Find:
+
+```markdown
+Do NOT perform inline self-review. After writing and committing the spec document, dispatch **two reviewers in parallel** using the codex companion. Both reviewers examine the same spec document; both must pass before proceeding.
+```
+
+Replace with:
+
+```markdown
+Do NOT perform inline self-review. After writing and committing the spec document, dispatch **two reviewers in parallel** using the codex companion. Both reviewers examine the same spec document. Before proceeding, structural-completeness must reach `Status: OKAY` and design-soundness must reach `Verdict: approve` — or have its only remaining findings be `adjudicated-reject` topics via the escape valve (below).
+```
+
+**(c) User Review Gate opening.** Find:
+
+```markdown
+After the dual review loop reports both OKAY and approve, ask the user to review the written spec before proceeding:
+```
+
+Replace with:
+
+```markdown
+After the dual review loop clears (structural-completeness `Status: OKAY` and design-soundness `Verdict: approve`, or the only remaining design-soundness findings are `adjudicated-reject` topics), ask the user to review the written spec before proceeding:
+```
+
+**(d) User Review Gate re-run instruction.** Find:
+
+```markdown
+3. Re-run the dual spec review loop with ONE `review-brainstorm.sh` call (both the structural-completeness and design-soundness reviewers in parallel, until both pass). The wrapper takes only `--spec`/`--base` and always re-reviews the whole spec — there is no per-section focus — so any edit re-runs both reviewers over the entire spec.
+```
+
+Replace with:
+
+```markdown
+3. Re-run the dual spec review loop with ONE `review-brainstorm.sh` call (both the structural-completeness and design-soundness reviewers in parallel, until it clears per the escape-valve exit condition in step 6). The wrapper takes only `--spec`/`--base` and always re-reviews the whole spec — there is no per-section focus — so any edit re-runs both reviewers over the entire spec.
+```
+
+- [ ] **Step 4: Verify the diagram, checklist, and exit-wording edits**
 
 Run: `grep -c "Escalate to user" skills/brainstorming/SKILL.md`
 Expected: `3` (one node declaration + two edges)
@@ -287,17 +339,26 @@ Expected: `0` (stale zero-tolerance node label fully removed)
 Run: `grep -c "structural zero-tolerance, design escape-valve" skills/brainstorming/SKILL.md`
 Expected: `8` (1 node declaration + 7 edge endpoint references — the self-loop line references the node at both endpoints; dot keeps them one node)
 
-Run: `grep -c "structural-completeness is \`Status: OKAY\` AND (design-soundness is \`Verdict: approve\`" skills/brainstorming/SKILL.md`
+Run (single-quoted so the backticks stay literal, not command substitution): `grep -c 'structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve`' skills/brainstorming/SKILL.md`
 Expected: `1` (checklist grouping now explicit)
 
-Run: `grep -c "fix ALL findings; loop until the structural-completeness reviewer returns" skills/brainstorming/SKILL.md`
-Expected: `0` (old checklist wording removed)
+Run: `grep -cF 'until both pass' skills/brainstorming/SKILL.md`
+Expected: `0` (both stale "until both pass" phrases replaced)
 
-- [ ] **Step 4: Commit**
+Run: `grep -cF 'reports both OKAY and approve' skills/brainstorming/SKILL.md`
+Expected: `0` (User Review Gate opening updated)
+
+Run: `grep -cF 'both must pass before proceeding' skills/brainstorming/SKILL.md`
+Expected: `0` (Spec Review Loop intro updated)
+
+Run: `grep -c "fix ALL findings; loop until the structural-completeness reviewer returns" skills/brainstorming/SKILL.md`
+Expected: `0` (old checklist item 6 wording removed)
+
+- [ ] **Step 5: Commit**
 
 ```bash
 git add skills/brainstorming/SKILL.md
-git commit -m "feat: update brainstorming checklist and flow diagram for the escape valve"
+git commit -m "feat: update brainstorming checklist, flow diagram, and exit wording for the escape valve"
 ```
 
 ---

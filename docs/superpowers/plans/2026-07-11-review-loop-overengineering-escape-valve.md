@@ -336,8 +336,8 @@ Expected: `3` (one node declaration + two edges)
 Run: `grep -c "both parallel, both must pass" skills/brainstorming/SKILL.md`
 Expected: `0` (stale zero-tolerance node label fully removed)
 
-Run: `grep -c "structural zero-tolerance, design escape-valve" skills/brainstorming/SKILL.md`
-Expected: `8` (1 node declaration + 7 edge endpoint references — the self-loop line references the node at both endpoints; dot keeps them one node)
+Run: `grep -o "structural zero-tolerance, design escape-valve" skills/brainstorming/SKILL.md | wc -l` (count occurrences, not lines — `grep -c` would miscount because the self-loop line contains the string twice)
+Expected: `8` (1 node declaration + 7 edge endpoint references — the self-loop references the node at both endpoints; dot keeps them one node)
 
 Run (single-quoted so the backticks stay literal, not command substitution): `grep -c 'structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve`' skills/brainstorming/SKILL.md`
 Expected: `1` (checklist grouping now explicit)

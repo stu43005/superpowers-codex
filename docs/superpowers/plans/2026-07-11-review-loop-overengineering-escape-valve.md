@@ -161,8 +161,10 @@ while true:
     topic = ledger_topic(finding)
     if topic.status == "adjudicated-reject":
       continue                           # non-blocking — do not re-fix, do not re-escalate
-    elif topic.status == "open" AND (subjective_over_engineering(finding) OR topic.consecutive_rounds == 3):
+    elif topic.status == "open" AND (subjective_over_engineering(finding) OR topic.consecutive_rounds == 3 OR count_uncertain(topic)):
       adjudicate_with_user(topic)        # AskUserQuestion; then ACT on the choice (see below) before committing
+                                         # count_uncertain: fail-closed — after compaction/handoff, an uncertain
+                                         # consecutive count on a still-flagged topic escalates instead of continuing
     else:
       fix_finding(finding)               # open (not escalating) OR adjudicated-implement: fix it this round
 
@@ -172,10 +174,31 @@ while true:
 
 Structural-completeness stays zero-tolerance: its `Issues Found` are always fixed. The escape valve applies only to design-soundness findings. A topic the user adjudicated `adjudicated-reject` is non-blocking on all later rounds — do not re-fix or re-escalate it; the loop can exit once structural is `Status: OKAY` and every remaining design finding maps to an `adjudicated-reject` topic, **even if design-soundness never returns `approve`**. An `ERROR (tool failed…)` is a tool failure, not a finding: re-run the whole wrapper rather than entering the fix loop.
 
-`adjudicate_with_user(topic)` is not complete until you **act on the user's choice before committing this round**: on **Implement**, set the topic to `adjudicated-implement` and fix the finding this round; on **Don't implement**, set it to `adjudicated-reject` and record the accepted limitation in the spec's Non-goals / Accepted limitations section (Task 1) before committing. Only `adjudicated-reject` becomes non-blocking; an `adjudicated-implement` topic is still fixed each round it is flagged (it falls to `fix_finding`) and is never re-escalated by the backstop — a genuinely new concern arising after it is a new topic with its own count.
+`adjudicate_with_user(topic)` is not complete until you **act on the user's choice before committing this round**: on **Implement**, set the topic to `adjudicated-implement` and fix the finding this round; on **Don't implement**, set it to `adjudicated-reject` and record the accepted limitation in the spec's Non-goals / Accepted limitations section before committing. Only `adjudicated-reject` becomes non-blocking; an `adjudicated-implement` topic is still fixed each round it is flagged (it falls to `fix_finding`) and is never re-escalated by the backstop — a genuinely new concern arising after it is a new topic with its own count.
 ````
 
-- [ ] **Step 2: Verify the new block is present and the old framing is gone**
+- [ ] **Step 2: Update the "Caller control-flow" item 5 so it no longer contradicts the escape valve**
+
+The numbered "Caller control-flow (read stdout on ANY exit code)" list in the same "Spec Review Loop" region still describes the old zero-tolerance exit. Find this exact item:
+
+```markdown
+5. **Otherwise** apply the round loop: if either reviewer reports a finding, fix ALL findings,
+   commit, and re-run the whole wrapper next round; when structural-completeness is
+   `Status: OKAY` AND design-soundness is `Verdict: approve` in the same round, the loop ends.
+```
+
+Replace it with:
+
+```markdown
+5. **Otherwise** apply the round loop: always fix ALL structural-completeness findings; for
+   design-soundness findings apply the escape valve (fix, or escalate suspected over-engineering
+   or a three-round-repeated `open` topic via `AskUserQuestion`; `adjudicated-reject` topics are
+   non-blocking). Commit and re-run the whole wrapper next round. The loop ends when, in the same
+   round, structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve`
+   OR every remaining design finding maps to an `adjudicated-reject` topic).
+```
+
+- [ ] **Step 3: Verify the new block is present and the old framing is gone**
 
 Run: `grep -c "structural zero-tolerance + design escape valve" skills/brainstorming/SKILL.md`
 Expected: `1`
@@ -186,10 +209,13 @@ Expected: `1`
 Run: `grep -c 'topic.status == "open" AND' skills/brainstorming/SKILL.md`
 Expected: `1` (backstop guarded to `open` topics only)
 
+Run: `grep -c "if either reviewer reports a finding, fix ALL findings" skills/brainstorming/SKILL.md`
+Expected: `0` (old Caller control-flow item 5 wording removed)
+
 Run: `grep -c "fix_all_findings(structural.issues + design.findings)" skills/brainstorming/SKILL.md`
 Expected: `0`
 
-- [ ] **Step 3: Commit**
+- [ ] **Step 4: Commit**
 
 ```bash
 git add skills/brainstorming/SKILL.md
@@ -259,7 +285,7 @@ Run: `grep -c "both parallel, both must pass" skills/brainstorming/SKILL.md`
 Expected: `0` (stale zero-tolerance node label fully removed)
 
 Run: `grep -c "structural zero-tolerance, design escape-valve" skills/brainstorming/SKILL.md`
-Expected: `7` (node declaration + 6 edge references — dot keeps them one node)
+Expected: `8` (1 node declaration + 7 edge endpoint references — the self-loop line references the node at both endpoints; dot keeps them one node)
 
 Run: `grep -c "structural-completeness is \`Status: OKAY\` AND (design-soundness is \`Verdict: approve\`" skills/brainstorming/SKILL.md`
 Expected: `1` (checklist grouping now explicit)
@@ -432,7 +458,7 @@ Read the full "Spec Review Loop" region of `skills/brainstorming/SKILL.md` and t
 - The Process Flow diagram edges match the prose (escalation node present; exit edge mentions the adjudicated-reject path; no "both must pass" label survives).
 - The subagent-driven-development carve-out references the same "Non-goals / Accepted limitations" section name that brainstorming writes.
 
-Run: `grep -c "implemented-verified\|\`implementing\`" skills/brainstorming/SKILL.md`
+Run: `grep -cE 'implemented-verified|`implementing`' skills/brainstorming/SKILL.md` (single-quoted so the backticks stay literal; `-E` for portable alternation)
 Expected: `0` (these states were never in scope)
 
 Run: `grep -c "both parallel, both must pass" skills/brainstorming/SKILL.md`

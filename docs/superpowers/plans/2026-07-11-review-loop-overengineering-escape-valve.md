@@ -289,7 +289,7 @@ Four other spots still describe the old "both must pass / until approve" exit an
 Replace with:
 
 ```markdown
-7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until it clears (structural-completeness `Status: OKAY` and design-soundness `Verdict: approve`, or the only remaining design-soundness findings are `adjudicated-reject` topics), then wait for explicit approval
+7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until it clears (structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR the only remaining design-soundness findings are `adjudicated-reject` topics)), then wait for explicit approval
 ```
 
 **(b) Spec Review Loop intro sentence.** Find:
@@ -301,7 +301,7 @@ Do NOT perform inline self-review. After writing and committing the spec documen
 Replace with:
 
 ```markdown
-Do NOT perform inline self-review. After writing and committing the spec document, dispatch **two reviewers in parallel** using the codex companion. Both reviewers examine the same spec document. Before proceeding, structural-completeness must reach `Status: OKAY` and design-soundness must reach `Verdict: approve` — or have its only remaining findings be `adjudicated-reject` topics via the escape valve (below).
+Do NOT perform inline self-review. After writing and committing the spec document, dispatch **two reviewers in parallel** using the codex companion. Both reviewers examine the same spec document. Before proceeding, the loop must clear: structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR its only remaining findings are `adjudicated-reject` topics via the escape valve, below).
 ```
 
 **(c) User Review Gate opening.** Find:
@@ -313,7 +313,7 @@ After the dual review loop reports both OKAY and approve, ask the user to review
 Replace with:
 
 ```markdown
-After the dual review loop clears (structural-completeness `Status: OKAY` and design-soundness `Verdict: approve`, or the only remaining design-soundness findings are `adjudicated-reject` topics), ask the user to review the written spec before proceeding:
+After the dual review loop clears (structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR the only remaining design-soundness findings are `adjudicated-reject` topics)), ask the user to review the written spec before proceeding:
 ```
 
 **(d) User Review Gate re-run instruction.** Find:

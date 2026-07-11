@@ -126,6 +126,33 @@ Checks: placeholder scan, internal consistency, scope check, ambiguity check, YA
 **Design Soundness reviewer** (read-only):
 Challenges design-level soundness: failure paths / partial failure / rollback, concurrency and ordering assumptions, boundary and empty states, compatibility / migration risk, unstated critical assumptions. Returns `Verdict: approve` or `Verdict: needs-attention`.
 
+**Escape valve for design-soundness findings (anti-over-engineering):**
+
+The design-soundness reviewer is adversarial by construction, so it will always find "you could be more rigorous." Blindly fixing every finding drives over-engineering: writing atomicity, deploy/rollback machinery, or parsers for near-impossible edge cases that a small tool does not need or that another mechanism already covers. The escape valve hands the "is this concern worth the cost?" judgment back to the user instead of letting the loop escalate rigor without bound. It applies **only to design-soundness findings** — structural-completeness stays zero-tolerance.
+
+**Per-round ledger (required):** Each round, after parsing `=== Summary ===`, maintain a visible ledger table in your reply and update it every round:
+
+| Topic | Consecutive rounds flagged | Status |
+|---|---|---|
+| semantic summary of the concern | N | `open` / `adjudicated-implement` / `adjudicated-reject` |
+
+- **Topic** is judged *semantically* — a reviewer rewording the same root concern across rounds is the same topic, and its round count accumulates.
+- **Consecutive rounds flagged** counts consecutive rounds the topic appears in design-soundness findings; a round in which it is not flagged resets it to zero.
+- **Status:** `open` (not yet adjudicated), `adjudicated-implement` (user chose to fix it), `adjudicated-reject` (user chose not to; recorded in the spec's Non-goals / Accepted limitations).
+
+The ledger is an in-session heuristic tracker, re-emitted in full each round from the current round's reviewer output — it is not durable repo state (the `adjudicated-reject` decisions themselves live durably in the spec). **Fail-closed degradation:** if context compaction or agent handoff makes a topic's consecutive count uncertain *and* the topic is still being flagged this round, escalate via `AskUserQuestion` rather than silently resetting the count and continuing to fight — underestimating the count would defeat the backstop. The subjective trigger and the structural-completeness reviewer are unaffected by a lost count.
+
+**Two escalation triggers — both route to `AskUserQuestion`; never self-adjudicate an "accepted limitation."** Whether to accept a concern is the user's call; your job is to detect and escalate, not to decide YAGNI for the user.
+
+- **Subjective (early, discretionary):** if you judge a design-soundness finding may be over-engineering — disproportionate to this project's actual scale, aimed at a near-impossible edge case, or already covered by another mechanism — escalate *immediately* via `AskUserQuestion`. Do not silently fix it and do not silently skip it.
+- **Objective (mandatory backstop):** if the ledger shows an `open` topic flagged for **three consecutive rounds**, you **must** escalate via `AskUserQuestion`, even if each round's fix felt reasonable.
+
+At escalation, present the specific finding, why you suspect over-engineering (or that it has been fought three rounds, with the ledger count), and roughly what implementing it would cost. Offer two choices: **Implement** (reviewer is right → fix it; topic becomes `adjudicated-implement`) or **Don't implement** (record it as an explicit accepted limitation with the user's rationale in the spec; topic becomes `adjudicated-reject`). The auto-added "Other" lets the user propose a middle ground; handle per their instruction and record the topic as `adjudicated-implement` or `adjudicated-reject` accordingly.
+
+The backstop applies to `open` topics only; once a topic is adjudicated it leaves `open` and is never re-escalated by the backstop. A concern that newly arises *after* a topic becomes `adjudicated-implement` (including after implementing an "Other" middle ground) is a **new topic** with its own fresh count — it does not inherit the old topic's rounds.
+
+**Recording adjudicated rejections (Non-goals / Accepted limitations):** when the user adjudicates a concern as `adjudicated-reject`, record it in a **Non-goals / Accepted limitations** section of the spec being written, one entry each — **Concern** (the reviewer's concern, summarized), **Decision** (not implemented), **Rationale** (why not: disproportionate to scale / already covered by another mechanism / a near-impossible edge case, as the user stated). This is a durable record: it survives context compaction and is the basis for downstream adversarial acceptance (see `subagent-driven-development`). Reuse an existing equivalent section (e.g. a "Non-goals" heading) if the spec already has one. **Scope / stale-waiver guard:** each rejection is scoped to the design premise under which it was made; if later spec edits materially change that premise (e.g. the cost structure judged "disproportionate," or the other mechanism that covered it), the rejection no longer auto-applies — treat the concern as a fresh issue and route it back through the normal loop.
+
 **Single batched dispatch per round:**
 
 Each round, launch BOTH reviewers with ONE call to the batch wrapper. `${CLAUDE_PLUGIN_ROOT}`

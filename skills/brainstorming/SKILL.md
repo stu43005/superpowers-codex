@@ -200,9 +200,12 @@ ALL output on stdout.
    reviewer's full `## <label>` section and use judgment — re-run the whole wrapper if the output
    looks truncated, otherwise act on the verdict shown. This is neither an automatic pass nor a
    forced rerun.
-5. **Otherwise** apply the round loop: if either reviewer reports a finding, fix ALL findings,
-   commit, and re-run the whole wrapper next round; when structural-completeness is
-   `Status: OKAY` AND design-soundness is `Verdict: approve` in the same round, the loop ends.
+5. **Otherwise** apply the round loop: always fix ALL structural-completeness findings; for
+   design-soundness findings apply the escape valve (fix, or escalate suspected over-engineering
+   or a three-round-repeated `open` topic via `AskUserQuestion`; `adjudicated-reject` topics are
+   non-blocking). Commit and re-run the whole wrapper next round. The loop ends when, in the same
+   round, structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve`
+   OR every remaining design finding maps to an `adjudicated-reject` topic).
 
 **Caller HEAD contract:** Do not advance `HEAD` (commit/rebase/checkout) while
 `review-brainstorm.sh` is running — both reviewers must see the same `HEAD` and the same
@@ -210,30 +213,22 @@ ALL output on stdout.
 guarantee it. Commit each round's spec fixes BEFORE launching the next round's wrapper call,
 not while it runs.
 
-**Round loop — zero tolerance:**
+**Round loop — structural zero-tolerance + design escape valve:**
 
-```
-while true:
-  summary = run_review_brainstorm(spec_file, SPEC_BASE)   # ONE wrapper call, both reviewers
-  parse === Summary ===   # read stdout on ANY exit code (stdout is authoritative)
-  structural = structural_completeness verdict   # Status: OKAY | Issues Found | ERROR (tool failed…)
-  design     = design_soundness verdict          # Verdict: approve | needs-attention | ERROR (tool failed…) | prose
+Each review round, in order:
 
-  if structural is "ERROR (tool failed…)" OR design is "ERROR (tool failed…)":
-    continue   # tool failure, NOT a review result — re-run the WHOLE wrapper, same args
+1. Run `review-brainstorm.sh` once (both reviewers); parse its stdout `=== Summary ===` on any exit code.
+2. If either reviewer is `ERROR (tool failed…)`, re-run the whole wrapper with the same args — a tool failure is not a finding, so fix nothing this round.
+3. Update the per-round ledger from the design-soundness findings (semantic topics; see the ledger above). Do this only after ERROR is ruled out — a failed tool has no real findings.
+4. **Exit the loop** when structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve` OR every remaining design-soundness finding maps to an `adjudicated-reject` ledger topic). Structural `Status: OKAY` is required on both exit paths; the loop may end **even if design-soundness never returns `approve`**, as long as its only remaining findings are user-rejected topics.
+5. If structural-completeness is `Status: Issues Found`, fix all of them — structural findings are always zero-tolerance.
+6. Then handle each design-soundness finding by its ledger topic's status:
+   - `adjudicated-reject` → skip it; it is non-blocking (do not re-fix, do not re-escalate).
+   - `open`, AND (you suspect over-engineering — disproportionate to scale / a near-impossible edge case / already covered — OR it has been flagged three consecutive rounds OR its consecutive count is uncertain after compaction or handoff) → escalate via `AskUserQuestion`, then act on the choice **before committing**: **Implement** → fix the finding and mark the topic `adjudicated-implement`; **Don't implement** → record the accepted limitation (with the user's rationale) in the spec's Non-goals / Accepted limitations section and mark the topic `adjudicated-reject`.
+   - otherwise (an `open` topic you are not escalating, or an `adjudicated-implement` topic) → fix the finding this round.
+7. Commit this round's fixes, then re-run the whole wrapper next round.
 
-  if structural == "Status: OKAY" AND design == "Verdict: approve":
-    break   # both passed — exit loop
-
-  # Only real reviewer findings (Issues Found / needs-attention, and any prose finding) reach here.
-  fix_all_findings(structural.issues + design.findings)   # every finding — none skipped
-  commit_round_fixes()
-  # spec was edited — re-run the whole wrapper next round (both reviewers re-run together)
-```
-
-Any finding from either reviewer blocks the round. An `ERROR (tool failed…)` is a tool failure,
-not a finding: re-run the whole wrapper rather than entering the fix loop. Fix every real finding
-before re-running.
+Only `adjudicated-reject` topics become non-blocking; an `adjudicated-implement` topic is still fixed each round it is flagged and is never re-escalated by the backstop — a genuinely new concern arising after it is a new topic with its own count.
 
 **Git commit discipline:** Before the first review round, commit the first version of the spec. After each round's fixes, commit again with a message noting the round (e.g. `docs(spec): fix review round 2 - resolve ambiguity in auth flow`). NEVER use `git add -f` to force-add an ignored file. `review-brainstorm.sh` is a fixed two-reviewer wrapper with no per-reviewer skip option; the design-soundness reviewer diffs `<SPEC_BASE>..HEAD`, so the spec **must be committed** for the wrapper-based review to run as designed. If the spec file is gitignored, the wrapper cannot review it — do not attempt the dual review on a gitignored spec; ask the user to un-ignore (or relocate) the spec so it can be committed before review.
 

@@ -26,8 +26,8 @@ You MUST create a task for each of these items and complete them in order:
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to their complexity, get user approval after each section
 5. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch both reviewers each round with ONE `review-brainstorm.sh` call (it runs the structural-completeness and design-soundness reviewers in parallel); read the wrapper's stdout `=== Summary ===` on any exit code; fix ALL findings; loop until the structural-completeness reviewer returns `Status: OKAY` AND the design-soundness reviewer returns `Verdict: approve` in the same round (see below — do NOT do this inline)
-7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until both pass, then wait for explicit approval
+6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch both reviewers each round with ONE `review-brainstorm.sh` call (it runs the structural-completeness and design-soundness reviewers in parallel); read the wrapper's stdout `=== Summary ===` on any exit code; maintain the per-round ledger; fix ALL structural-completeness findings; for design-soundness findings apply the escape valve (escalate suspected over-engineering, or any `open` topic flagged three consecutive rounds, via `AskUserQuestion`; `adjudicated-reject` topics are non-blocking); loop until, in the same round, structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve` OR the only remaining design findings map to `adjudicated-reject` topics) (see below — do NOT do this inline)
+7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until it clears (structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR the only remaining design-soundness findings are `adjudicated-reject` topics)), then wait for explicit approval
 8. **Transition to implementation** — invoke the `superpowers-codex:writing-plans` skill to create implementation plan (this is the ONLY next step; never jump straight to code)
 
 ## Process Flow
@@ -40,7 +40,8 @@ digraph brainstorming {
     "Present design sections" [shape=box];
     "User approves design?" [shape=diamond];
     "Write design doc\n+ capture SPEC_BASE" [shape=box];
-    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" [shape=box];
+    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [shape=box];
+    "Escalate to user\n(AskUserQuestion)" [shape=diamond];
     "User reviews spec?" [shape=diamond];
     "Invoke superpowers-codex:writing-plans" [shape=doublecircle];
 
@@ -50,10 +51,12 @@ digraph brainstorming {
     "Present design sections" -> "User approves design?";
     "User approves design?" -> "Present design sections" [label="no, revise"];
     "User approves design?" -> "Write design doc\n+ capture SPEC_BASE" [label="yes"];
-    "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)";
-    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" [label="any finding — fix all, re-run wrapper"];
-    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" -> "User reviews spec?" [label="both OKAY + approve"];
-    "User reviews spec?" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nboth parallel, both must pass)" [label="changes requested — re-run dual loop"];
+    "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)";
+    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [label="structural finding — fix; design finding — fix"];
+    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "Escalate to user\n(AskUserQuestion)" [label="design finding: over-engineering suspected\nor 3-round backstop (open topic)"];
+    "Escalate to user\n(AskUserQuestion)" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [label="adjudicated (implement / reject)"];
+    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "User reviews spec?" [label="structural OKAY + (approve OR remaining design all adjudicated-reject)"];
+    "User reviews spec?" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [label="changes requested — re-run dual loop"];
     "User reviews spec?" -> "Invoke superpowers-codex:writing-plans" [label="explicitly approved"];
 }
 ```
@@ -110,7 +113,7 @@ digraph brainstorming {
 
 **Spec Review Loop (Dual Reviewer, codex companion):**
 
-Do NOT perform inline self-review. After writing and committing the spec document, dispatch **two reviewers in parallel** using the codex companion. Both reviewers examine the same spec document; both must pass before proceeding.
+Do NOT perform inline self-review. After writing and committing the spec document, dispatch **two reviewers in parallel** using the codex companion. Both reviewers examine the same spec document. Before proceeding, the loop must clear: structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR its only remaining findings are `adjudicated-reject` topics via the escape valve, below).
 
 **Before writing the spec file**, capture `SPEC_BASE`:
 
@@ -234,7 +237,7 @@ Only `adjudicated-reject` topics become non-blocking; an `adjudicated-implement`
 
 **User Review Gate:**
 
-After the dual review loop reports both OKAY and approve, ask the user to review the written spec before proceeding:
+After the dual review loop clears (structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR the only remaining design-soundness findings are `adjudicated-reject` topics)), ask the user to review the written spec before proceeding:
 
 > "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
 
@@ -242,7 +245,7 @@ Wait for the user's response. If they request changes:
 
 1. Make the requested changes.
 2. Commit the changes (with a round-labeled commit message) **before** re-running review — `review-brainstorm.sh`'s design-soundness reviewer diffs `<SPEC_BASE>..HEAD`, so uncommitted edits would not be reviewed.
-3. Re-run the dual spec review loop with ONE `review-brainstorm.sh` call (both the structural-completeness and design-soundness reviewers in parallel, until both pass). The wrapper takes only `--spec`/`--base` and always re-reviews the whole spec — there is no per-section focus — so any edit re-runs both reviewers over the entire spec.
+3. Re-run the dual spec review loop with ONE `review-brainstorm.sh` call (both the structural-completeness and design-soundness reviewers in parallel, until it clears per the escape-valve exit condition in step 6). The wrapper takes only `--spec`/`--base` and always re-reviews the whole spec — there is no per-section focus — so any edit re-runs both reviewers over the entire spec.
 4. Report the changes back to the user and wait for their next reply.
 
 Only leave this gate and proceed to writing-plans once the user **explicitly approves** (e.g. "OK", "looks good", "start the plan"). Do not proceed on ambiguous or silent responses.

@@ -32,6 +32,15 @@ design-soundness reviewer（`skills/brainstorming/adversarial-spec-review-focus.
 - 不修改任何 reviewer 的 prompt / focus（`adversarial-spec-review-focus.md`、`final-code-reviewer-focus.md`）或 wrapper 腳本（`review-brainstorm.sh` 等）。本設計只改 SKILL.md 層的迴圈契約與 agent 行為指示。
 - 不引入自動化的語意比對工具或計數程式。三輪計數由 agent 以顯式 ledger 自行維護。
 
+## Non-goals / Accepted limitations
+
+（本節記錄審查過程中，使用者裁決「不實作」的顧慮，格式為 Concern / Decision / Rationale。供本設計自身的下游對抗式驗收依 `subagent-driven-development` 的 carve-out 依此 canonical 標題定位並尊重。）
+
+### 強制 source-spec handoff 契約（final-gate 讀哪份 spec）
+- **Concern**：final-gate carve-out 依「plan 所依據的 spec」讀取 accepted-limitations，但未以機器可讀欄位（如 plan header 的 `Source spec:`）強制 plan 指向來源 spec；理論上在改名/複製 plan、多份相似 spec、或全新 session 下，executor 可能讀錯 spec 或找不到，導致誤壓或漏壓 final finding。
+- **Decision**：不實作。不在 `writing-plans` 的 plan header 加強制 `Source spec:` 欄位，也不加跨 skill 的前置強制驗證契約。
+- **Rationale**：(1) **越界**——本設計非目標已明列「不改 writing-plans」，此修正需更動 writing-plans；(2) **不成比例／過度設計**——carve-out 已有三重 fail-safe：保守比對（部分/模糊重疊即預設阻斷）、premise 檢查（前提無法確認即阻斷）、以及來源 spec 無法確信辨識為單一時的 fail-closed（一律阻斷、suppress nothing）；最壞情況只是退回「本功能存在前的原始零容忍行為」，並非新破壞；(3) 與使用者在 brainstorming 階段已三度否決的「durable identifier／重量級比對契約」同源。**前提**：以「現有 fail-closed + 保守比對已足夠守住 merge-gate 安全邊界」為裁決前提；若日後 carve-out 的任一 fail-safe 被移除或弱化，此前提即改變，須依 stale-waiver 規則重新評估。
+
 ## 3. 核心原則
 
 **agent 永不擅自認定「已接受限制」。** 是否接受某個顧慮、放棄某個修正，一律是使用者的決定。agent 的職責是「偵測 → 停下來問使用者」，絕不代替使用者判斷 YAGNI，也不在使用者沒表態時自行把 finding 標為已接受並跳過。

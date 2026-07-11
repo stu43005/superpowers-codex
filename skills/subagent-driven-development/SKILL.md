@@ -179,6 +179,7 @@ emits a structured `Verdict:` line:
 
 - **Conservative matching (this bypasses the merge gate — fail safe):** suppress only when the finding is clearly the same concern the user rejected. If the overlap is partial, the scope differs, or the match is ambiguous, **default to blocking** and handle it as a normal finding.
 - **Premise check before suppression:** before suppressing, state in your report the premise the accepted limitation rested on (its recorded rationale) and confirm it still holds for the current implementation. If implementation drift changed that premise, or you cannot confirm it holds, the rejection has lapsed — the finding **blocks** as normal.
+- **Fail closed on source-spec identification:** identify the single source spec this plan was derived from, then read *only* that spec's **Non-goals / Accepted limitations** section. If you cannot confidently identify exactly one source spec, or cannot locate that section, suppress nothing — treat every finding as blocking. (This carve-out relies on the existing plan→spec reference plus this fail-closed rule; it deliberately does not add a mandatory plan-header field or a cross-skill handoff contract.)
 - All findings not covered by a spec-adjudicated rejection are handled exactly as before.
 
 **Caller HEAD contract:** Do not advance `HEAD` while `review-final.sh` is running — the reviewer

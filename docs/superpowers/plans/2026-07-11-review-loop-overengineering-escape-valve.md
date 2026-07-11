@@ -317,7 +317,7 @@ Run: `grep -o "structural zero-tolerance, design escape-valve" skills/brainstorm
 Expected: `8` (1 node declaration + 7 edge endpoint references — the self-loop references the node at both endpoints; dot keeps them one node)
 
 Run (single-quoted so the backticks stay literal, not command substitution): `grep -c 'structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve`' skills/brainstorming/SKILL.md`
-Expected: `1` (checklist grouping now explicit)
+Expected: `3` (the same explicit grouping is used in checklist item 6, the round-loop step 4, and Caller control-flow item 5 — all three are intended, consistent usages)
 
 Run: `grep -cF 'until both pass' skills/brainstorming/SKILL.md`
 Expected: `0` (both stale "until both pass" phrases replaced)

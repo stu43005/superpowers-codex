@@ -73,9 +73,9 @@ digraph process {
     "More tasks remain?" -> "Capture TASK_BASE (git rev-parse HEAD)" [label="yes"];
     "More tasks remain?" -> "Dispatch final adversarial reviewer (review-final.sh)" [label="no"];
     "Dispatch final adversarial reviewer (review-final.sh)" -> "Verdict: approve?";
-    "Verdict: approve?" -> "Implementer fixes adversarial findings, re-commit" [label="no (needs-attention)"];
+    "Verdict: approve?" -> "Implementer fixes adversarial findings, re-commit" [label="no (needs-attention) — fix all except spec-adjudicated rejections"];
     "Implementer fixes adversarial findings, re-commit" -> "Dispatch final adversarial reviewer (review-final.sh)" [label="re-review"];
-    "Verdict: approve?" -> "Use superpowers-codex:finishing-a-development-branch" [label="yes"];
+    "Verdict: approve?" -> "Use superpowers-codex:finishing-a-development-branch" [label="yes (or only spec-adjudicated rejections remain)"];
 }
 ```
 
@@ -167,20 +167,24 @@ value, do not run verbatim:
 Read the wrapper's stdout `=== Summary ===` on any exit code. The final-adversarial reviewer
 emits a structured `Verdict:` line:
 
-- `Verdict: approve` → passes the final gate; proceed to `superpowers-codex:finishing-a-development-branch`.
-- `Verdict: needs-attention` → collect every finding (file, line range, recommendation),
-  dispatch the implementer to fix all, then re-run `review-final.sh` with the same `<IMPL_BASE>`;
-  repeat until `Verdict: approve`.
+- `Verdict: approve` → passes the final gate; proceed to `superpowers-codex:finishing-a-development-branch`. The gate also clears when the only remaining `needs-attention` findings are non-blocking spec-adjudicated rejections (see the carve-out below), even if the reviewer never emits `approve`.
+- `Verdict: needs-attention` → collect every finding (file, line range, recommendation). Apply the spec-adjudicated-rejection carve-out below: a finding that clearly matches a still-valid accepted limitation is non-blocking and is NOT implemented. Dispatch the implementer to fix all remaining (blocking) findings, then re-run `review-final.sh` with the same `<IMPL_BASE>`; repeat until `Verdict: approve`, or until every remaining `needs-attention` finding is a non-blocking spec-adjudicated rejection.
 - `ERROR (tool failed, ...)` → a tool failure, not a review result; re-run the whole
   `review-final.sh` call (same `--base`).
 - `Verdict: ... (tool exit N)` → the verdict was produced but the tool then exited nonzero, so the
   output may be incomplete; read the full `## final-adversarial` section and use judgment — re-run
   `review-final.sh` if it looks truncated, otherwise act on the verdict shown.
 
+**Respect spec-adjudicated rejections (narrow carve-out):** Before fixing final-adversarial findings, read the **Non-goals / Accepted limitations** section of the spec this plan was derived from. If a finding is *clearly the same concern* as an item the spec records there as an accepted limitation (an `adjudicated-reject` from brainstorming), treat that finding as **non-blocking** — do not implement it, and note in your report which accepted limitation it maps to (quote the recorded concern). This does not ask the user; it honors a decision the user already made.
+
+- **Conservative matching (this bypasses the merge gate — fail safe):** suppress only when the finding is clearly the same concern the user rejected. If the overlap is partial, the scope differs, or the match is ambiguous, **default to blocking** and handle it as a normal finding.
+- **Premise check before suppression:** before suppressing, state in your report the premise the accepted limitation rested on (its recorded rationale) and confirm it still holds for the current implementation. If implementation drift changed that premise, or you cannot confirm it holds, the rejection has lapsed — the finding **blocks** as normal.
+- All findings not covered by a spec-adjudicated rejection are handled exactly as before.
+
 **Caller HEAD contract:** Do not advance `HEAD` while `review-final.sh` is running — the reviewer
 diffs `<IMPL_BASE>..HEAD`. Commit any fixes before re-running the gate, not while it runs.
 
-**Zero tolerance; do not ask the user** — the loop runs automatically until the gate clears.
+**Zero tolerance, except spec-adjudicated rejections above; do not ask the user** — the loop runs automatically until the gate clears.
 
 ## Model Selection
 

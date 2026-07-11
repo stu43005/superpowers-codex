@@ -50,7 +50,9 @@ design-soundness reviewer（`skills/brainstorming/adversarial-spec-review-focus.
 | 連續被 flag 輪數 | 此議題**連續**出現在 reviewer findings 的輪數；某輪未被 flag 則歸零。 |
 | 狀態 | `open`（處理中）／`adjudicated-implement`（使用者裁決要做，修復中/已修）／`adjudicated-reject`（使用者裁決不做，已記入 spec）。 |
 
-ledger 是這份逃生閥機制的持久計數載體，用來抵抗長迴圈與上下文壓縮：每輪重新寫出完整 ledger，不依賴對話記憶回溯。
+ledger 每輪重新寫出，計數以當前輪的 reviewer 輸出為準，不依賴對話記憶逐句回溯。**它是 in-session 的啟發式追蹤，不是持久 repo 狀態**：`adjudicated-reject` 的裁決本身持久存在 spec 的 Non-goals 區塊（§5，已 committed），但「某 `open` 議題已連續幾輪被 flag」這個計數只存活於當前 review 迴圈。
+
+**優雅降級**：若上下文被壓縮、或迴圈由另一個 agent 接手導致連續輪數不確定，agent 以保守方式重建——寧可**低估**連續輪數（頂多多跑幾輪才觸發 backstop），不可高估而過早自動放行；且主觀觸發（§4.2）與 structural-completeness 審查完全不受計數遺失影響，仍照常運作。三輪 backstop 是安全網啟發式，非正確性關鍵不變量，計數短暫遺失可容忍。刻意不把計數持久化成 committed 狀態檔，是為避免對一個 in-session 啟發式計數器引入不成比例的持久化機制。
 
 **「同一議題」判定**：以底層顧慮的語意為準，不看字面措辭。reviewer 換不同句子描述同一個根本顧慮，計為同一議題、輪數累加。
 
@@ -91,6 +93,8 @@ structural-completeness reviewer 不受此逃生閥影響：它檢查 placeholde
 
 此區塊是持久裁決記錄：撐過上下文壓縮，並作為下游對抗式驗收（§6）的依據。若 spec 已有等義區塊（如既有的「非目標」段落），沿用即可，不強制新增重複標題。
 
+**裁決範圍與 stale-waiver 防護（輕量）**：每筆 `adjudicated-reject` 的效力以**當時的設計前提為範圍**。若日後 spec 被實質編輯、改變了該裁決所依據的前提（例如原判「不成比例」的成本結構、或原本覆蓋該顧慮的其他機制發生變動），該裁決**不再自動適用**，對應顧慮視為**新問題重新浮現**，回到 §4 的一般流程（可重新升級詢問使用者）。此處刻意不引入 per-item last-reviewed commit 戳記與強制重驗協定等重量級追蹤；改以「前提變動即失效、視為新問題」的判準，避免不成比例的機制。
+
 ## 6. 下游連動：subagent-driven-development 的 final adversarial gate
 
 （釐清：對抗式終審 gate 位於 subagent-driven-development 的 `review-final.sh` + `final-code-reviewer-focus.md`，而非 finishing-a-development-branch；後者無任何對抗式審查。）
@@ -98,7 +102,8 @@ structural-completeness reviewer 不受此逃生閥影響：它檢查 placeholde
 在 `skills/subagent-driven-development/SKILL.md` 的 final adversarial reviewer 處理流程（"Final adversarial reviewer" 一節）加一條規則：
 
 - 在對 final-adversarial 的 findings 動手修復前，agent **先讀該實作所依據 spec 的 Non-goals / Accepted limitations 區塊**。
-- 若某條 final-adversarial finding 命中一個 spec 已明確記為 `adjudicated-reject` 的過度設計項 → **視為非阻斷**，不實作、不因它擋下 merge gate；agent 在回報中註明「此 finding 對應 spec 已裁決的 accepted limitation，依裁決不實作」。
+- 若某條 final-adversarial finding **明確就是**某個 spec 已記為 `adjudicated-reject` 的同一顧慮 → **視為非阻斷**，不實作、不因它擋下 merge gate；agent 在回報中註明「此 finding 對應 spec 已裁決的 accepted limitation〈引用該裁決的顧慮描述〉，依裁決不實作」。
+- **保守比對（此規則會繞過 merge gate，屬安全邊界，故從嚴）**：suppress 只在「finding 明確是使用者當初否決的同一顧慮」時成立。只要 finding 與已裁決項是**部分重疊、範圍不同、或比對模糊**，一律**預設阻斷**，當普通 final-adversarial finding 照舊處理，不得 suppress。刻意不引入 stable-ID／scope／反例這類重量級比對機制；改以「模糊即阻斷」的保守預設守住安全邊界。
 - 其餘未被 spec 裁決過的 findings 一律照舊處理（維持既有 gate 行為）。
 
 這條把 brainstorming 階段的使用者裁決貫通到最終對抗式驗收，避免同一個已被使用者否決的過度設計顧慮在下游被翻案、重新逼迫實作。

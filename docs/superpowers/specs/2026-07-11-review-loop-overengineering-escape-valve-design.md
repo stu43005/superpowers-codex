@@ -48,7 +48,7 @@ design-soundness reviewer（`skills/brainstorming/adversarial-spec-review-focus.
 |---|---|
 | 議題 | 以**語意**歸納的顧慮（例：「spec 檔寫入非原子」）。reviewer 每輪換句話說仍算同一議題。 |
 | 連續被 flag 輪數 | 此議題**連續**出現在 reviewer findings 的輪數；某輪未被 flag 則歸零。 |
-| 狀態 | `open`（處理中）／`adjudicated-implement`（使用者裁決要做，修復中/已修）／`adjudicated-reject`（使用者裁決不做，已記入 spec）。 |
+| 狀態 | `open`（處理中，尚未裁決）／`implementing`（使用者裁決要做、修復進行中或尚未確認落實）／`implemented-verified`（已修，且後續輪次 reviewer 不再 flag 該議題、確認落實）／`adjudicated-reject`（使用者裁決不做，已記入 spec）。 |
 
 ledger 每輪重新寫出，計數以當前輪的 reviewer 輸出為準，不依賴對話記憶逐句回溯。**它是 in-session 的啟發式追蹤，不是持久 repo 狀態**：`adjudicated-reject` 的裁決本身持久存在 spec 的 Non-goals 區塊（§5，已 committed），但「某 `open` 議題已連續幾輪被 flag」這個計數只存活於當前 review 迴圈。
 
@@ -69,17 +69,19 @@ ledger 每輪重新寫出，計數以當前輪的 reviewer 輸出為準，不依
 
 - 呈現：該議題的具體 finding、agent 為何懷疑它過度設計（或已被反覆對抗三輪的事實與 ledger 輪數）、實作它大致要付出什麼代價。
 - 選項（沿用「是否該實現這個修正」的二元框架）：
-  1. **實作** — reviewer 是對的，照修（議題轉 `adjudicated-implement`）。
+  1. **實作** — reviewer 是對的，照修（議題轉 `implementing`；修好且後續輪不再被 flag 後轉 `implemented-verified`）。
   2. **不實作** — 記為明確非目標（議題轉 `adjudicated-reject`，理由寫入 spec，見 §5）。
-- `AskUserQuestion` 自動附帶的「Other」讓使用者可提中間方案（例如較簡化的緩解）；agent 依使用者所述處理，並據結果將議題歸入 `adjudicated-implement` 或 `adjudicated-reject`。
+- `AskUserQuestion` 自動附帶的「Other」讓使用者可提中間方案（例如較簡化的緩解）；agent 依使用者所述處理，並據結果將議題歸入 `implementing` 或 `adjudicated-reject`。
 
 ### 4.3 已裁決清單 + 放寬的退場條件
 
 - 使用者選「不實作」後，該議題在 ledger 標為 `adjudicated-reject`，理由寫入 spec 的 Non-goals / Accepted limitations 區塊（§5），並提交。
 - 之後若對抗式 reviewer 再度 flag 同一個 `adjudicated-reject` 議題 → **非阻斷**：agent 不重修、不重新升級詢問，僅在 ledger 保留其 `adjudicated-reject` 狀態。
-- 退場條件由「reviewer `approve`」放寬為以下**任一**成立：
+- 退場條件由「reviewer `approve`」放寬為以下**任一**成立，且**皆須先滿足前置條件：ledger 中沒有任何 `open` 或 `implementing` 議題**（即所有使用者裁決要做的修正都已轉為 `implemented-verified`，不得帶著未完成的必修項退場——即使該必修項對應的 finding 剛好在最後一輪沒被 reviewer 重新 emit）：
   1. design-soundness 回傳 `Verdict: approve`（且 structural-completeness 為 `Status: OKAY`）；或
   2. structural-completeness 為 `Status: OKAY`，且 design-soundness 剩下的 findings **全部**對應 ledger 中 `adjudicated-reject` 的議題（即沒有任何新的或未裁決的阻斷 finding）。
+
+一個 `implementing` 議題只有在「其修正已提交、且後續至少一輪 reviewer 不再 flag 該議題」後才可轉 `implemented-verified`；在此之前 ledger 保留 `implementing`，退場前置條件不滿足，迴圈不得結束。
 
 structural-completeness reviewer 不受此逃生閥影響：它檢查 placeholder / 內部一致性 / scope / ambiguity / YAGNI，其 `Issues Found` 一律照舊修復。逃生閥只作用於 design-soundness（對抗式）reviewer 的 findings。
 
@@ -113,7 +115,7 @@ structural-completeness reviewer 不受此逃生閥影響：它檢查 placeholde
 - **第一輪即被 flag**：輪數為 1，不觸發 backstop；agent 可依主觀觸發選擇升級或照修。
 - **議題某輪消失又重現**：連續輪數歸零後重新計數（backstop 針對「連續」三輪，非累計）。
 - **使用者選「實作」後該修正又衍生新顧慮**：新顧慮是**新議題**，獨立計數，不繼承舊議題輪數。
-- **使用者於 Other 給中間方案**：agent 依所述實作簡化版，將原議題歸為 `adjudicated-implement`（若中間方案本身又被 reviewer 反覆對抗三輪，backstop 照樣適用，再次升級）。
+- **使用者於 Other 給中間方案**：agent 依所述實作簡化版，將原議題歸為 `implementing`（修好且後續輪不再被 flag 後轉 `implemented-verified`；若中間方案本身又被 reviewer 反覆對抗三輪，backstop 照樣適用，再次升級）。
 - **structural-completeness 與 design-soundness 同輪都有 finding**：structural 照修；design 側才套用逃生閥。兩者退場條件需同時滿足（structural `OKAY` 且 design 達 §4.3 的任一退場情形）。
 - **HEAD 契約不變**：每輪修復（含把裁決寫入 spec）仍須在下一次 `review-brainstorm.sh` 執行**前**提交；wrapper 執行期間不得推進 HEAD。逃生閥不改變既有的 `SPEC_BASE`、commit-per-round、單次 wrapper 呼叫等紀律。
 

@@ -97,7 +97,7 @@ git commit -m "feat: add escape-valve ledger and escalation triggers to brainsto
 ### Task 2: brainstorming — rewrite the "Round loop" block for the escape valve
 
 **Files:**
-- Modify: `skills/brainstorming/SKILL.md` (replace the "Round loop — zero tolerance:" heading, pseudocode block, and its trailing paragraph)
+- Modify: `skills/brainstorming/SKILL.md` (replace the "Round loop — zero tolerance:" heading, its pseudocode block, and trailing paragraph with a plain numbered decision procedure; then update the "Caller control-flow" item 5)
 
 - [ ] **Step 1: Replace the round-loop block**
 
@@ -130,51 +130,25 @@ not a finding: re-run the whole wrapper rather than entering the fix loop. Fix e
 before re-running.
 ````
 
-Replace it with:
+Replace it with (a plain numbered decision procedure — no pseudocode / invented function names, so a model executing the skill reads it directly):
 
 ````markdown
 **Round loop — structural zero-tolerance + design escape valve:**
 
-```
-while true:
-  summary = run_review_brainstorm(spec_file, SPEC_BASE)   # ONE wrapper call, both reviewers
-  parse === Summary ===   # read stdout on ANY exit code (stdout is authoritative)
-  structural = structural_completeness verdict   # Status: OKAY | Issues Found | ERROR (tool failed…)
-  design     = design_soundness verdict          # Verdict: approve | needs-attention | ERROR (tool failed…) | prose
+Each review round, in order:
 
-  if structural is "ERROR (tool failed…)" OR design is "ERROR (tool failed…)":
-    continue   # tool failure, NOT a review result — re-run the WHOLE wrapper, same args
+1. Run `review-brainstorm.sh` once (both reviewers); parse its stdout `=== Summary ===` on any exit code.
+2. If either reviewer is `ERROR (tool failed…)`, re-run the whole wrapper with the same args — a tool failure is not a finding, so fix nothing this round.
+3. Update the per-round ledger from the design-soundness findings (semantic topics; see the ledger above). Do this only after ERROR is ruled out — a failed tool has no real findings.
+4. **Exit the loop** when structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve` OR every remaining design-soundness finding maps to an `adjudicated-reject` ledger topic). Structural `Status: OKAY` is required on both exit paths; the loop may end **even if design-soundness never returns `approve`**, as long as its only remaining findings are user-rejected topics.
+5. If structural-completeness is `Status: Issues Found`, fix all of them — structural findings are always zero-tolerance.
+6. Then handle each design-soundness finding by its ledger topic's status:
+   - `adjudicated-reject` → skip it; it is non-blocking (do not re-fix, do not re-escalate).
+   - `open`, AND (you suspect over-engineering — disproportionate to scale / a near-impossible edge case / already covered — OR it has been flagged three consecutive rounds OR its consecutive count is uncertain after compaction or handoff) → escalate via `AskUserQuestion`, then act on the choice **before committing**: **Implement** → fix the finding and mark the topic `adjudicated-implement`; **Don't implement** → record the accepted limitation (with the user's rationale) in the spec's Non-goals / Accepted limitations section and mark the topic `adjudicated-reject`.
+   - otherwise (an `open` topic you are not escalating, or an `adjudicated-implement` topic) → fix the finding this round.
+7. Commit this round's fixes, then re-run the whole wrapper next round.
 
-  update_ledger(design.findings)   # per-round ledger; semantic topics; fail-closed on uncertain counts
-                                   # only AFTER ERROR is ruled out — a failed tool has no real findings
-
-  # Exit condition. structural is always zero-tolerance; design gets the escape valve.
-  if structural == "Status: OKAY" AND (
-        design == "Verdict: approve"
-        OR every remaining design finding maps to an `adjudicated-reject` ledger topic):
-    break   # both passed, OR the only remaining design findings are user-rejected topics
-
-  if structural == "Status: Issues Found":
-    fix_all_structural_issues()          # structural findings: always fix (zero tolerance)
-
-  for finding in design.findings:        # design findings: escape valve applies
-    topic = ledger_topic(finding)
-    if topic.status == "adjudicated-reject":
-      continue                           # non-blocking — do not re-fix, do not re-escalate
-    elif topic.status == "open" AND (subjective_over_engineering(finding) OR topic.consecutive_rounds == 3 OR count_uncertain(topic)):
-      adjudicate_with_user(topic)        # AskUserQuestion; then ACT on the choice (see below) before committing
-                                         # count_uncertain: fail-closed — after compaction/handoff, an uncertain
-                                         # consecutive count on a still-flagged topic escalates instead of continuing
-    else:
-      fix_finding(finding)               # open (not escalating) OR adjudicated-implement: fix it this round
-
-  commit_round_fixes()
-  # spec was edited — re-run the whole wrapper next round (both reviewers re-run together)
-```
-
-Structural-completeness stays zero-tolerance: its `Issues Found` are always fixed. The escape valve applies only to design-soundness findings. A topic the user adjudicated `adjudicated-reject` is non-blocking on all later rounds — do not re-fix or re-escalate it; the loop can exit once structural is `Status: OKAY` and every remaining design finding maps to an `adjudicated-reject` topic, **even if design-soundness never returns `approve`**. An `ERROR (tool failed…)` is a tool failure, not a finding: re-run the whole wrapper rather than entering the fix loop.
-
-`adjudicate_with_user(topic)` is not complete until you **act on the user's choice before committing this round**: on **Implement**, set the topic to `adjudicated-implement` and fix the finding this round; on **Don't implement**, set it to `adjudicated-reject` and record the accepted limitation in the spec's Non-goals / Accepted limitations section before committing. Only `adjudicated-reject` becomes non-blocking; an `adjudicated-implement` topic is still fixed each round it is flagged (it falls to `fix_finding`) and is never re-escalated by the backstop — a genuinely new concern arising after it is a new topic with its own count.
+Only `adjudicated-reject` topics become non-blocking; an `adjudicated-implement` topic is still fixed each round it is flagged and is never re-escalated by the backstop — a genuinely new concern arising after it is a new topic with its own count.
 ````
 
 - [ ] **Step 2: Update the "Caller control-flow" item 5 so it no longer contradicts the escape valve**
@@ -200,20 +174,23 @@ Replace it with:
 
 - [ ] **Step 3: Verify the new block is present and the old framing is gone**
 
-Run: `grep -c "structural zero-tolerance + design escape valve" skills/brainstorming/SKILL.md`
-Expected: `1`
+Run: `grep -cF 'structural zero-tolerance + design escape valve' skills/brainstorming/SKILL.md`
+Expected: `1` (new round-loop heading present)
 
-Run: `grep -c "even if design-soundness never returns" skills/brainstorming/SKILL.md`
-Expected: `1`
+Run: `grep -cF 'Each review round, in order:' skills/brainstorming/SKILL.md`
+Expected: `1` (numbered decision procedure landed)
 
-Run: `grep -c 'topic.status == "open" AND' skills/brainstorming/SKILL.md`
-Expected: `1` (backstop guarded to `open` topics only)
+Run: `grep -cF 'even if design-soundness never returns' skills/brainstorming/SKILL.md`
+Expected: `1` (relaxed exit — step 4)
 
-Run: `grep -c "if either reviewer reports a finding, fix ALL findings" skills/brainstorming/SKILL.md`
+Run: `grep -cF 'you are not escalating, or an' skills/brainstorming/SKILL.md`
+Expected: `1` (step 6 "otherwise → fix" branch present)
+
+Run: `grep -cF 'if either reviewer reports a finding, fix ALL findings' skills/brainstorming/SKILL.md`
 Expected: `0` (old Caller control-flow item 5 wording removed)
 
-Run: `grep -c "fix_all_findings(structural.issues + design.findings)" skills/brainstorming/SKILL.md`
-Expected: `0`
+Run: `grep -cF 'fix_all_findings(structural.issues + design.findings)' skills/brainstorming/SKILL.md`
+Expected: `0` (old pseudocode removed)
 
 - [ ] **Step 4: Commit**
 

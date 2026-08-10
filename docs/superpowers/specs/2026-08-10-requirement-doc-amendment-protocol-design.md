@@ -89,6 +89,12 @@ controller 解析 reviewer findings 時，**逐條**分類。預設所有 findin
 
 若 spec 與 plan 同時需要修正，兩者可在同一個 commit，或連續兩個 commit；唯一硬性要求是**全部需求檔變更都必須在任何相關 code 變更之前完成並 commit**。
 
+**順序的適用範圍（重要）**：amendment 的觸發點是 reviewer finding，而 finding 出現時該 Task 的初始實作 commit **必然已經存在**。因此上述順序約束的是「amendment 被判定**之後**」的 commit 序列：
+
+- 約束對象是**後續的修正 commit** —— 需求檔的 amendment commit 必須早於任何**因該 amendment 而產生的 code 修正 commit**。
+- **不回溯約束已建立的 commit**。已存在的初始實作 commit 保持原樣。
+- **絕不改寫歷史**：不得為了讓需求檔 commit 排到實作 commit 之前而 `rebase`、`reset`、`commit --amend` 或重排既有 commit。本協定完全不涉及歷史改寫。
+
 ### 6.2 Base 契約
 
 - **amendment 之後不得重新捕捉 `TASK_BASE`。** 若把 `TASK_BASE` 重設到需求檔 commit 之上，該 Task 的 diff 就只剩修正 code，原始實作落在 base 之下不可見，reviewer 會誤判「需求未實作」而報出大量假的 missing-requirement findings。
@@ -99,25 +105,40 @@ controller 解析 reviewer findings 時，**逐條**分類。預設所有 findin
 
 carve-out 的安全性完全建立在「只有 controller 改需求檔」之上，因此該前提需要可執行的驗證，否則 carve-out 會靜默掩蓋 implementer 的違規修改。
 
-controller 在每次重跑 `review-impl.sh` 之前，執行一次檢查：
+**適用時機（每個 gate 都要，各用自己的 base）**：
 
-```bash
-git log --format='%H' <TASK_BASE>..HEAD -- docs/superpowers/
-```
+- 重跑 `review-impl.sh` 之前 → 檢查範圍 `<TASK_BASE>..HEAD`。
+- 重跑 `review-final.sh` 之前 → 檢查範圍 `<IMPL_BASE>..HEAD`。final gate 階段同樣可能發生 amendment（§9），且 final-adversarial 的 carve-out（§8.2）同樣會排除需求檔，因此**必須**有對應的檢查，否則未授權的需求檔變更會在最終 merge gate 被靜默放行。final-gate 期間建立的 amendment commit 與 per-task 階段一樣記錄其 SHA，且因 `IMPL_BASE` 涵蓋整個實作區間，`<IMPL_BASE>..HEAD` 的檢查會同時涵蓋所有 per-task 階段的 amendment。
 
-輸出的每個 commit SHA 都必須是 controller 自己在 §6.1 步驟 3 建立的 amendment commit（controller 在其任務狀態中記錄這些 SHA）。
+**檢查的兩個部分**（兩者都必須通過）：
+
+1. **無不明來源** —— 範圍內所有觸及需求檔的 commit 都必須是已記錄的 amendment：
+
+   ```bash
+   git log --format='%H' <BASE>..HEAD -- docs/superpowers/
+   ```
+
+   輸出的每個 commit SHA 都必須是 controller 自己在 §6.1 步驟 3 建立的 amendment commit（controller 在其任務狀態中記錄這些 SHA）。
+
+2. **每個 amendment 都是 docs-only** —— 僅檢查「有沒有碰到需求檔」不足以保證 §6.1 步驟 3 的「單獨 commit」不變式：一個同時改了需求檔與實作檔的混合 commit，在第 1 部分會以已記錄 SHA 的身分通過。因此對**每一個**已記錄的 amendment SHA，還要驗證其完整檔案清單：
+
+   ```bash
+   git diff-tree --no-commit-id --name-only -r <AMENDMENT_SHA>
+   ```
+
+   輸出的**每一條**路徑都必須位於 `docs/superpowers/` 之下。只要有任何一條不是，該 amendment 違反單獨 commit 規則 → 依下方 fail-closed 規則停止。
 
 **威脅模型（界定此檢查要擋什麼）**：implementer 是受 prompt 約束的合作型 subagent，此檢查的目的是攔截**意外違規**（subagent 順手改了需求檔、或人為手動編輯混入），**不是**防禦刻意規避的對手。因此不需要密碼學等級的來源證明，但必須保證「無法確認時不放行」。
 
 **Fail-closed 降級（記錄不可得時的行為）**：amendment SHA 記錄與既有 escape-valve ledger 同屬 **in-session 啟發式狀態**，不持久化。若上下文被壓縮、迴圈由另一個 agent 接手、或任務從既有 commit 重新進入，導致該記錄遺失或不完整：
 
 - **不得**用敘事重建信任（例如「這個 commit message 長得像我寫的」）而放行。
-- 只要 `<TASK_BASE>..HEAD` 範圍內存在**任何**無法明確歸屬到記錄中 amendment 的 `docs/superpowers/**` commit → **停下來回報使用者**，說明哪些 commit 無法歸屬、以及記錄為何遺失，由使用者判定該 commit 是否為合法 amendment 後再繼續。
+- 只要檢查範圍（`<TASK_BASE>..HEAD` 或 `<IMPL_BASE>..HEAD`）內存在**任何**無法明確歸屬到記錄中 amendment 的 `docs/superpowers/**` commit → **停下來回報使用者**，說明哪些 commit 無法歸屬、以及記錄為何遺失，由使用者判定該 commit 是否為合法 amendment 後再繼續。
 - 此偏誤方向刻意如此：低估違規等於讓 carve-out 靜默掩蓋未授權的需求變更，恰好架空本檢查；故寧可誤停、也不放行。
 
-**回復程序（發現不可歸屬的 commit 時）**：**硬性停止，不自動回復**。controller **不得**自行 `revert`、`reset` 或改寫歷史，理由是：該 commit 可能位於歷史中段、其後已疊上合法 amendment 與 code commit，自動回復會產生順序敏感的衝突，且可能抹掉使用者核准過的 spec 變更。controller 的職責到「偵測 + 停下來回報」為止，如何處置由使用者決定。這也讓本協定不需要定義任何 revert / 重驗演算法。
+**回復程序（任一部分檢查未通過時）**：**硬性停止，不自動回復**。無論是第 1 部分發現不可歸屬的 commit、或第 2 部分發現某 amendment 混入了實作檔，controller 都**不得**自行 `revert`、`reset` 或改寫歷史，理由是：問題 commit 可能位於歷史中段、其後已疊上合法 amendment 與 code commit，自動回復會產生順序敏感的衝突，且可能抹掉使用者核准過的 spec 變更。controller 的職責到「偵測 + 停下來回報」為止，如何處置由使用者決定。這也讓本協定不需要定義任何 revert / 重驗演算法。
 
-此檢查刻意維持為單一 git 指令 + 一次比對 + fail-closed 停止，不引入 hook、不引入 commit trailer、不引入 sidecar 記錄檔、不引入任何持久化狀態。
+此檢查刻意維持為兩道 git 指令 + 路徑比對 + fail-closed 停止，不引入 hook、不引入 commit trailer、不引入 sidecar 記錄檔、不引入任何持久化狀態。
 
 ### 6.4 findings 與 HEAD 的綁定（由既有機制覆蓋）
 
@@ -173,7 +194,7 @@ git log --format='%H' <TASK_BASE>..HEAD -- docs/superpowers/
 ## 9. 邊界與交互情況
 
 - **amendment 改到已通過 review 的先前 Task 的需求** → 該 Task 必須重新 dispatch implementer 並重跑 `review-impl.sh`，使用它**原本的** `TASK_BASE`（不是當前 Task 的）。理由與 §6.2 相同：原本的 base 才涵蓋該 Task 的完整實作。
-- **amendment 發生在 final gate 階段**（所有 Task 已通過、`review-final.sh` 回報 finding）→ 一樣依 §6.1 順序：先 commit 需求檔、再修 code，然後以同一個 `IMPL_BASE` 重跑 `review-final.sh`。
+- **amendment 發生在 final gate 階段**（所有 Task 已通過、`review-final.sh` 回報 finding）→ 一樣依 §6.1 順序：先 commit 需求檔、再修 code，然後以同一個 `IMPL_BASE` 重跑 `review-final.sh`；重跑之前必須先跑 §6.3 的完整性檢查，範圍用 `<IMPL_BASE>..HEAD`。
 - **spec amendment 被使用者否決** → 退回一般 code finding（§5.2），不留任何需求檔變更。
 - **同一輪同時有 amendment finding 與一般 code finding** → 先完成需求檔的修改與 commit（§6.1 步驟 2–3），再讓 implementer 在同一次 dispatch 中一併修完所有 code findings，維持既有的「一次修完所有 findings 再 re-review」節奏。
 - **amendment 之後 reviewer 仍報同一問題** → 依 §4 重新判定；若已不屬客觀缺陷四類，則當一般 code finding 處理，不得反覆修改需求檔追著 reviewer 跑。
@@ -186,7 +207,7 @@ git log --format='%H' <TASK_BASE>..HEAD -- docs/superpowers/
 - 新增一節「Requirement-Document Amendment」，涵蓋 §4–§6 的內容（觸發判定、權限、核准層級、嚴格順序、base 契約、完整性檢查與其 fail-closed 降級／硬性停止規則）。
 - 「Base SHA Tracking」一節補上 §6.2 的兩條硬規則（`TASK_BASE` 不得重捕捉、amendment commit 落在 `IMPL_BASE..HEAD` 內屬預期）。
 - 「Caller control-flow」第 5 點補上 §8.3 的 code-quality 判定。
-- 「Final adversarial reviewer」一節補上 §8.2 的正交性說明。
+- 「Final adversarial reviewer」一節補上 §8.2 的正交性說明，以及重跑 `review-final.sh` 前須執行 §6.3 完整性檢查（範圍 `<IMPL_BASE>..HEAD`）的要求。
 - 「Handling Implementer Status」一節補上 §7 的銜接說明。
 - 「Red Flags」的 **Never** 清單補上四條：
   - 在 amendment 之後重新捕捉 `TASK_BASE`

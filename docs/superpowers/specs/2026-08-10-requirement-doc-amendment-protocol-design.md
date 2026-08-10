@@ -41,6 +41,12 @@
 
 （本節記錄審查過程中，使用者裁決「不實作」的顧慮，格式為 Concern / Decision / Rationale。供本設計自身的下游對抗式驗收依 `subagent-driven-development` 的 carve-out 依此 canonical 標題定位並尊重。）
 
+### amendment 來源記錄的持久化（commit trailer / sidecar / manifest）
+
+- **Concern**：§6.3 的完整性檢查要求「範圍內每個觸及需求檔的 commit 都可歸屬到 controller 記錄的 amendment SHA」，但該記錄是 in-session 啟發式狀態、不持久化。上下文壓縮、換 agent 接手、或從既有 commit 重新進入任務時，記錄即失效，協定便無法機械化區分合法的 controller amendment 與 implementer／人為的需求檔變更；此時規定的行為是停下來詢問使用者，等於在最需要驗證的時刻把主要安全性質降級為人工證言。reviewer 建議改以持久且可稽核的形式保存來源，例如 commit trailer、plan 內的 ledger、或 wrapper 產生的 amendment manifest，並讓完整性檢查改讀該產物而非揮發性的 controller 記憶。
+- **Decision**：不實作。不引入 commit trailer、不引入 sidecar 記錄檔或 manifest、不引入 plan 內的 amendment ledger；維持 §6.3 的 in-session 記錄 + fail-closed 詢問使用者。
+- **Rationale**：(1) **失效模式是安全方向的**——記錄遺失時協定不是放行，而是停下來請使用者確認；最壞情況是多打斷使用者一次，不是靜默放過未授權的需求變更。(2) **人工確認是這個工作流本來就有的環節**——本 skill 全程有使用者在場（spec 的 amendment 本來就必須徵詢使用者，見 §5.2），在記錄遺失時多問一句與既有互動模式一致，不是新引入的負擔。(3) **持久化產物也擋不住它想擋的東西**——依 §6.3 的威脅模型，對手是「誤改需求檔的合作型 subagent」而非刻意規避者；trailer 之類的標記同樣可被誤加或漏加，換來的只是把「問使用者」變成「相信一行文字」，安全性提升有限而複雜度確定增加。**前提**：以「§6.3 的失效行為維持為 fail-closed 停止並詢問使用者、且 §5.2 的 spec amendment 使用者徵詢仍在」為裁決前提；若日後任一 fail-closed 行為被改成自動放行，此前提即改變，須依 stale-waiver 規則重新評估。
+
 ### 下游已完成 Task 的「明列 + 排除」重驗契約
 
 - **Concern**：§9 的修正 Task 機制要求 controller 辨識哪些已完成的後續 Task 依賴被修改的需求，其 fail-closed 退路卻是「涵蓋受該需求影響的部分」——reviewer 指出這是循環論證：若 controller 判不出依賴，也就判不出哪些部分受影響。由於本設計刻意不做 end-SHA 追蹤、不改 wrapper、不做 replay，沒有任何機械化證據能證明所有陳舊實作都被回頭處理過；漏判的依賴會帶著依舊需求建構的實作一路到 merge。reviewer 建議改為機械化的保守契約：修正 Task 必須逐一列舉「被改到的 Task 之後所有已完成 Task」，每一個要嘛附上驗收/修正標準納入範圍，要嘛記錄一筆使用者核准的排除與理由。

@@ -1,0 +1,180 @@
+# 需求檔修正協定：實作期間修改 spec/plan 的順序、權限與 reviewer carve-out
+
+- **日期**：2026-08-10
+- **狀態**：設計已核准，待 spec 審查
+- **影響檔案**：
+  - `skills/subagent-driven-development/SKILL.md`（主改動）
+  - `skills/subagent-driven-development/spec-reviewer-prompt.md`（carve-out）
+  - `skills/subagent-driven-development/final-code-reviewer-focus.md`（carve-out）
+  - `skills/subagent-driven-development/implementer-prompt.md`（權限限制）
+- **提交類型**：`feat:`（新增行為契約：改變 agent 執行此 skill 時的流程與權限）
+
+## 1. 問題
+
+`subagent-driven-development` 執行 plan 時，reviewer 提出的 finding 有時揭露的是**需求檔（spec / plan）本身有缺陷**，而非實作寫錯。此時必須同時修改需求檔與 code。目前的 SKILL.md 對這個情境完全沒有規範，導致兩個具體病理：
+
+**病理一：commit 順序錯誤。** 若先簽入修正 code、再簽入需求檔，git 歷史讀起來是「先違反需求、再改需求來事後追認」，也讓 reviewer 在下一輪看到的 plan 與 code 的因果關係顛倒。
+
+**病理二：需求檔變更落在 task diff 內被判為超出範圍。** `spec-compliance` reviewer 的唯一真相是 `git diff <TASK_BASE>..HEAD`（見 `spec-reviewer-prompt.md`），其職責包含抓出「Extra/unneeded work — 做了 Task 沒要求的事」。需求檔的修正 commit 必然落在這個 diff 區間內，於是被判為超出範圍的變更。本 repo 的 git 歷史留有此病理的實例：`81a3e3b docs(plan): revert out-of-scope grep-count edit to keep Task 3 diff to SKILL.md only`（為了讓 task diff 乾淨而把正確的 plan 修正 revert 掉），隨後 `71e58cf docs(plan): correct Task 3 verify-grep expected count to 3` 又補回來。
+
+關鍵推導：**單靠規範 commit 順序無法消除病理二**。需求檔的修正 commit 無論排在 code 之前或之後，都仍落在 `<TASK_BASE>..HEAD` 之內，reviewer 照樣看得到、照樣可能判為超出範圍。因此順序規範**必須**搭配 reviewer 端的 carve-out 才構成完整解法。
+
+而 carve-out 一旦開啟，reviewer 原本「抓出實作者偷改需求檔來遷就爛 code」的守門功能即失效。此守門功能必須由**權限限制 + 完整性檢查**補回，否則 carve-out 會成為「改需求遷就實作」的後門。
+
+## 2. 目標與非目標
+
+### 目標
+
+- 為「reviewer finding 需要回頭修改需求檔」定義一套明確、可機械依循的協定：何時可改、誰能改、以什麼順序 commit、base 如何處理。
+- 消除病理二：讓需求檔的合法修正不再被 reviewer 判為超出範圍的變更。
+- 在開啟 carve-out 的同時，用權限限制與完整性檢查守住「不得改需求遷就實作」的邊界。
+
+### 非目標
+
+- **不改 `writing-plans`。** 該 skill 的審查迴圈發生在 code 存在之前，不受此問題影響。
+- **不改 `brainstorming`。** 同上；且 spec 的原始審查迴圈已有自己的機制。
+- **不改任何 wrapper 腳本**（`review-impl.sh`、`review-final.sh`、`dispatch.sh`、`review-batch-lib.sh`）。本設計只改 SKILL.md 的流程契約與兩份 reviewer prompt / focus 的內容。
+- **不引入新的 CLI 旗標、新的 base 參數、或需求檔的機器可讀 metadata 欄位。**
+- 不試圖讓 `code-quality` reviewer 也接受 prompt 注入——見 §8.3，該 reviewer 是 codex 原生 review，機制上不支援。
+
+## Non-goals / Accepted limitations
+
+（本節記錄審查過程中，使用者裁決「不實作」的顧慮，格式為 Concern / Decision / Rationale。供本設計自身的下游對抗式驗收依 `subagent-driven-development` 的 carve-out 依此 canonical 標題定位並尊重。）
+
+目前無已裁決的 accepted limitation。
+
+## 3. 核心原則
+
+**需求檔是使用者意圖的載體，不是實作的附屬品。** 預設一律修改 code 以符合需求；只有在需求檔本身有**客觀缺陷**時才修改需求檔。判不出是否為客觀缺陷 → fail closed，當一般 code finding 處理。
+
+**修改需求檔是 controller 的職權，不是 implementer 的。** implementer 的視野僅限單一 task 與 controller 餵給它的 context，缺乏判斷「這是需求缺陷還是我理解錯了」所需的全局資訊。
+
+## 4. Amendment 觸發判定
+
+controller 解析 reviewer findings 時，**逐條**分類。預設所有 finding 都是 code finding（由 implementer 修 code）。只有當 finding 揭露需求檔本身有下列**客觀缺陷**之一，才升級為 amendment：
+
+1. **自相矛盾** —— 需求檔內部、或不同 Task 之間，存在互相衝突的指示。
+2. **事實性錯誤** —— 需求檔陳述了可被客觀否證的事實，例如 verify 步驟寫的預期值算錯、引用不存在的檔案路徑、引用不存在的函式或符號。
+3. **與既成事實衝突** —— 與已通過 review 的先前 Task 的產出牴觸。
+4. **依據的外部事實已變** —— 需求檔所依據的第三方 API 簽名、套件版本、檔案結構等已改變。
+
+**Fail closed**：若 controller 無法確信該 finding 屬於上述四類之一，一律**不**升級為 amendment，當一般 code finding 處理。「reviewer 說需求有問題」本身**不是**充分理由——reviewer 對實作只有局部視野，容易把「實作偏離」描述成「需求錯了」。
+
+## 5. 權限與核准層級
+
+### 5.1 權限
+
+- **只有 controller 能修改 `docs/superpowers/**`。**
+- **implementer subagent 一律禁止**建立或修改 `docs/superpowers/**` 之下的任何檔案。
+
+### 5.2 核准層級
+
+- **plan（`docs/superpowers/plans/**`）** → controller 直接修改並 commit，不打斷執行。這與本 skill 既有的 continuous-execution 原則一致：plan 是實作分解，其客觀缺陷屬執行細節。
+- **spec（`docs/superpowers/specs/**`）** → controller **必須先以 `AskUserQuestion` 徵詢使用者**。spec 是使用者在 brainstorming 階段核准過的需求，實作期間逕自修改等同繞過該核准 gate。
+  - 使用者同意 → 依 §6 程序修改。
+  - 使用者否決 → 該 finding **退回當一般 code finding** 處理（fail closed），由 implementer 改 code。
+
+## 6. 修正程序與 base 契約
+
+### 6.1 嚴格順序
+
+一旦 controller 判定某 finding 為 amendment，必須依下列順序執行。任一步驟顛倒即為流程違規：
+
+1. controller 判定為 amendment（若涉及 spec，先依 §5.2 徵詢使用者並取得同意）。
+2. controller 修改需求檔。
+3. **單獨 commit 需求檔變更** —— 該 commit 的 diff **只**含 `docs/superpowers/**`，不得夾帶任何實作檔。commit message 依專案慣例用 `docs(plan):` / `docs(spec):`。
+4. **才** dispatch implementer 修改 code。
+5. implementer commit code —— 該 commit 的 diff **不**含 `docs/superpowers/**`。
+6. 重跑 `review-impl.sh`，`--task-base` 沿用**原本的** `TASK_BASE`。
+
+若 spec 與 plan 同時需要修正，兩者可在同一個 commit，或連續兩個 commit；唯一硬性要求是**全部需求檔變更都必須在任何相關 code 變更之前完成並 commit**。
+
+### 6.2 Base 契約
+
+- **amendment 之後不得重新捕捉 `TASK_BASE`。** 若把 `TASK_BASE` 重設到需求檔 commit 之上，該 Task 的 diff 就只剩修正 code，原始實作落在 base 之下不可見，reviewer 會誤判「需求未實作」而報出大量假的 missing-requirement findings。
+- **`IMPL_BASE` 一如既往不重新捕捉。** amendment commit 落在 `<IMPL_BASE>..HEAD` 之內是預期行為，由 §8.2 的 final-gate carve-out 處理。
+- **amendment commit 受既有 HEAD 契約約束**：不得在任何 `review-*.sh` 執行期間 commit。需求檔的修正必須在下一次 wrapper 呼叫**之前**完成提交。
+
+### 6.3 carve-out 的完整性檢查
+
+carve-out 的安全性完全建立在「只有 controller 改需求檔」之上，因此該前提需要可執行的驗證，否則 carve-out 會靜默掩蓋 implementer 的違規修改。
+
+controller 在每次重跑 `review-impl.sh` 之前，執行一次檢查：
+
+```bash
+git log --format='%H' <TASK_BASE>..HEAD -- docs/superpowers/
+```
+
+輸出的每個 commit SHA 都必須是 controller 自己在 §6.1 步驟 3 建立的 amendment commit（controller 在其任務狀態中記錄這些 SHA）。若出現不在記錄中的 commit → implementer 違反 §5.1 權限限制：controller 必須**視為阻斷性問題**，還原該變更後再重跑 review，不得放行。
+
+此檢查刻意維持為單一 git 指令 + 一次比對，不引入 hook、不引入 commit trailer、不引入任何持久化狀態檔。
+
+## 7. implementer 端限制
+
+`implementer-prompt.md` 新增一段，明確告知 subagent：
+
+- 禁止建立或修改 `docs/superpowers/**` 之下的任何檔案（spec 與 plan 皆然）。
+- 若在實作過程中認為需求本身有缺陷：
+  - 仍能產出可行實作 → 回報 `DONE_WITH_CONCERNS`，並在 concerns 中具體說明疑似缺陷所在。
+  - 缺陷導致無法實作 → 回報 `BLOCKED`，說明卡在哪裡。
+- 由 controller 依 §4 判定是否升級為 amendment。
+
+這與既有的 `BLOCKED` / `DONE_WITH_CONCERNS` 處理流程銜接：SKILL.md 的「Handling Implementer Status」一節已規定 controller 收到這兩種狀態時要評估並決定後續，amendment 成為該評估的其中一條出路。
+
+## 8. reviewer carve-out 的三個落點
+
+三個 reviewer 的注入能力不同，carve-out 因此落在不同層級。
+
+### 8.1 `spec-compliance` → `spec-reviewer-prompt.md`
+
+該 reviewer 由 `dispatch.sh task --prompt` 啟動，prompt 檔完全受控。加入 carve-out：
+
+- 在「Extra/unneeded work」的檢查中，**排除** `docs/superpowers/specs/**` 與 `docs/superpowers/plans/**` 的變更。這些檔案的變更由 controller 負責，不屬於實作範圍問題，不得因此回報 `Status: Issues Found`。
+- 其餘行為完全不變：reviewer 仍以 **HEAD 上的 plan 檔內容**作為需求真相（既有行為），仍以 `git diff <TASK_BASE>..HEAD` 驗證實作。
+
+### 8.2 `final-adversarial` → `final-code-reviewer-focus.md`
+
+該 reviewer 由 `dispatch.sh adversarial --focus` 啟動，focus 檔完全受控。在 focus 內容末尾加入同一條 carve-out：`docs/superpowers/specs/**` 與 `docs/superpowers/plans/**` 的變更不列入實作範圍或 scope-drift 的評估。
+
+**與既有 spec-adjudicated rejection carve-out 的關係**：兩者**正交、互不覆蓋**，各自獨立判定。
+
+- 既有的處理「finding 的**內容**對應到使用者已接受的限制」。
+- 本設計新增的處理「finding 針對的**檔案**是需求檔本身的變更」。
+
+一條 finding 可能兩者皆不適用、適用其一、或兩者皆適用；controller 分別套用，不需要合併判定邏輯。
+
+### 8.3 `code-quality` → `SKILL.md` 的 caller control-flow
+
+該 reviewer 由 `dispatch.sh review --base` 啟動，是 codex 的原生 review，**機制上不接受 prompt 或 focus 注入**（`cmd_review` 只解析 `--base`）。carve-out 因此只能落在 caller 端：
+
+- SKILL.md 的「Caller control-flow」第 5 點補述：若 code-quality 的某個 finding **僅**針對需求檔變更本身（例如評論 plan 的措辭、格式、或該不該改），controller 判定為**非阻斷**，不觸發 re-review 迴圈。
+- 針對實作檔的 finding 一律照舊處理。
+
+## 9. 邊界與交互情況
+
+- **amendment 改到已通過 review 的先前 Task 的需求** → 該 Task 必須重新 dispatch implementer 並重跑 `review-impl.sh`，使用它**原本的** `TASK_BASE`（不是當前 Task 的）。理由與 §6.2 相同：原本的 base 才涵蓋該 Task 的完整實作。
+- **amendment 發生在 final gate 階段**（所有 Task 已通過、`review-final.sh` 回報 finding）→ 一樣依 §6.1 順序：先 commit 需求檔、再修 code，然後以同一個 `IMPL_BASE` 重跑 `review-final.sh`。
+- **spec amendment 被使用者否決** → 退回一般 code finding（§5.2），不留任何需求檔變更。
+- **同一輪同時有 amendment finding 與一般 code finding** → 先完成需求檔的修改與 commit（§6.1 步驟 2–3），再讓 implementer 在同一次 dispatch 中一併修完所有 code findings，維持既有的「一次修完所有 findings 再 re-review」節奏。
+- **amendment 之後 reviewer 仍報同一問題** → 依 §4 重新判定；若已不屬客觀缺陷四類，則當一般 code finding 處理，不得反覆修改需求檔追著 reviewer 跑。
+- **需求檔被 gitignore** → 本協定要求需求檔可被 commit。若需求檔在 .gitignore 中，此協定無法執行，controller 應停下來要求使用者解除忽略；**絕不使用 `git add -f`**。
+
+## 10. 對 SKILL.md 的具體改動範圍
+
+- 新增一節「Requirement-Document Amendment」，涵蓋 §4–§7 的內容（觸發判定、權限、核准層級、嚴格順序、base 契約、完整性檢查）。
+- 「Base SHA Tracking」一節補上 §6.2 的兩條硬規則（`TASK_BASE` 不得重捕捉、amendment commit 落在 `IMPL_BASE..HEAD` 內屬預期）。
+- 「Caller control-flow」第 5 點補上 §8.3 的 code-quality 判定。
+- 「Final adversarial reviewer」一節補上 §8.2 的正交性說明。
+- 「Handling Implementer Status」一節補上 §7 的銜接說明。
+- 「Red Flags」的 **Never** 清單補上三條：
+  - 在 amendment 之後重新捕捉 `TASK_BASE`
+  - 把需求檔變更與實作變更放進同一個 commit
+  - 讓 implementer subagent 修改 `docs/superpowers/**`
+
+## 11. 測試 / 驗收
+
+本設計改動的是 SKILL.md 與 reviewer prompt / focus（Markdown 指令，即插件的執行行為），非可由單元測試覆蓋的程式邏輯。本設計不改動任何 shell 腳本。驗收方式：
+
+- 執行 `bash scripts/review-batch-lib.test.sh`、`bash scripts/dispatch.test.sh`、`bash scripts/preflight.test.sh`，確認全數通過（作為未回歸的佐證）。
+- 以 grep 驗證四個目標檔案確實各自含有新增段落的關鍵標記。
+- 人工審閱四份改動，確認觸發判定、權限、順序、base 契約、三處 carve-out 之間無自相矛盾，且與既有的 spec-adjudicated rejection carve-out 正交無衝突。

@@ -41,6 +41,12 @@
 
 （本節記錄審查過程中，使用者裁決「不實作」的顧慮，格式為 Concern / Decision / Rationale。供本設計自身的下游對抗式驗收依 `subagent-driven-development` 的 carve-out 依此 canonical 標題定位並尊重。）
 
+### 把 §6.3 / §6.4 的檢查移入 wrapper 作為機械強制點
+
+- **Concern**：本設計的安全性質依賴 controller 在每一次 `review-impl.sh` / `review-final.sh` 呼叫前後執行 §6.3 的三部分完整性檢查與 §6.4 的前後對照，但非目標明列不改 wrapper 腳本，因此沒有任何強制點：若 caller 忘記或只做了一半，carve-out 仍然生效，未授權的需求檔變更會被藏起來，而下游 review 輸出「照設計看起來就是乾淨的」，失敗難以察覺。reviewer 建議把 HEAD 前後比對、需求檔 cleanliness、需求檔 commit 歸屬三項移入 review wrapper 或共用的強制函式；若堅持不改 wrapper，則不應預設啟用 reviewer carve-out。
+- **Decision**：不實作。不把任何檢查移入 `review-impl.sh` / `review-final.sh` / `review-batch-lib.sh`，也不為此新增 wrapper 參數；維持三道檢查為 SKILL.md 層級的 caller 紀律。
+- **Rationale**：(1) **與整個 plugin 的強制模型一致**——這個 plugin 的產品就是給 agent 的指令，每一條規則（包含既有的 base 捕捉紀律、invocation discipline、以及 SKILL.md 自承「the engine does not detect HEAD movement; this is a documented caller contract」的 HEAD 契約）都靠 agent 遵守；單獨為本協定引入機械強制點並不會改變其餘規則的強制模型，卻會製造兩套標準。(2) **主要的檢查在機制上搬不進去**——來源歸屬檢查需要 controller 手上的 in-session amendment SHA 清單，wrapper 取不到；即使把最淺的 cleanliness 檢查搬進去，三道裡也只強制得了一道，其餘兩道照樣靠自律，安全性提升有限。(3) **成本明確**——搬移需推翻「不改 wrapper」非目標、新增 CLI 旗標與對應的 shell 測試，且 controller 仍須自律地把正確的清單傳進去（強制點只是往後挪一層）。**前提**：以「本 plugin 維持以 SKILL.md 指令為強制模型、且 §6.3／§6.4 的檢查在 SKILL.md 中被明列為每次呼叫的必要步驟並列入 Red Flags」為裁決前提；若日後 plugin 引入通用的機械強制層，此前提即改變，須依 stale-waiver 規則重新評估。
+
 ### amendment 來源記錄的持久化（commit trailer / sidecar / manifest）
 
 - **Concern**：§6.3 的完整性檢查要求「範圍內每個觸及需求檔的 commit 都可歸屬到 controller 記錄的 amendment SHA」，但該記錄是 in-session 啟發式狀態、不持久化。上下文壓縮、換 agent 接手、或從既有 commit 重新進入任務時，記錄即失效，協定便無法機械化區分合法的 controller amendment 與 implementer／人為的需求檔變更；此時規定的行為是停下來詢問使用者，等於在最需要驗證的時刻把主要安全性質降級為人工證言。reviewer 建議改以持久且可稽核的形式保存來源，例如 commit trailer、plan 內的 ledger、或 wrapper 產生的 amendment manifest，並讓完整性檢查改讀該產物而非揮發性的 controller 記憶。
@@ -75,6 +81,8 @@ controller 解析 reviewer findings 時，**逐條**分類。預設所有 findin
 4. **依據的外部事實已變** —— 需求檔所依據的第三方 API 簽名、套件版本、檔案結構等已改變。
 
 **Fail closed**：若 controller 無法確信該 finding 屬於上述四類之一，一律**不**升級為 amendment，當一般 code finding 處理。「reviewer 說需求有問題」本身**不是**充分理由——reviewer 對實作只有局部視野，容易把「實作偏離」描述成「需求錯了」。
+
+**絕對禁止：放寬型 amendment。** 上述四類都是「需求檔說錯了」，不含「需求檔要求太多」。因此**不得**以 amendment 之名移除或弱化驗收標準、縮小 Task 範圍、或降低預期行為，來讓既有 code 通過 gate——即使 controller 主觀認為原需求過當。這條與 §3 核心原則同義，但必須明文，因為 plan 的 amendment 不需使用者核准（§5.2）、reviewer 又以 HEAD 上的 plan 為需求真相，三者疊加會形成「悄悄砍需求讓 code 過關」的路徑。判定準則：**若這次改動會讓「原本不合格的既有實作」變成合格，它就是放寬型 amendment**，一律禁止。真心認為需求過當時，那是 spec 層級的決定 → 依 §5.2 徵詢使用者，不得由 controller 自行在 plan 上執行。
 
 ## 5. 權限與核准層級
 
@@ -208,11 +216,12 @@ wrapper 回傳後，重跑同樣兩道指令並比對。**兩者都必須與呼�
 該 reviewer 由 `dispatch.sh task --prompt` 啟動，prompt 檔完全受控。加入 carve-out：
 
 - 在「Extra/unneeded work」的檢查中，**排除** `docs/superpowers/specs/**` 與 `docs/superpowers/plans/**` 的變更。這些檔案的變更由 controller 負責，不屬於實作範圍問題，不得因此回報 `Status: Issues Found`。
+- **carve-out 只免除「範圍」判定，不讓需求檔的變更變成隱形**（見下方 §8.4）：若 diff 中的需求檔變更**移除或弱化了驗收標準、縮小 Task 範圍、或降低預期行為**，reviewer **必須**回報 `Status: Issues Found`，並明確指出被弱化的是哪一條標準。
 - 其餘行為完全不變：reviewer 仍以 **HEAD 上的 plan 檔內容**作為需求真相（既有行為），仍以 `git diff <TASK_BASE>..HEAD` 驗證實作。
 
 ### 8.2 `final-adversarial` → `final-code-reviewer-focus.md`
 
-該 reviewer 由 `dispatch.sh adversarial --focus` 啟動，focus 檔完全受控。在 focus 內容末尾加入同一條 carve-out：`docs/superpowers/specs/**` 與 `docs/superpowers/plans/**` 的變更不列入實作範圍或 scope-drift 的評估。
+該 reviewer 由 `dispatch.sh adversarial --focus` 啟動，focus 檔完全受控。在 focus 內容末尾加入同一條 carve-out：`docs/superpowers/specs/**` 與 `docs/superpowers/plans/**` 的變更不列入實作範圍或 scope-drift 的評估——但同樣受 §8.4 的反弱化例外約束：若需求檔的變更弱化了驗收標準或縮小了範圍，仍必須以 `Verdict: needs-attention` 回報。
 
 **與既有 spec-adjudicated rejection carve-out 的關係**：兩者**正交、互不覆蓋**，各自獨立判定。
 
@@ -226,7 +235,16 @@ wrapper 回傳後，重跑同樣兩道指令並比對。**兩者都必須與呼�
 該 reviewer 由 `dispatch.sh review --base` 啟動，是 codex 的原生 review，**機制上不接受 prompt 或 focus 注入**（`cmd_review` 只解析 `--base`）。carve-out 因此只能落在 caller 端：
 
 - SKILL.md 的「Caller control-flow」第 5 點補述：若 code-quality 的某個 finding **僅**針對需求檔變更本身（例如評論 plan 的措辭、格式、或該不該改），controller 判定為**非阻斷**，不觸發 re-review 迴圈。
+- **例外**：若該 finding 指出需求檔的變更弱化了驗收標準或縮小了範圍（§8.4），一律**阻斷**。
 - 針對實作檔的 finding 一律照舊處理。
+
+### 8.4 carve-out 的反弱化例外（三個落點共用）
+
+carve-out 的正當理由是「需求檔的變更不是**實作範圍**問題」，**不是**「需求檔的變更不必被看」。若無條件排除，會與 §5.2（plan 的 amendment 不需使用者核准）疊加出一條無聲的需求流失路徑：controller 誤把「實作沒做到」分類成「需求寫太多」，改掉 plan、commit，下一輪 spec-compliance 便對著被弱化的 HEAD plan 驗證，而 plan 的 diff 又被 carve-out 排除，沒有任何 reviewer 會出聲。
+
+因此三個落點的 carve-out 一律附帶同一條例外：**需求檔的變更若移除或弱化驗收標準、縮小 Task 範圍、或降低預期行為，reviewer 必須回報，且該 finding 為阻斷性。** 判定準則與 §4 的「放寬型 amendment」一致：若該變更會讓原本不合格的既有實作變成合格，就是弱化。
+
+此例外不需要 reviewer 讀 spec，也不需要新的 wrapper 參數：判定完全依 `git diff <BASE>..HEAD` 中需求檔的變更方向（刪除／放寬 vs 修正事實），reviewer 手上的資訊已足夠。
 
 ## 9. 邊界與交互情況
 
@@ -262,6 +280,7 @@ wrapper 回傳後，重跑同樣兩道指令並比對。**兩者都必須與呼�
   - 把需求檔變更與實作變更放進同一個 commit
   - 讓 implementer subagent 修改 `docs/superpowers/**`
   - 在 amendment SHA 記錄遺失時，靠推測歸屬放行 `docs/superpowers/**` 的 commit
+  - 以 amendment 之名移除或弱化驗收標準／縮小 Task 範圍，來讓既有 code 通過 gate（§4 放寬型 amendment）
 
 ## 11. 測試 / 驗收
 

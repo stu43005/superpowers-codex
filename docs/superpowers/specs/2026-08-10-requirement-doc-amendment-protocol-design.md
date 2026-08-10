@@ -158,15 +158,26 @@ carve-out 的安全性完全建立在「只有 controller 改需求檔」之上�
 
 此檢查刻意維持為三道 git 指令 + 路徑比對 + fail-closed 停止，不引入 hook、不引入 commit trailer、不引入 sidecar 記錄檔、不引入任何持久化狀態。
 
-### 6.4 findings 與 HEAD 的綁定（由既有機制覆蓋）
+### 6.4 findings 的新鮮度檢查
 
-本協定**不需要**為 reviewer 結果引入 HEAD SHA / tree SHA 綁定或新鮮度檢查，因為既有機制已完整覆蓋：
+controller 端的既有紀律已排除**自己**造成的不一致：`review-*.sh` 是單一前景阻塞呼叫（SKILL.md 的 invocation discipline 明令不得 `run_in_background`），controller 在其回傳前不做任何事，且既有 HEAD 契約禁止在 wrapper 執行期間推進 HEAD。
 
-- 每次 `review-*.sh` 都是**單一前景阻塞呼叫**（SKILL.md 的 invocation discipline 明令不得 `run_in_background`），controller 在其回傳前不做任何事。
-- 既有 HEAD 契約禁止在 wrapper 執行期間推進 HEAD，同一次呼叫內平行跑的多個 reviewer 因此看到同一個 HEAD。
-- controller 是**唯一**會推進 HEAD 的行動者，且嚴格序列執行：解析 findings → 判定 amendment → commit → 重跑 wrapper，中間不存在其他並行寫入者。
+但這些只約束 controller 自己。SKILL.md 自承 **「the engine does not detect HEAD movement; this is a documented caller contract」**——契約沒有任何機械化驗證。若使用者、另一個 agent、hook，或一個逾時轉背景後才回傳的 wrapper 呼叫，在 review 執行期間動到 HEAD 或需求檔工作區，controller 會把 findings 套用到一棵 reviewer 從未檢視過的樹上，或把「通過」記在錯誤的 diff 上。§6.3 第 0 部分只在 review **之前**檢查，攔不到執行期間的變動。
 
-因此 findings 必然對應到產生它們的那個 HEAD 與那份需求檔內容。本協定唯一新增的約束（§6.2 第三點）是把 amendment commit 也納入既有 HEAD 契約，不改變上述保證。
+因此本協定為每一次 `review-*.sh` 呼叫加一道**前後對照**（適用本 skill 的所有 review wrapper 呼叫，不限 amendment 情境）：
+
+```bash
+# wrapper 呼叫之前
+git rev-parse HEAD
+git status --porcelain -- docs/superpowers/
+```
+
+wrapper 回傳後，重跑同樣兩道指令並比對。**兩者都必須與呼叫前完全一致**：
+
+- `HEAD` 有移動、或需求檔工作區狀態有變 → **fail closed**：本次 review 結果作廢，**不得**依其 findings 做任何修復或判定 amendment；先釐清變動來源（若是不明來源，依 §6.3 的硬性停止規則回報使用者），確認狀態穩定後**重跑整個 wrapper 呼叫**。
+- 完全一致 → findings 確定對應到產生它們的那個 HEAD 與那份需求檔內容，照常處理。
+
+此檢查是兩道唯讀 git 指令的前後比對，不引入鎖、不引入持久化狀態，也不改動任何 wrapper；它把 SKILL.md 既有但無人驗證的 caller HEAD 契約變成可執行的檢查。
 
 ## 7. implementer 端限制
 
@@ -234,6 +245,7 @@ carve-out 的安全性完全建立在「只有 controller 改需求檔」之上�
 - 新增一節「Requirement-Document Amendment」，涵蓋 §4–§6 的內容（觸發判定、權限、核准層級、嚴格順序、base 契約、完整性檢查與其 fail-closed 降級／硬性停止規則）。
 - 「Base SHA Tracking」一節補上 §6.2 的兩條硬規則（進行中 Task 的 `TASK_BASE` 不得重捕捉、amendment commit 落在 `IMPL_BASE..HEAD` 內屬預期），以及 §9 的修正 Task 例外（新增的修正 Task 依一般規則捕捉自己的全新 `TASK_BASE`）。
 - 「Caller control-flow」第 5 點補上 §8.3 的 code-quality 判定。
+- 「Reviewer Dispatch」的 invocation discipline 補上 §6.4 的前後對照新鮮度檢查（適用每一次 `review-*.sh` 呼叫）。
 - 「Final adversarial reviewer」一節補上 §8.2 的正交性說明，以及重跑 `review-final.sh` 前須執行 §6.3 完整性檢查（範圍 `<IMPL_BASE>..HEAD`）的要求。
 - 「Handling Implementer Status」一節補上 §7 的銜接說明。
 - 「Red Flags」的 **Never** 清單補上四條：

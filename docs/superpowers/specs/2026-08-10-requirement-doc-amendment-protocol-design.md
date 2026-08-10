@@ -41,7 +41,11 @@
 
 （本節記錄審查過程中，使用者裁決「不實作」的顧慮，格式為 Concern / Decision / Rationale。供本設計自身的下游對抗式驗收依 `subagent-driven-development` 的 carve-out 依此 canonical 標題定位並尊重。）
 
-目前無已裁決的 accepted limitation。
+### amendment 已 commit、實作未完成的部分失敗回復機制
+
+- **Concern**：§6.1 要求需求檔的 amendment 先於 code 修正 commit，因此 amendment 會在「對應實作是否做得出來」尚未確定前就成為 HEAD 上的持久狀態。若隨後 implementer 回報 `BLOCKED`、未能 commit、產出無法通過 review 的 code，或 session 中斷，repo 會停留在「需求已更新但實作未跟上」的不一致中間態；而本協定又禁止自動 revert / reset，且 amendment SHA 記錄不持久化。reviewer 建議引入回復契約：把 amendment 先留在私有分支直到 code 通過 review、維護 pending-amendment 狀態標記阻擋收尾、並明定使用者核准的 rollback 或後續任務建立流程。
+- **Decision**：不實作。不引入私有分支、不引入 pending-amendment 狀態標記、不引入 finalization blocker，也不定義 rollback 演算法。
+- **Rationale**：(1) **已由現有機制覆蓋**——未被實作的 amendment 會被 `spec-compliance` 依 HEAD 上的需求判為 missing requirement，並在 `review-final.sh` 的 merge gate 被擋下，不可能靜默通過收尾；implementer 回報 `BLOCKED` 時，SKILL.md 既有的「Handling Implementer Status」已規定 controller 必須評估並在必要時升級給人類。(2) **不是新風險**——「plan 已寫、對應 code 尚未實作」本來就是本 skill 在每兩個 task 之間的正常中間態，也是任何被中斷的 plan 執行必然停留的狀態；amendment 只是讓這個既有狀態多一個來源，並未創造新的失敗模式。(3) **不成比例**——reviewer 建議的機制會把分支切換與持久化狀態引入一個刻意不持久化狀態的協定，並與現有 `TASK_BASE` / `IMPL_BASE` base 契約產生新的交互複雜度，成本高於它防的情境。**前提**：以「per-task 與 final 兩道 review gate 皆維持有效、且 `Handling Implementer Status` 的 escalation 路徑仍在」為裁決前提；若日後任一 gate 被移除或弱化，此前提即改變，須依 stale-waiver 規則重新評估。
 
 ## 3. 核心原則
 

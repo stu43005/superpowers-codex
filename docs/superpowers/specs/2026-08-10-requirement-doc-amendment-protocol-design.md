@@ -198,6 +198,11 @@ carve-out 的安全性完全建立在「只有 controller 改需求檔」之上�
 ## 9. 邊界與交互情況
 
 - **amendment 改到已通過 review 的先前 Task 的需求** → 該 Task 必須重新 dispatch implementer 並重跑 `review-impl.sh`，使用它**原本的** `TASK_BASE`（不是當前 Task 的）。理由與 §6.2 相同：原本的 base 才涵蓋該 Task 的完整實作。
+- **下游重驗（amendment 使已完成 Task 的需求改變時）** → 只重跑被直接改到的那個 Task **不夠**：排在它之後、已通過 review 的 Task 可能是依著舊需求建構的，其 per-task spec-compliance gate 從未對照過修改後的需求。因此：
+  - controller 必須辨識出哪些**已完成**的後續 Task 的實作依賴被修改的那條需求（例如沿用了被改掉的介面、常數、檔案結構或行為約定）。
+  - 被直接改到的 Task **與**每一個有依賴關係的後續已完成 Task，都必須重新 dispatch implementer 並重跑 `review-impl.sh`，**各自使用其原本的 `TASK_BASE`**。
+  - **Fail closed**：若 controller 無法確信哪些後續 Task 有依賴，一律重跑「被改到的 Task 之後、所有已完成 Task」的 per-task review，不得以「大概沒影響」放行。理由與 §6.3 同向：漏驗會讓不一致的實作一路帶到 final gate，而 final gate 是跨 task 整合視角、不保證覆蓋 task 本地的需求回歸。
+  - 這條規則完全複用既有的 per-task review 機制，不引入新的依賴圖、標記或追蹤狀態；依賴判定由 controller 依 plan 內容當場為之。
 - **amendment 發生在 final gate 階段**（所有 Task 已通過、`review-final.sh` 回報 finding）→ 一樣依 §6.1 順序：先 commit 需求檔、再修 code，然後以同一個 `IMPL_BASE` 重跑 `review-final.sh`；重跑之前必須先跑 §6.3 的完整性檢查，範圍用 `<IMPL_BASE>..HEAD`。
 - **spec amendment 被使用者否決** → 退回一般 code finding（§5.2），不留任何需求檔變更。
 - **同一輪同時有 amendment finding 與一般 code finding** → 先完成需求檔的修改與 commit（§6.1 步驟 2–3），再讓 implementer 在同一次 dispatch 中一併修完所有 code findings，維持既有的「一次修完所有 findings 再 re-review」節奏。

@@ -197,12 +197,16 @@ carve-out 的安全性完全建立在「只有 controller 改需求檔」之上�
 
 ## 9. 邊界與交互情況
 
-- **amendment 改到已通過 review 的先前 Task 的需求** → 該 Task 必須重新 dispatch implementer 並重跑 `review-impl.sh`，使用它**原本的** `TASK_BASE`（不是當前 Task 的）。理由與 §6.2 相同：原本的 base 才涵蓋該 Task 的完整實作。
-- **下游重驗（amendment 使已完成 Task 的需求改變時）** → 只重跑被直接改到的那個 Task **不夠**：排在它之後、已通過 review 的 Task 可能是依著舊需求建構的，其 per-task spec-compliance gate 從未對照過修改後的需求。因此：
+- **amendment 改到已通過 review 的先前 Task 的需求** → **不得**用該 Task 原本的 `TASK_BASE` 重跑 `review-impl.sh`。`review-impl.sh` 只接受 `--task-base`，其 spec-compliance reviewer 固定 diff 到 `HEAD`；一旦後續 Task 已經 commit，`git diff <原TASK_BASE>..HEAD` 就同時涵蓋所有後續 Task 的變更，reviewer 會把後續 Task 的產出當成該 Task 的超出範圍變更，也會讓真正的回歸埋沒在無關的 diff 雜訊裡。改用下述「修正 Task」機制。
+- **修正 Task（已完成 Task 需要因 amendment 而回頭改動時的唯一機制）**：
+  - controller 在同一次 amendment 中，於 plan **末端新增一個 Task**，其內容完整描述這次修正要達成的目標狀態（依 `writing-plans` 的 Task 結構撰寫，不使用「參照 Task N」這類佔位敘述）。此新增 Task 與需求檔的其他修改一同進入 §6.1 步驟 3 的同一個 docs-only commit。
+  - 該修正 Task 之後**照一般 Task 流程執行**：捕捉一個**全新的 `TASK_BASE`**（`git rev-parse HEAD`）→ dispatch implementer → commit → 以該新 base 跑 `review-impl.sh`。此時 diff 恰好只含修正工作，而修正 Task 的需求也恰好描述這些工作，base 契約成立。
+  - 與 §6.2 不衝突：§6.2 禁止的是「為**進行中**的 Task 重新捕捉 `TASK_BASE`」；修正 Task 是 plan 上一個**新的** Task，依既有規則本來就該捕捉屬於自己的 base。
+- **下游重驗（amendment 使已完成 Task 的需求改變時）** → 只處理被直接改到的那個 Task **不夠**：排在它之後、已通過 review 的 Task 可能是依著舊需求建構的。因此：
   - controller 必須辨識出哪些**已完成**的後續 Task 的實作依賴被修改的那條需求（例如沿用了被改掉的介面、常數、檔案結構或行為約定）。
-  - 被直接改到的 Task **與**每一個有依賴關係的後續已完成 Task，都必須重新 dispatch implementer 並重跑 `review-impl.sh`，**各自使用其原本的 `TASK_BASE`**。
-  - **Fail closed**：若 controller 無法確信哪些後續 Task 有依賴，一律重跑「被改到的 Task 之後、所有已完成 Task」的 per-task review，不得以「大概沒影響」放行。理由與 §6.3 同向：漏驗會讓不一致的實作一路帶到 final gate，而 final gate 是跨 task 整合視角、不保證覆蓋 task 本地的需求回歸。
-  - 這條規則完全複用既有的 per-task review 機制，不引入新的依賴圖、標記或追蹤狀態；依賴判定由 controller 依 plan 內容當場為之。
+  - 被直接改到的 Task **與**每一個有依賴關係的後續已完成 Task，其修正工作全部納入修正 Task 的範圍（可合併為一個修正 Task，或依關注點拆成數個連續的修正 Task，各自捕捉自己的 base）。
+  - **Fail closed**：若 controller 無法確信哪些後續 Task 有依賴，修正 Task 的範圍必須涵蓋「被改到的 Task 之後、所有已完成 Task」中受該需求影響的部分，不得以「大概沒影響」略過。理由與 §6.3 同向：漏驗會讓不一致的實作一路帶到 final gate，而 final gate 是跨 task 整合視角、不保證覆蓋 task 本地的需求回歸。
+  - 這條規則完全複用既有的 per-task review 機制與 base 契約，不引入 end SHA 記錄、不改 wrapper、不新增 CLI 旗標、不使用隔離分支或 worktree replay；依賴判定由 controller 依 plan 內容當場為之。
 - **amendment 發生在 final gate 階段**（所有 Task 已通過、`review-final.sh` 回報 finding）→ 一樣依 §6.1 順序：先 commit 需求檔、再修 code，然後以同一個 `IMPL_BASE` 重跑 `review-final.sh`；重跑之前必須先跑 §6.3 的完整性檢查，範圍用 `<IMPL_BASE>..HEAD`。
 - **spec amendment 被使用者否決** → 退回一般 code finding（§5.2），不留任何需求檔變更。
 - **同一輪同時有 amendment finding 與一般 code finding** → 先完成需求檔的修改與 commit（§6.1 步驟 2–3），再讓 implementer 在同一次 dispatch 中一併修完所有 code findings，維持既有的「一次修完所有 findings 再 re-review」節奏。
@@ -214,7 +218,7 @@ carve-out 的安全性完全建立在「只有 controller 改需求檔」之上�
 ## 10. 對 SKILL.md 的具體改動範圍
 
 - 新增一節「Requirement-Document Amendment」，涵蓋 §4–§6 的內容（觸發判定、權限、核准層級、嚴格順序、base 契約、完整性檢查與其 fail-closed 降級／硬性停止規則）。
-- 「Base SHA Tracking」一節補上 §6.2 的兩條硬規則（`TASK_BASE` 不得重捕捉、amendment commit 落在 `IMPL_BASE..HEAD` 內屬預期）。
+- 「Base SHA Tracking」一節補上 §6.2 的兩條硬規則（進行中 Task 的 `TASK_BASE` 不得重捕捉、amendment commit 落在 `IMPL_BASE..HEAD` 內屬預期），以及 §9 的修正 Task 例外（新增的修正 Task 依一般規則捕捉自己的全新 `TASK_BASE`）。
 - 「Caller control-flow」第 5 點補上 §8.3 的 code-quality 判定。
 - 「Final adversarial reviewer」一節補上 §8.2 的正交性說明，以及重跑 `review-final.sh` 前須執行 §6.3 完整性檢查（範圍 `<IMPL_BASE>..HEAD`）的要求。
 - 「Handling Implementer Status」一節補上 §7 的銜接說明。

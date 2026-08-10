@@ -1,7 +1,7 @@
 # 需求檔修正協定：實作期間修改 spec/plan 的順序、權限與 reviewer carve-out
 
 - **日期**：2026-08-10
-- **狀態**：設計已核准，待 spec 審查
+- **狀態**：spec 雙審查迴圈已通過（structural `OKAY`；design-soundness 剩餘 findings 全屬已裁決的 accepted limitations），待使用者確認
 - **影響檔案**：
   - `skills/subagent-driven-development/SKILL.md`（主改動）
   - `skills/subagent-driven-development/spec-reviewer-prompt.md`（carve-out）
@@ -33,7 +33,7 @@
 
 - **不改 `writing-plans`。** 該 skill 的審查迴圈發生在 code 存在之前，不受此問題影響。
 - **不改 `brainstorming`。** 同上；且 spec 的原始審查迴圈已有自己的機制。
-- **不改任何 wrapper 腳本**（`review-impl.sh`、`review-final.sh`、`dispatch.sh`、`review-batch-lib.sh`）。本設計只改 SKILL.md 的流程契約與兩份 reviewer prompt / focus 的內容。
+- **不改任何 wrapper 腳本**（`review-impl.sh`、`review-final.sh`、`dispatch.sh`、`review-batch-lib.sh`）。本設計只改 SKILL.md 的流程契約、兩份 reviewer prompt / focus（`spec-reviewer-prompt.md`、`final-code-reviewer-focus.md`），以及 implementer prompt（`implementer-prompt.md`）的內容。
 - **不引入新的 CLI 旗標、新的 base 參數、或需求檔的機器可讀 metadata 欄位。**
 - 不試圖讓 `code-quality` reviewer 也接受 prompt 注入——見 §8.3，該 reviewer 是 codex 原生 review，機制上不支援。
 

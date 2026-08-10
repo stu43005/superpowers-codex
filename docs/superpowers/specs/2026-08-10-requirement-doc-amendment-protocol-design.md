@@ -298,7 +298,8 @@ carve-out 的正當理由是「需求檔的變更不是**實作範圍**問題」
 - 「Reviewer Dispatch」的 invocation discipline 補上兩道**無條件**的呼叫前／後檢查，適用**每一次** `review-impl.sh` 與 `review-final.sh` 呼叫（初次與重跑、有無 amendment 皆然）：§6.3 的完整性檢查（三部分）與 §6.4 的前後對照新鮮度檢查。
 - 「Final adversarial reviewer」一節補上 §8.2 的正交性說明，並載明上述無條件檢查同樣適用於每一次 `review-final.sh` 呼叫，範圍用 `<IMPL_BASE>..HEAD`。
 - 「Handling Implementer Status」一節補上 §7 的銜接說明。
-- 「Red Flags」的 **Never** 清單補上七條：
+- 「Red Flags」的 **Never** 清單補上八條：
+  - 在未完成 §6.3 三部分完整性檢查與 §6.4 呼叫前取樣的情況下呼叫 `review-impl.sh` / `review-final.sh`，或在 wrapper 回傳後略過 §6.4 的呼叫後比對
   - 在 amendment 之後重新捕捉 `TASK_BASE`
   - 把需求檔變更與實作變更放進同一個 commit
   - 讓 implementer subagent 修改 `docs/superpowers/**`

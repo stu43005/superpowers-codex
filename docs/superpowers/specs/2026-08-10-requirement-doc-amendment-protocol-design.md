@@ -82,7 +82,13 @@ controller 解析 reviewer findings 時，**逐條**分類。預設所有 findin
 
 **Fail closed**：若 controller 無法確信該 finding 屬於上述四類之一，一律**不**升級為 amendment，當一般 code finding 處理。「reviewer 說需求有問題」本身**不是**充分理由——reviewer 對實作只有局部視野，容易把「實作偏離」描述成「需求錯了」。
 
-**絕對禁止：放寬型 amendment。** 上述四類都是「需求檔說錯了」，不含「需求檔要求太多」。因此**不得**以 amendment 之名移除或弱化驗收標準、縮小 Task 範圍、或降低預期行為，來讓既有 code 通過 gate——即使 controller 主觀認為原需求過當。這條與 §3 核心原則同義，但必須明文，因為 plan 的 amendment 不需使用者核准（§5.2）、reviewer 又以 HEAD 上的 plan 為需求真相，三者疊加會形成「悄悄砍需求讓 code 過關」的路徑。判定準則：**若這次改動會讓「原本不合格的既有實作」變成合格，它就是放寬型 amendment**，一律禁止。真心認為需求過當時，那是 spec 層級的決定 → 依 §5.2 徵詢使用者，不得由 controller 自行在 plan 上執行。
+**絕對禁止：放寬型 amendment。** 上述四類都是「需求檔說錯了」，不含「需求檔要求太多」。因此**不得**以 amendment 之名移除或弱化驗收標準、縮小 Task 範圍、或降低預期行為，來讓既有 code 通過 gate——即使 controller 主觀認為原需求過當。這條與 §3 核心原則同義，但必須明文，因為 plan 的**純修正型** amendment 不需使用者核准（§5.2）、reviewer 又以 HEAD 上的 plan 為需求真相，兩者疊加會形成「悄悄砍需求讓 code 過關」的路徑。判定準則：**若這次改動會讓「原本不合格的既有實作」變成合格，它就是放寬型 amendment**，一律禁止。
+
+放寬型 amendment 與 §5.2 的「刪除或收窄型」是兩個不同層次，不可混淆：
+
+- **放寬型**是**動機**上的禁止——為了讓既有 code 過關而動需求，任何情況下都不允許，徵詢使用者也不能使其正當化（它不屬於 §4 的四類客觀缺陷，根本不該進入 amendment 流程）。
+- **刪除或收窄型**是**形式**上的分類——變更的形狀是刪掉或收窄了驗收文字。它可能出於正當理由（例如需求引用了已不存在的檔案，正確處置就是刪掉該步驟），因此不是一律禁止，而是**必須先徵詢使用者**（§5.2）。
+- 兩者的關係：所有放寬型在形式上都會落入刪除／收窄型，因此都會被 §5.2 攔下來徵詢；但通過徵詢**不代表**放寬型變得合法——若 controller 察覺自己的動機是「讓既有 code 過關」，應直接停在 §4，不得包裝成刪除／收窄型送去徵詢。
 
 ## 5. 權限與核准層級
 
@@ -118,7 +124,7 @@ controller 解析 reviewer findings 時，**逐條**分類。預設所有 findin
 
 一旦 controller 判定某 finding 為 amendment，必須依下列順序執行。任一步驟顛倒即為流程違規：
 
-1. controller 判定為 amendment（若涉及 spec，先依 §5.2 徵詢使用者並取得同意）。
+1. controller 判定為 amendment，並依 §5.2 決定核准層級：**涉及 spec**、或**對 plan 做刪除／收窄型變更**（含分不清類別而 fail closed 的情形）→ 必須先依 §5.2、§5.3 呈現確切變更內容徵詢使用者並取得同意；僅對 plan 做純修正型變更 → 免徵詢，直接進入步驟 2。
 2. controller 修改需求檔。
 3. **單獨 commit 需求檔變更** —— 該 commit 的 diff **只**含 `docs/superpowers/**`，不得夾帶任何實作檔，也不得夾帶未經核准或不屬於本次 amendment 的其他需求變更（§5.3）。commit message 依專案慣例用 `docs(plan):` / `docs(spec):`。
 4. **才** dispatch implementer 修改 code。
@@ -254,11 +260,13 @@ wrapper 回傳後，重跑同樣兩道指令並比對。**兩者都必須與呼�
 
 ### 8.4 carve-out 的反弱化例外（三個落點共用）
 
-carve-out 的正當理由是「需求檔的變更不是**實作範圍**問題」，**不是**「需求檔的變更不必被看」。若無條件排除，會與 §5.2（plan 的 amendment 不需使用者核准）疊加出一條無聲的需求流失路徑：controller 誤把「實作沒做到」分類成「需求寫太多」，改掉 plan、commit，下一輪 spec-compliance 便對著被弱化的 HEAD plan 驗證，而 plan 的 diff 又被 carve-out 排除，沒有任何 reviewer 會出聲。
+carve-out 的正當理由是「需求檔的變更不是**實作範圍**問題」，**不是**「需求檔的變更不必被看」。若無條件排除，會與 §5.2 的免徵詢路徑（plan 的**純修正型** amendment 由 controller 直接執行）疊加出一條無聲的需求流失路徑：controller 誤把「實作沒做到」分類成「需求寫錯了」的純修正型，改掉 plan、commit，下一輪 spec-compliance 便對著被弱化的 HEAD plan 驗證，而 plan 的 diff 又被 carve-out 排除，沒有任何 reviewer 會出聲。
 
 因此三個落點的 carve-out 一律附帶同一條例外：**需求檔的變更若移除或弱化驗收標準、縮小 Task 範圍、或降低預期行為，reviewer 必須回報，且該 finding 為阻斷性。** 判定準則與 §4 的「放寬型 amendment」一致：若該變更會讓原本不合格的既有實作變成合格，就是弱化。
 
 **此例外是 best-effort backstop，不是主要控制。** reviewer 手上只有 `git diff <BASE>..HEAD` 與 HEAD 上的 plan，判斷「刪掉一個步驟」到底是訂正事實還是弱化需求，往往取決於原始意圖與當前實作狀態，**無法可靠判定**。因此本設計不讓這條例外承重：真正把關的是 §5.2 —— 任何**刪除或收窄**驗收文字的 plan amendment 都必須先徵詢使用者，分不清就 fail closed 當成刪除／收窄型。reviewer 端的例外只負責在 controller 誤判時多攔一次；它漏判不會使協定失守，因為那類變更本來就不該在未經使用者核准下存在。
+
+**reviewer 手上已有比對基線，不需額外產物**：amendment commit 必然落在 `<BASE>..HEAD` 之內（§6.2），因此 `git diff <BASE>..HEAD` 中該需求檔的 hunk **同時包含修改前（`-` 側）與修改後（`+` 側）的原文**。reviewer 要判斷「這個變更是刪除／收窄還是訂正事實」，所需的前後對照就在 diff 裡，不需要 wrapper 傳入基線、也不需要 amendment ledger 或 manifest。reviewer 唯一無從得知的是**核准狀態與意圖**——而那正是本例外被降級為 backstop 的原因：核准由 §5.2 在 commit 之前把關，reviewer 只做形狀上的複查。
 
 此例外不需要 reviewer 讀 spec，也不需要新的 wrapper 參數或 amendment metadata。
 

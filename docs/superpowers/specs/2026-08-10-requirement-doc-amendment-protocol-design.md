@@ -93,7 +93,11 @@ controller 解析 reviewer findings 時，**逐條**分類。預設所有 findin
 
 ### 5.2 核准層級
 
-- **plan（`docs/superpowers/plans/**`）** → controller 直接修改並 commit，不打斷執行。這與本 skill 既有的 continuous-execution 原則一致：plan 是實作分解，其客觀缺陷屬執行細節。
+- **plan（`docs/superpowers/plans/**`）——純修正型** → controller 直接修改並 commit，不打斷執行。這與本 skill 既有的 continuous-execution 原則一致：plan 是實作分解，其客觀缺陷屬執行細節。「純修正型」指變更只是**訂正錯誤事實或補上遺漏**（改對算錯的預期值、修正不存在的路徑或符號、補上被漏寫的步驟），不刪除也不收窄任何既有的驗收文字。
+- **plan——刪除或收窄型** → 比照 spec，**必須先以 `AskUserQuestion` 徵詢使用者**。只要變更會**刪除**一個既有步驟／驗收項，或**收窄**驗收標準、Task 範圍、預期行為的文字，就落入此類。
+  - 理由：一個變更究竟是「訂正事實」還是「弱化需求」，往往取決於原始意圖與當前實作狀態，**無法只從 diff 方向可靠判定**。把這個曖昧類別交給使用者，是唯一可靠的判準來源；也讓 §8.4 的 reviewer 端反弱化檢查得以退居 best-effort backstop，不必獨力承擔這道防線。
+  - **Fail closed**：分不清屬於純修正型還是刪除／收窄型時，一律當**刪除或收窄型**處理，徵詢使用者。
+  - 使用者否決 → 該 finding 退回當一般 code finding 處理，由 implementer 改 code。
 - **spec（`docs/superpowers/specs/**`）** → controller **必須先以 `AskUserQuestion` 徵詢使用者**。spec 是使用者在 brainstorming 階段核准過的需求，實作期間逕自修改等同繞過該核准 gate。
   - 使用者同意 → 依 §6 程序修改。
   - 使用者否決 → 該 finding **退回當一般 code finding** 處理（fail closed），由 implementer 改 code。
@@ -244,7 +248,9 @@ carve-out 的正當理由是「需求檔的變更不是**實作範圍**問題」
 
 因此三個落點的 carve-out 一律附帶同一條例外：**需求檔的變更若移除或弱化驗收標準、縮小 Task 範圍、或降低預期行為，reviewer 必須回報，且該 finding 為阻斷性。** 判定準則與 §4 的「放寬型 amendment」一致：若該變更會讓原本不合格的既有實作變成合格，就是弱化。
 
-此例外不需要 reviewer 讀 spec，也不需要新的 wrapper 參數：判定完全依 `git diff <BASE>..HEAD` 中需求檔的變更方向（刪除／放寬 vs 修正事實），reviewer 手上的資訊已足夠。
+**此例外是 best-effort backstop，不是主要控制。** reviewer 手上只有 `git diff <BASE>..HEAD` 與 HEAD 上的 plan，判斷「刪掉一個步驟」到底是訂正事實還是弱化需求，往往取決於原始意圖與當前實作狀態，**無法可靠判定**。因此本設計不讓這條例外承重：真正把關的是 §5.2 —— 任何**刪除或收窄**驗收文字的 plan amendment 都必須先徵詢使用者，分不清就 fail closed 當成刪除／收窄型。reviewer 端的例外只負責在 controller 誤判時多攔一次；它漏判不會使協定失守，因為那類變更本來就不該在未經使用者核准下存在。
+
+此例外不需要 reviewer 讀 spec，也不需要新的 wrapper 參數或 amendment metadata。
 
 ## 9. 邊界與交互情況
 
@@ -272,15 +278,15 @@ carve-out 的正當理由是「需求檔的變更不是**實作範圍**問題」
 - 「Base SHA Tracking」一節補上 §6.2 的兩條硬規則（進行中 Task 的 `TASK_BASE` 不得重捕捉、amendment commit 落在 `IMPL_BASE..HEAD` 內屬預期），以及 §9 的修正 Task 例外（新增的修正 Task 依一般規則捕捉自己的全新 `TASK_BASE`）。
 - 「Caller control-flow」第 5 點補上 §8.3 的 code-quality 判定。
 - 「Reviewer Dispatch」的 invocation discipline 補上兩道**無條件**的呼叫前／後檢查，適用**每一次** `review-impl.sh` 與 `review-final.sh` 呼叫（初次與重跑、有無 amendment 皆然）：§6.3 的完整性檢查（三部分）與 §6.4 的前後對照新鮮度檢查。
-- 「Final adversarial reviewer」一節同樣載明上述無條件檢查適用於每一次 `review-final.sh` 呼叫，範圍用 `<IMPL_BASE>..HEAD`。
-- 「Final adversarial reviewer」一節補上 §8.2 的正交性說明。
+- 「Final adversarial reviewer」一節補上 §8.2 的正交性說明，並載明上述無條件檢查同樣適用於每一次 `review-final.sh` 呼叫，範圍用 `<IMPL_BASE>..HEAD`。
 - 「Handling Implementer Status」一節補上 §7 的銜接說明。
-- 「Red Flags」的 **Never** 清單補上四條：
+- 「Red Flags」的 **Never** 清單補上六條：
   - 在 amendment 之後重新捕捉 `TASK_BASE`
   - 把需求檔變更與實作變更放進同一個 commit
   - 讓 implementer subagent 修改 `docs/superpowers/**`
   - 在 amendment SHA 記錄遺失時，靠推測歸屬放行 `docs/superpowers/**` 的 commit
   - 以 amendment 之名移除或弱化驗收標準／縮小 Task 範圍，來讓既有 code 通過 gate（§4 放寬型 amendment）
+  - 未經使用者核准就對 plan 執行刪除或收窄驗收文字的 amendment（§5.2）
 
 ## 11. 測試 / 驗收
 

@@ -41,6 +41,12 @@
 
 （本節記錄審查過程中，使用者裁決「不實作」的顧慮，格式為 Concern / Decision / Rationale。供本設計自身的下游對抗式驗收依 `subagent-driven-development` 的 carve-out 依此 canonical 標題定位並尊重。）
 
+### 下游已完成 Task 的「明列 + 排除」重驗契約
+
+- **Concern**：§9 的修正 Task 機制要求 controller 辨識哪些已完成的後續 Task 依賴被修改的需求，其 fail-closed 退路卻是「涵蓋受該需求影響的部分」——reviewer 指出這是循環論證：若 controller 判不出依賴，也就判不出哪些部分受影響。由於本設計刻意不做 end-SHA 追蹤、不改 wrapper、不做 replay，沒有任何機械化證據能證明所有陳舊實作都被回頭處理過；漏判的依賴會帶著依舊需求建構的實作一路到 merge。reviewer 建議改為機械化的保守契約：修正 Task 必須逐一列舉「被改到的 Task 之後所有已完成 Task」，每一個要嘛附上驗收/修正標準納入範圍，要嘛記錄一筆使用者核准的排除與理由。
+- **Decision**：不實作。不要求修正 Task 逐一列舉後續已完成 Task，也不引入排除清單與其核准流程。維持由 controller 當場依 plan 內容判定依賴。
+- **Rationale**：(1) **與 skill 的適用前提相符**——`subagent-driven-development` 的 When to Use gate 明定只在「Tasks mostly independent」時使用本 skill，緊密耦合的計畫本就該走人工執行；在此前提下，逐一列舉全部後續 Task 的成本大多落在明顯無關的項目上。(2) **仍有最後一道網**——`review-final.sh` 的 final adversarial gate 專責跨 task 整合縫隙（見 `final-code-reviewer-focus.md`），漏判的依賴仍有被攔下的機會。(3) **不成比例**——此情境（amendment 改到**已完成** Task 的需求）本身罕見，常見情況是修改**進行中** Task 的需求、完全不觸發下游重驗；為罕見情境要求每次都逐 task 走查並寫入 plan，成本高於其防護價值。**前提**：以「本 skill 僅用於 mostly-independent 的 plan，且 final adversarial gate 維持有效」為裁決前提；若日後放寬 When to Use 的獨立性要求、或 final gate 被移除弱化，此前提即改變，須依 stale-waiver 規則重新評估。
+
 ### amendment 已 commit、實作未完成的部分失敗回復機制
 
 - **Concern**：§6.1 要求需求檔的 amendment 先於 code 修正 commit，因此 amendment 會在「對應實作是否做得出來」尚未確定前就成為 HEAD 上的持久狀態。若隨後 implementer 回報 `BLOCKED`、未能 commit、產出無法通過 review 的 code，或 session 中斷，repo 會停留在「需求已更新但實作未跟上」的不一致中間態；而本協定又禁止自動 revert / reset，且 amendment SHA 記錄不持久化。reviewer 建議引入回復契約：把 amendment 先留在私有分支直到 code 通過 review、維護 pending-amendment 狀態標記阻擋收尾、並明定使用者核准的 rollback 或後續任務建立流程。
@@ -114,7 +120,15 @@ carve-out 的安全性完全建立在「只有 controller 改需求檔」之上�
 - 重跑 `review-impl.sh` 之前 → 檢查範圍 `<TASK_BASE>..HEAD`。
 - 重跑 `review-final.sh` 之前 → 檢查範圍 `<IMPL_BASE>..HEAD`。final gate 階段同樣可能發生 amendment（§9），且 final-adversarial 的 carve-out（§8.2）同樣會排除需求檔，因此**必須**有對應的檢查，否則未授權的需求檔變更會在最終 merge gate 被靜默放行。final-gate 期間建立的 amendment commit 與 per-task 階段一樣記錄其 SHA，且因 `IMPL_BASE` 涵蓋整個實作區間，`<IMPL_BASE>..HEAD` 的檢查會同時涵蓋所有 per-task 階段的 amendment。
 
-**檢查的兩個部分**（兩者都必須通過）：
+**檢查的三個部分**（三者都必須通過）：
+
+0. **需求檔無未提交狀態** —— `spec-compliance` reviewer 讀的是**工作區**的 plan 檔（`review-impl.sh` 以 `--set PLAN_FILE_PATH=...` 傳入路徑，reviewer 自行開檔），但實作證據是 `git diff <BASE>..HEAD`。若需求檔有未 commit 的修改（未暫存或已暫存皆然），reviewer 會拿「不在 HEAD 上、也不在 amendment SHA 稽核範圍內」的需求文字去驗證 code，讓 gate 通過在隨時可能消失、或稍後才亂序 commit 的需求上，等於整個繞過本節的來源檢查。因此在**每一次** review 重跑之前：
+
+   ```bash
+   git status --porcelain -- docs/superpowers/
+   ```
+
+   輸出必須為**空**。只要有任何輸出（未暫存、已暫存、或未追蹤的需求檔）→ 依下方 fail-closed 規則停止：屬於合法 amendment 的變更先依 §6.1 步驟 3 完成 commit，其餘則回報使用者。
 
 1. **無不明來源** —— 範圍內所有觸及需求檔的 commit 都必須是已記錄的 amendment：
 
@@ -140,9 +154,9 @@ carve-out 的安全性完全建立在「只有 controller 改需求檔」之上�
 - 只要檢查範圍（`<TASK_BASE>..HEAD` 或 `<IMPL_BASE>..HEAD`）內存在**任何**無法明確歸屬到記錄中 amendment 的 `docs/superpowers/**` commit → **停下來回報使用者**，說明哪些 commit 無法歸屬、以及記錄為何遺失，由使用者判定該 commit 是否為合法 amendment 後再繼續。
 - 此偏誤方向刻意如此：低估違規等於讓 carve-out 靜默掩蓋未授權的需求變更，恰好架空本檢查；故寧可誤停、也不放行。
 
-**回復程序（任一部分檢查未通過時）**：**硬性停止，不自動回復**。無論是第 1 部分發現不可歸屬的 commit、或第 2 部分發現某 amendment 混入了實作檔，controller 都**不得**自行 `revert`、`reset` 或改寫歷史，理由是：問題 commit 可能位於歷史中段、其後已疊上合法 amendment 與 code commit，自動回復會產生順序敏感的衝突，且可能抹掉使用者核准過的 spec 變更。controller 的職責到「偵測 + 停下來回報」為止，如何處置由使用者決定。這也讓本協定不需要定義任何 revert / 重驗演算法。
+**回復程序（任一部分檢查未通過時）**：**硬性停止，不自動回復**。無論是第 0 部分發現未提交的需求檔變更（且不屬於待 commit 的合法 amendment）、第 1 部分發現不可歸屬的 commit、或第 2 部分發現某 amendment 混入了實作檔，controller 都**不得**自行 `revert`、`reset`、`checkout --` 丟棄工作區變更或改寫歷史，理由是：問題 commit 可能位於歷史中段、其後已疊上合法 amendment 與 code commit，自動回復會產生順序敏感的衝突，且可能抹掉使用者核准過的 spec 變更。controller 的職責到「偵測 + 停下來回報」為止，如何處置由使用者決定。這也讓本協定不需要定義任何 revert / 重驗演算法。
 
-此檢查刻意維持為兩道 git 指令 + 路徑比對 + fail-closed 停止，不引入 hook、不引入 commit trailer、不引入 sidecar 記錄檔、不引入任何持久化狀態。
+此檢查刻意維持為三道 git 指令 + 路徑比對 + fail-closed 停止，不引入 hook、不引入 commit trailer、不引入 sidecar 記錄檔、不引入任何持久化狀態。
 
 ### 6.4 findings 與 HEAD 的綁定（由既有機制覆蓋）
 

@@ -115,20 +115,22 @@ controller 解析 reviewer findings 時，**逐條**分類。預設所有 findin
 
 carve-out 的安全性完全建立在「只有 controller 改需求檔」之上，因此該前提需要可執行的驗證，否則 carve-out 會靜默掩蓋 implementer 的違規修改。
 
-**適用時機（每個 gate 都要，各用自己的 base）**：
+**適用時機（無條件，每一次呼叫都要，各用自己的 base）**：
 
-- 重跑 `review-impl.sh` 之前 → 檢查範圍 `<TASK_BASE>..HEAD`。
-- 重跑 `review-final.sh` 之前 → 檢查範圍 `<IMPL_BASE>..HEAD`。final gate 階段同樣可能發生 amendment（§9），且 final-adversarial 的 carve-out（§8.2）同樣會排除需求檔，因此**必須**有對應的檢查，否則未授權的需求檔變更會在最終 merge gate 被靜默放行。final-gate 期間建立的 amendment commit 與 per-task 階段一樣記錄其 SHA，且因 `IMPL_BASE` 涵蓋整個實作區間，`<IMPL_BASE>..HEAD` 的檢查會同時涵蓋所有 per-task 階段的 amendment。
+- **每一次** `review-impl.sh` 呼叫之前 → 檢查範圍 `<TASK_BASE>..HEAD`。
+- **每一次** `review-final.sh` 呼叫之前 → 檢查範圍 `<IMPL_BASE>..HEAD`。final gate 階段同樣可能發生 amendment（§9），且 final-adversarial 的 carve-out（§8.2）同樣會排除需求檔，因此**必須**有對應的檢查，否則未授權的需求檔變更會在最終 merge gate 被靜默放行。final-gate 期間建立的 amendment commit 與 per-task 階段一樣記錄其 SHA，且因 `IMPL_BASE` 涵蓋整個實作區間，`<IMPL_BASE>..HEAD` 的檢查會同時涵蓋所有 per-task 階段的 amendment。
+
+**「無條件」是安全不變式的一部分，不可退化成「有 amendment 時才做」**：carve-out 從**第一次** review 就已生效——`spec-compliance` 一開始就不把需求檔變更當成超出範圍的工作。若檢查只在「因 amendment 而重跑」時執行，則 implementer 在初次實作中誤改需求檔的情形會完全不被偵測：carve-out 壓掉了 reviewer 的訊號，而檢查又還沒被觸發。本節宣稱的不變式是「`<BASE>..HEAD` 內每一個需求檔變更都可歸屬到 controller 的 amendment」，要成立就必須在**初次與重跑、有無 amendment**的每一種情況下都執行，且與 §6.4 的新鮮度檢查同時進行（兩者都綁在「每一次 wrapper 呼叫」上）。
 
 **檢查的三個部分**（三者都必須通過）：
 
-0. **需求檔無未提交狀態** —— `spec-compliance` reviewer 讀的是**工作區**的 plan 檔（`review-impl.sh` 以 `--set PLAN_FILE_PATH=...` 傳入路徑，reviewer 自行開檔），但實作證據是 `git diff <BASE>..HEAD`。若需求檔有未 commit 的修改（未暫存或已暫存皆然），reviewer 會拿「不在 HEAD 上、也不在 amendment SHA 稽核範圍內」的需求文字去驗證 code，讓 gate 通過在隨時可能消失、或稍後才亂序 commit 的需求上，等於整個繞過本節的來源檢查。因此在**每一次** review 重跑之前：
+0. **需求檔無未提交狀態** —— `spec-compliance` reviewer 讀的是**工作區**的 plan 檔（`review-impl.sh` 以 `--set PLAN_FILE_PATH=...` 傳入路徑，reviewer 自行開檔），但實作證據是 `git diff <BASE>..HEAD`。若需求檔有未 commit 的修改（未暫存或已暫存皆然），reviewer 會拿「不在 HEAD 上、也不在 amendment SHA 稽核範圍內」的需求文字去驗證 code，讓 gate 通過在隨時可能消失、或稍後才亂序 commit 的需求上，等於整個繞過本節的來源檢查。因此在**每一次** review wrapper 呼叫之前：
 
    ```bash
    git status --porcelain -- docs/superpowers/
    ```
 
-   輸出必須為**空**。只要有任何輸出（未暫存、已暫存、或未追蹤的需求檔）→ 依下方 fail-closed 規則停止：屬於合法 amendment 的變更先依 §6.1 步驟 3 完成 commit，其餘則回報使用者。
+   輸出必須為**空**。只要有任何輸出（未暫存、已暫存、或未追蹤的需求檔）→ 依下方 fail-closed 規則停止：屬於合法 amendment 的變更先依 §6.1 步驟 3 完成 commit，其餘則回報使用者。（此檢查同時是 §6.4 前後對照的「呼叫前」取樣。）
 
 1. **無不明來源** —— 範圍內所有觸及需求檔的 commit 都必須是已記錄的 amendment：
 
@@ -232,7 +234,7 @@ wrapper 回傳後，重跑同樣兩道指令並比對。**兩者都必須與呼�
   - 被直接改到的 Task **與**每一個有依賴關係的後續已完成 Task，其修正工作全部納入修正 Task 的範圍（可合併為一個修正 Task，或依關注點拆成數個連續的修正 Task，各自捕捉自己的 base）。
   - **Fail closed**：若 controller 無法確信哪些後續 Task 有依賴，修正 Task 的範圍必須涵蓋「被改到的 Task 之後、所有已完成 Task」中受該需求影響的部分，不得以「大概沒影響」略過。理由與 §6.3 同向：漏驗會讓不一致的實作一路帶到 final gate，而 final gate 是跨 task 整合視角、不保證覆蓋 task 本地的需求回歸。
   - 這條規則完全複用既有的 per-task review 機制與 base 契約，不引入 end SHA 記錄、不改 wrapper、不新增 CLI 旗標、不使用隔離分支或 worktree replay；依賴判定由 controller 依 plan 內容當場為之。
-- **amendment 發生在 final gate 階段**（所有 Task 已通過、`review-final.sh` 回報 finding）→ 一樣依 §6.1 順序：先 commit 需求檔、再修 code，然後以同一個 `IMPL_BASE` 重跑 `review-final.sh`；重跑之前必須先跑 §6.3 的完整性檢查，範圍用 `<IMPL_BASE>..HEAD`。
+- **amendment 發生在 final gate 階段**（所有 Task 已通過、`review-final.sh` 回報 finding）→ 一樣依 §6.1 順序：先 commit 需求檔、再修 code，然後以同一個 `IMPL_BASE` 重跑 `review-final.sh`。§6.3 的完整性檢查與 §6.4 的新鮮度檢查本來就在**每一次** `review-final.sh` 呼叫前無條件執行（範圍 `<IMPL_BASE>..HEAD`），amendment 不改變這一點。
 - **spec amendment 被使用者否決** → 退回一般 code finding（§5.2），不留任何需求檔變更。
 - **同一輪同時有 amendment finding 與一般 code finding** → 先完成需求檔的修改與 commit（§6.1 步驟 2–3），再讓 implementer 在同一次 dispatch 中一併修完所有 code findings，維持既有的「一次修完所有 findings 再 re-review」節奏。
 - **amendment 之後 reviewer 仍報同一問題** → 依 §4 重新判定；若已不屬客觀缺陷四類，則當一般 code finding 處理，不得反覆修改需求檔追著 reviewer 跑。
@@ -245,8 +247,9 @@ wrapper 回傳後，重跑同樣兩道指令並比對。**兩者都必須與呼�
 - 新增一節「Requirement-Document Amendment」，涵蓋 §4–§6 的內容（觸發判定、權限、核准層級、嚴格順序、base 契約、完整性檢查與其 fail-closed 降級／硬性停止規則）。
 - 「Base SHA Tracking」一節補上 §6.2 的兩條硬規則（進行中 Task 的 `TASK_BASE` 不得重捕捉、amendment commit 落在 `IMPL_BASE..HEAD` 內屬預期），以及 §9 的修正 Task 例外（新增的修正 Task 依一般規則捕捉自己的全新 `TASK_BASE`）。
 - 「Caller control-flow」第 5 點補上 §8.3 的 code-quality 判定。
-- 「Reviewer Dispatch」的 invocation discipline 補上 §6.4 的前後對照新鮮度檢查（適用每一次 `review-*.sh` 呼叫）。
-- 「Final adversarial reviewer」一節補上 §8.2 的正交性說明，以及重跑 `review-final.sh` 前須執行 §6.3 完整性檢查（範圍 `<IMPL_BASE>..HEAD`）的要求。
+- 「Reviewer Dispatch」的 invocation discipline 補上兩道**無條件**的呼叫前／後檢查，適用**每一次** `review-impl.sh` 與 `review-final.sh` 呼叫（初次與重跑、有無 amendment 皆然）：§6.3 的完整性檢查（三部分）與 §6.4 的前後對照新鮮度檢查。
+- 「Final adversarial reviewer」一節同樣載明上述無條件檢查適用於每一次 `review-final.sh` 呼叫，範圍用 `<IMPL_BASE>..HEAD`。
+- 「Final adversarial reviewer」一節補上 §8.2 的正交性說明。
 - 「Handling Implementer Status」一節補上 §7 的銜接說明。
 - 「Red Flags」的 **Never** 清單補上四條：
   - 在 amendment 之後重新捕捉 `TASK_BASE`

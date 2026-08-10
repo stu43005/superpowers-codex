@@ -98,6 +98,16 @@ controller 解析 reviewer findings 時，**逐條**分類。預設所有 findin
   - 理由：一個變更究竟是「訂正事實」還是「弱化需求」，往往取決於原始意圖與當前實作狀態，**無法只從 diff 方向可靠判定**。把這個曖昧類別交給使用者，是唯一可靠的判準來源；也讓 §8.4 的 reviewer 端反弱化檢查得以退居 best-effort backstop，不必獨力承擔這道防線。
   - **Fail closed**：分不清屬於純修正型還是刪除／收窄型時，一律當**刪除或收窄型**處理，徵詢使用者。
   - 使用者否決 → 該 finding 退回當一般 code finding 處理，由 implementer 改 code。
+
+### 5.3 核准內容與實際變更的綁定
+
+使用者核准的是**特定的一項變更**，不是「動需求檔」這個泛稱。因此徵詢與提交之間必須維持一一對應：
+
+- **徵詢時呈現確切內容**：`AskUserQuestion` 中必須寫出這次要改的**具體前後文字**（哪一段變成哪一段），不得只給摘要式描述（例如「修正 Task 3 的驗收標準」）。使用者核准的範圍**就是所呈現的那段文字**，不及於其他。
+- **一個 amendment 一個 commit，不得夾帶**：§6.1 步驟 3 的 docs-only commit 只能包含這次被核准（或屬純修正型而免徵詢）的那項變更。**禁止**把未經核准的其他需求變更、順手的措辭調整、或另一項待辦的 amendment 併入同一個 commit——即使它們同樣是 docs-only、同樣能通過 §6.3 的檢查。若同時有多項 amendment，各自徵詢、各自 commit。
+- **範圍變動要重新徵詢**：若在動手修改時發現實際需要改的內容超出徵詢時呈現的文字，必須帶著新內容**重新徵詢**，不得以「原本核准的延伸」為由自行擴大。
+
+**這一節是紀律，不是機械檢查。** §6.3 的檢查能證明「這個 commit 是 controller 做的、且只碰需求檔」，但無法證明「其內容正是使用者核准的那段」——那需要持久化的核准產物（manifest / ledger / trailer），已於 Non-goals 記為不實作的兩項已接受限制。本節把該類風險收斂為明確、可被人工稽核的行為要求：核准與 commit 一一對應、內容逐字呈現、不夾帶。
 - **spec（`docs/superpowers/specs/**`）** → controller **必須先以 `AskUserQuestion` 徵詢使用者**。spec 是使用者在 brainstorming 階段核准過的需求，實作期間逕自修改等同繞過該核准 gate。
   - 使用者同意 → 依 §6 程序修改。
   - 使用者否決 → 該 finding **退回當一般 code finding** 處理（fail closed），由 implementer 改 code。
@@ -110,7 +120,7 @@ controller 解析 reviewer findings 時，**逐條**分類。預設所有 findin
 
 1. controller 判定為 amendment（若涉及 spec，先依 §5.2 徵詢使用者並取得同意）。
 2. controller 修改需求檔。
-3. **單獨 commit 需求檔變更** —— 該 commit 的 diff **只**含 `docs/superpowers/**`，不得夾帶任何實作檔。commit message 依專案慣例用 `docs(plan):` / `docs(spec):`。
+3. **單獨 commit 需求檔變更** —— 該 commit 的 diff **只**含 `docs/superpowers/**`，不得夾帶任何實作檔，也不得夾帶未經核准或不屬於本次 amendment 的其他需求變更（§5.3）。commit message 依專案慣例用 `docs(plan):` / `docs(spec):`。
 4. **才** dispatch implementer 修改 code。
 5. implementer commit code —— 該 commit 的 diff **不**含 `docs/superpowers/**`。
 6. 重跑 `review-impl.sh`，`--task-base` 沿用**原本的** `TASK_BASE`。
@@ -280,13 +290,14 @@ carve-out 的正當理由是「需求檔的變更不是**實作範圍**問題」
 - 「Reviewer Dispatch」的 invocation discipline 補上兩道**無條件**的呼叫前／後檢查，適用**每一次** `review-impl.sh` 與 `review-final.sh` 呼叫（初次與重跑、有無 amendment 皆然）：§6.3 的完整性檢查（三部分）與 §6.4 的前後對照新鮮度檢查。
 - 「Final adversarial reviewer」一節補上 §8.2 的正交性說明，並載明上述無條件檢查同樣適用於每一次 `review-final.sh` 呼叫，範圍用 `<IMPL_BASE>..HEAD`。
 - 「Handling Implementer Status」一節補上 §7 的銜接說明。
-- 「Red Flags」的 **Never** 清單補上六條：
+- 「Red Flags」的 **Never** 清單補上七條：
   - 在 amendment 之後重新捕捉 `TASK_BASE`
   - 把需求檔變更與實作變更放進同一個 commit
   - 讓 implementer subagent 修改 `docs/superpowers/**`
   - 在 amendment SHA 記錄遺失時，靠推測歸屬放行 `docs/superpowers/**` 的 commit
   - 以 amendment 之名移除或弱化驗收標準／縮小 Task 範圍，來讓既有 code 通過 gate（§4 放寬型 amendment）
   - 未經使用者核准就對 plan 執行刪除或收窄驗收文字的 amendment（§5.2）
+  - 在同一個 amendment commit 裡夾帶未經核准或不屬於本次 amendment 的其他需求變更（§5.3）
 
 ## 11. 測試 / 驗收
 

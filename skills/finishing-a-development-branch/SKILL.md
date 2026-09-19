@@ -9,7 +9,7 @@ description: Use when implementation is complete, all tests pass, and you need t
 
 Guide completion of development work by presenting clear options and handling chosen workflow.
 
-**Core principle:** Verify tests → Present options → Execute choice.
+**Core principle:** Verify tests → Present options → Clean up completed plans → Execute choice.
 
 **Announce at start:** "I'm using the finishing-a-development-branch skill to complete this work."
 
@@ -63,7 +63,33 @@ Which option?
 
 **Don't add explanation** - keep options concise.
 
-### Step 4: Execute Choice
+### Step 4: Clean Up Completed Plan Files
+
+**Applies to Options 1 and 2 only** (the work is being integrated). Skip for Options 3 and 4.
+
+Implementation plans under `docs/superpowers/plans/` are scaffolding for a single
+development branch, not a durable record. Once the work is integrated, the plan's
+content is already preserved in the commit history, so the file is dead weight that
+inflates the repo and burns context on every future search.
+
+```bash
+# List plan files belonging to this branch's work
+ls docs/superpowers/plans/
+
+# Remove the plans whose implementation is complete
+git rm docs/superpowers/plans/<YYYY-MM-DD-topic>.md
+git commit -m "chore: remove completed plan for <topic>"
+```
+
+Commit the removal **onto the feature branch**, before the merge or PR in Step 5, so
+the cleanup travels with the work it belongs to.
+
+**Never delete `docs/superpowers/specs/`** - specs are the durable design record and
+outlive the branch that implemented them. Only plans get cleaned up.
+
+If a plan covers work that is only partially complete, keep it and say so explicitly.
+
+### Step 5: Execute Choice
 
 #### Option 1: Merge Locally
 
@@ -125,12 +151,12 @@ git branch -D <feature-branch>
 
 ## Quick Reference
 
-| Option | Merge | Push | Cleanup Branch |
-|--------|-------|------|----------------|
-| 1. Merge locally | yes | - | yes |
-| 2. Create PR | - | yes | - |
-| 3. Keep as-is | - | - | - |
-| 4. Discard | - | - | yes (force) |
+| Option | Merge | Push | Cleanup Branch | Remove Completed Plan |
+|--------|-------|------|----------------|-----------------------|
+| 1. Merge locally | yes | - | yes | yes |
+| 2. Create PR | - | yes | - | yes |
+| 3. Keep as-is | - | - | - | - |
+| 4. Discard | - | - | yes (force) | - |
 
 ## Common Mistakes
 
@@ -150,6 +176,15 @@ git branch -D <feature-branch>
 - **Problem:** Accidentally delete work
 - **Fix:** Require typed "discard" confirmation
 
+**Leaving completed plans in `docs/superpowers/plans/`**
+- **Problem:** Finished plans pile up as dead weight; they duplicate what the commit
+  history already records and burn context on every later search
+- **Fix:** Remove the plan on the feature branch before merging or opening the PR
+
+**Deleting specs along with plans**
+- **Problem:** Losing the durable design record
+- **Fix:** Clean up `plans/` only; `specs/` always stays
+
 ## Red Flags
 
 **Never:**
@@ -157,8 +192,11 @@ git branch -D <feature-branch>
 - Merge without verifying tests on result
 - Delete work without confirmation
 - Force-push without explicit request
+- Delete anything under `docs/superpowers/specs/`
+- Remove a plan whose implementation is only partially complete
 
 **Always:**
 - Verify tests before offering options
 - Present exactly 4 options
 - Get typed confirmation for Option 4
+- Remove the completed plan file before merging (Option 1) or opening the PR (Option 2)

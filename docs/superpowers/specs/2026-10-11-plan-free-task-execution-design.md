@@ -158,7 +158,7 @@ Depends on: Task 1 (HttpError type)
 **`spec-coverage-prompt.md`（新增）**
 
 - 讀完整份 spec，並執行 `git diff [IMPL_BASE]..HEAD`。
-- 逐條列出 spec 的功能需求、設計決策、must / should 類條件，各自指出實作位置；找不到者為缺漏。
+- 逐條列出 spec 的功能需求、設計決策、must / should 類條件，各自指出實作位置**與**測試證據；缺任一者為缺漏。無法以 diff 或測試驗證的項目沿用 Evidence Verifiability 規則：標註為需人工確認，不判缺漏。
 - spec 的 **Non-goals / Accepted limitations** 所列項目不算缺漏。
 - 最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 
@@ -172,7 +172,7 @@ Depends on: Task 1 (HttpError type)
 
 reviewer 看不到 Task 清單，task-coverage（以及 spec-compliance）可能把屬於後面 Task 的需求回報為未完成。controller 持有完整清單，負責分類每一項 finding：
 
-- **屬於後面的 Task**：只有在 Task 工具中**確實存在**一個尚未完成的 Task，其 `Acceptance:` **明確涵蓋**該項時，才能如此判定。controller 必須在回報中寫出對應的 Task 編號與 Acceptance 條目。此類 finding 不阻擋本 Task 通過，也不修改。
+- **屬於後面的 Task**：只有在 Task 工具中**確實存在**一個尚未完成的 Task，其 `Acceptance:` **明確涵蓋**該項，**且**其 `Spec:`（因而其任務題目）包含該項所在的 spec 章節時，才能如此判定。第二個條件確保接收方的 task-coverage 一定會檢查該項的實作與測試證據。controller 必須在回報中寫出對應的 Task 編號與 Acceptance 條目。此類 finding 不阻擋本 Task 通過，也不修改。
 - **其他一律 blocking**：找不到明確涵蓋的未完成 Task、涵蓋只是部分重疊、或判斷有疑義時，一律視為本 Task 的 finding。這條規則刻意保守，避免歸屬判斷變成放行漏洞。
 
 blocking finding 的處理：
@@ -181,7 +181,7 @@ blocking finding 的處理：
 |---|---|
 | 實作錯誤（任一 reviewer） | implementer 修正並 commit |
 | 本 Task 少做了某項需求，且沒有任何 Task 涵蓋 | controller 在本 Task 的 `Acceptance:` 補上條目，派 implementer 補實作 |
-| 該需求較適合由後面的 Task 負責，但目前沒有 Task 涵蓋 | controller 把條目加到某個尚未完成 Task 的 `Acceptance:`，或追加新 Task；本 Task 不補實作 |
+| 該需求較適合由後面的 Task 負責，但目前沒有 Task 涵蓋 | controller 把條目加到某個尚未完成 Task 的 `Acceptance:`，並在其 `Spec:` 補上該需求所在章節（任務題目隨之更新）；或追加新 Task。本 Task 不補實作 |
 | 需要修改已完成 Task 的程式碼才能讓本 Task 成立 | controller 把該修正併入本 Task 的 `Acceptance:`，由本 Task 的 implementer 一起完成；不追加獨立的修正 Task，避免本 Task 卡在等待後面的 Task |
 
 **任何修正之後都重跑整個 `review-impl.sh`**（同一個 `TASK_BASE`），包括只改了 Task 工具中的定義、沒有新 commit 的情況。

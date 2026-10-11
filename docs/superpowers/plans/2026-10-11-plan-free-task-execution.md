@@ -1599,7 +1599,7 @@ spec-coverage) gates the merge.
 
 **Core principle:** Code-free task list from the spec + fresh subagent per task + one batched four-reviewer review per task + one final gate = high quality, fast iteration
 
-**Continuous execution:** Do not pause to check in with your human partner after Phase 0 or between tasks. There is no task-list review and no approval gate — the user already approved the spec. The only reasons to stop are: BLOCKED status you cannot resolve; ambiguity that genuinely prevents progress (including a spec problem that needs a spec edit, see **Mid-Implementation Spec Edits**); a fail-closed condition in **Resume Mode**; a non-empty manual-check list after the final gate passes (see **Manual-Check Disposition**); or all tasks complete with the final gate clear. "Should I continue?" prompts and progress summaries waste their time — they approved the spec, so implement it.
+**Continuous execution:** Do not pause to check in with your human partner after Phase 0 or between tasks. There is no task-list review and no approval gate — the user already approved the spec. The only reasons to stop are: BLOCKED status you cannot resolve; ambiguity that genuinely prevents progress (including a spec problem that needs a spec edit, see **Mid-Implementation Spec Edits**); a fail-closed condition in **Resume Mode**; a non-empty manual-check list after the final gate passes (see **Manual-Check Disposition**); a refuted finding raised for three consecutive runs (see **Verify Findings Before Acting**); or all tasks complete with the final gate clear. "Should I continue?" prompts and progress summaries waste their time — they approved the spec, so implement it.
 
 ## When to Use
 
@@ -1788,13 +1788,48 @@ rewrite it as one line and re-run.
    incomplete: read that reviewer's full `## <label>` section and use judgment — re-run the whole
    `review-impl.sh` call if the output looks truncated, otherwise act on the result shown. Neither
    an automatic pass nor a forced rerun.
-5. **Otherwise**, attribute every finding (see **Finding Attribution**), record any manual-check
-   items (see **Manual-Check Items**), and repair every blocking finding in one pass. Then re-run
+5. **Otherwise**, verify every finding (see **Verify Findings Before Acting**), attribute every
+   confirmed finding (see **Finding Attribution**), record any manual-check items (see
+   **Manual-Check Items**), and repair every confirmed blocking finding in one pass. Then re-run
    the whole `review-impl.sh` call with the same `<TASK_BASE>` and the task's current summary line.
 
 **Pass condition:** in a single run with no edits in between, every `Status:` reviewer is either
-`Status: OKAY` or has only findings you attributed to a later task, and code-quality has no
-blocking finding.
+`Status: OKAY` or has only findings you attributed to a later task or refuted with recorded
+counter-evidence, and code-quality has no confirmed blocking finding.
+
+### Verify Findings Before Acting
+
+Reviewer findings, and the fixes reviewers suggest, are not automatically correct. Before acting on
+any finding from any reviewer (per-task or final gate) — before changing code, the spec, or a task
+definition, and before dispatching an implementer — verify it against the actual sources:
+
+- read the files and lines the finding cites and confirm the described content or behavior really
+  exists;
+- compare against the spec text, confirming the requirement the reviewer quotes or paraphrases is
+  really what the spec says;
+- run commands when needed (tests, grep, `git diff`, `git log`) to get evidence.
+
+A reviewer's suggested fix (patch, replacement code, approach) is only a suggestion: decide the
+correct fix yourself and confirm it is sound before handing it to an implementer.
+
+| Result | Action |
+|---|---|
+| **Confirmed** — the sources support the finding | Handle it normally: **Finding Attribution** and the repair table (per-task), or the final-gate rules |
+| **Refuted** — the sources contradict the finding | Do not act on it. Record verifiable counter-evidence in your reply (exact `file:line` content, quoted spec text, or command output) and mark the finding refuted |
+| **Undecidable** — it can be neither confirmed nor refuted | Treat it as confirmed |
+
+Limits on refutation (so it never becomes a loophole):
+
+- Refute only findings that contradict the facts: the cited code does not exist, the "missing"
+  test exists, the described behavior differs from what actually runs, the quoted requirement is
+  not what the spec says. "Looks fine" or "unlikely to happen" is not counter-evidence.
+- A finding that is correct but seems not worth fixing is not refuted. At the final gate it can
+  only be suppressed by the spec-adjudicated carve-out; otherwise it blocks.
+- A refuted finding raised again without new evidence stays refuted — do not re-fix it. Raised
+  with new evidence, verify it again.
+- If the same refuted finding is raised in **three consecutive runs** of the same wrapper, stop
+  relying on your refutation: use `AskUserQuestion` to give your human partner the finding, your
+  counter-evidence, and the reviewer's argument, and act on their decision.
 
 **Code-quality severity calibration:** "blocking" = what a senior engineer would require fixed
 before merge — bugs, data-loss risks, broken error handling, security issues, missing critical
@@ -1886,13 +1921,15 @@ Read the wrapper's stdout `=== Summary ===` on any exit code:
   be incomplete; read that reviewer's full `## <label>` section and use judgment — re-run
   `review-final.sh` if it looks truncated, otherwise act on the result shown.
 
-**Final gate pass condition:** in a single run, `spec-coverage` is `Status: OKAY` and
-`final-adversarial` is `Verdict: approve` (or its only remaining findings are non-blocking
-spec-adjudicated rejections, below). All tasks are complete, so "belongs to a later task" no longer
-applies: every spec-coverage gap or drift item is blocking.
+**Final gate pass condition:** in a single run, `spec-coverage` is `Status: OKAY` (or its only
+remaining findings are refuted with recorded counter-evidence) and `final-adversarial` is
+`Verdict: approve` (or its only remaining findings are non-blocking spec-adjudicated rejections,
+below, or refuted). Verify every final-gate finding first (**Verify Findings Before Acting**). All
+tasks are complete, so "belongs to a later task" no longer applies: every confirmed spec-coverage
+gap or drift item is blocking.
 
-**Repairs go through appended tasks.** For every spec-coverage item and every blocking
-final-adversarial finding, append one or more new tasks to the end of the task list: new number and
+**Repairs go through appended tasks.** For every confirmed spec-coverage item and every confirmed
+blocking final-adversarial finding, append one or more new tasks to the end of the task list: new number and
 name, `Spec:` and `Acceptance:` per `./task-list-format.md` (for a final-adversarial finding,
 `Spec:` is the spec section the finding touches). List the appended tasks in your reply. Each one
 runs the full Per-Task Flow (own `TASK_BASE`, own `Task:` trailer, four reviewers). When all are
@@ -2197,6 +2234,9 @@ Done — proceed to superpowers-codex:finishing-a-development-branch
 - Edit the spec without your human partner's consent, or mix a spec edit into an implementation commit
 - Fix final-gate findings outside an appended task
 - Continue past a Resume Mode fail-closed condition by guessing
+- Act on a reviewer finding, or apply a reviewer's suggested patch, without first verifying it against the actual code, spec, or command output
+- Refute a finding without recorded, verifiable counter-evidence, or refute a correct finding because it seems not worth fixing
+- Keep relying on your refutation after the same finding was raised in three consecutive runs
 - Skip review loops (reviewer found issues = fix = review again)
 - Let implementer self-review replace actual review (both are needed)
 - Advance HEAD (commit/rebase/checkout) while `review-impl.sh` or `review-final.sh` is running (all reviewers must see the same HEAD)
@@ -2212,7 +2252,8 @@ Done — proceed to superpowers-codex:finishing-a-development-branch
 - Don't rush them into implementation
 
 **If reviewer finds issues:**
-- Attribute each finding; repair every blocking one
+- Verify each finding first; refute the false ones with counter-evidence
+- Attribute each confirmed finding; repair every confirmed blocking one
 - Implementer (same subagent) fixes implementation errors
 - Re-run the whole review
 - Repeat until the task passes
@@ -2243,6 +2284,8 @@ grep -n '^name: subagent-driven-development$' skills/subagent-driven-development
 grep -nE '^## (Phase 0: Derive the Task List|Resume Mode|Commit Trailer|Mid-Implementation Spec Edits|Sidecar files|Integration)$' skills/subagent-driven-development/SKILL.md
 grep -nE '^### (Finding Attribution|Manual-Check Items|Final Gate|Manual-Check Disposition)$' skills/subagent-driven-development/SKILL.md
 grep -n 'plan-free-task-execution' skills/subagent-driven-development/SKILL.md
+grep -c '^### Verify Findings Before Acting$' skills/subagent-driven-development/SKILL.md
+grep -c 'three consecutive runs' skills/subagent-driven-development/SKILL.md
 ```
 
 Expected:
@@ -2254,7 +2297,8 @@ Expected:
 - Sixth command shows the `review-final.sh` example followed by `--base` and `--spec` lines.
 - Seventh command prints exactly one line.
 - Eighth command prints exactly six heading lines; ninth prints exactly four.
-- Last command prints nothing (exit status 1): the skill does not reference the design spec document.
+- The `plan-free-task-execution` grep prints nothing (exit status 1): the skill does not reference the design spec document.
+- The `Verify Findings Before Acting` heading count is `1`; the `three consecutive runs` count is `3` (the continuous-execution stop list, the verification section, and the Red Flags entry).
 
 - [ ] **Step 3: Commit**
 
@@ -2268,8 +2312,9 @@ approved spec (kept in session state only), runs four per-task
 reviewers via review-impl.sh --spec/--task-summary/--task-base, gates
 the merge with final-adversarial plus spec-coverage, repairs final-gate
 findings through appended tasks, tags every implementer commit with a
-Task trailer, and can rebuild execution state from git history on an
-explicit resume request.
+Task trailer, can rebuild execution state from git history on an
+explicit resume request, and verifies every reviewer finding against
+the actual code, spec, or command output before acting on it.
 
 BREAKING CHANGE: the skill no longer consumes a plan file; it starts
 from an approved spec and requires the new review-impl.sh and
@@ -2280,16 +2325,16 @@ EOF
 )"
 ```
 
-### Task 11: Point brainstorming at subagent-driven-development
+### Task 11: Point brainstorming at subagent-driven-development and verify review findings
 
-**Spec:** §6.1, §2 (Goals: remove the `writing-plans` stage; brainstorming hands off directly to SDD once the user approves the spec; Non-goal: the brainstorming design and spec-review flow stay unchanged, only its endpoint changes).
+**Spec:** §6.1, §5.5, §2 (Goals: remove the `writing-plans` stage; brainstorming hands off directly to SDD once the user approves the spec; the spec review loop verifies every finding before acting on it. Non-goal: the brainstorming design flow and the reviewer composition stay unchanged).
 
 **Files:**
 - Modify: `skills/brainstorming/SKILL.md`
 
-Everything else in the file (HARD-GATE, spec review loop, `${CLAUDE_PLUGIN_ROOT}` dispatch block, ledger, escape valve, Key Principles) stays byte-for-byte unchanged. Exactly 11 lines change.
+Edits 1–8 change the handoff; Edits 9–21 add finding verification to the spec review loop. Everything else in the file (HARD-GATE, `${CLAUDE_PLUGIN_ROOT}` dispatch block, invocation discipline, escape-valve triggers, recording of adjudicated rejections, Key Principles) stays byte-for-byte unchanged.
 
-- [ ] **Step 1: Apply the eight exact-string replacements**
+- [ ] **Step 1: Apply the twenty-one exact-string replacements**
 
 Each `old` string below occurs exactly once in the file.
 
@@ -2389,6 +2434,193 @@ The mandatory workflow sequence is **brainstorming → spec document → subagen
 - **Fail closed:** if that skill cannot be loaded, STOP and tell the user the `superpowers-codex` plugin is not installed correctly. NEVER skip the skill and start implementing on your own.
 ```
 
+**Edit 9 — Checklist item 6 (verify findings; refuted findings do not block)**
+
+old:
+```
+maintain the per-round ledger; fix ALL structural-completeness findings; for design-soundness findings apply the escape valve (escalate suspected over-engineering, or any `open` topic flagged three consecutive rounds, via `AskUserQuestion`; `adjudicated-reject` topics are non-blocking); loop until, in the same round, structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve` OR the only remaining design findings map to `adjudicated-reject` topics)
+```
+new:
+```
+verify every finding against the actual spec and files before acting (record counter-evidence and mark the finding `refuted` instead of fixing it when the sources contradict it); maintain the per-round ledger; fix ALL confirmed structural-completeness findings; for confirmed design-soundness findings apply the escape valve (escalate suspected over-engineering, or any `open` topic flagged three consecutive rounds, via `AskUserQuestion`; `adjudicated-reject` and `refuted` topics are non-blocking); loop until, in the same round, (structural-completeness is `Status: OKAY` OR its only remaining findings are `refuted`) AND (design-soundness is `Verdict: approve` OR the only remaining design findings map to `adjudicated-reject` or `refuted` topics)
+```
+
+**Edit 10 — Checklist item 7 exit condition**
+
+old:
+```
+until it clears (structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR the only remaining design-soundness findings are `adjudicated-reject` topics)), then wait for explicit approval
+```
+new:
+```
+until it clears (step 6's exit condition), then wait for explicit approval
+```
+
+**Edit 11 — diagram self-loop label**
+
+old:
+```
+[label="structural finding — fix; design finding — fix"];
+```
+new:
+```
+[label="verify each finding: confirmed — fix; refuted — record evidence"];
+```
+
+**Edit 12 — diagram exit label**
+
+old:
+```
+[label="structural OKAY + (approve OR remaining design all adjudicated-reject)"];
+```
+new:
+```
+[label="(structural OKAY or all refuted) + (approve OR remaining design all adjudicated-reject / refuted)"];
+```
+
+**Edit 13 — Spec Review Loop intro exit condition**
+
+old:
+```
+Before proceeding, the loop must clear: structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR its only remaining findings are `adjudicated-reject` topics via the escape valve, below).
+```
+new:
+```
+Before proceeding, the loop must clear: structural-completeness `Status: OKAY` (or only `refuted` findings remain) AND (design-soundness `Verdict: approve` OR its only remaining findings are `adjudicated-reject` topics via the escape valve, or `refuted` findings, below). Every finding is verified before it is acted on (**Verify findings before acting**, below).
+```
+
+**Edit 14 — escape-valve scope sentence**
+
+old:
+```
+— structural-completeness stays zero-tolerance.
+```
+new:
+```
+— structural-completeness stays zero-tolerance for confirmed findings.
+```
+
+**Edit 15 — ledger status column**
+
+old:
+```
+| semantic summary of the concern | N | `open` / `adjudicated-implement` / `adjudicated-reject` |
+```
+new:
+```
+| semantic summary of the concern | N | `open` / `adjudicated-implement` / `adjudicated-reject` / `refuted` |
+```
+
+**Edit 16 — ledger round counting**
+
+old:
+```
+- **Consecutive rounds flagged** counts consecutive rounds the topic appears in design-soundness findings;
+```
+new:
+```
+- **Consecutive rounds flagged** counts consecutive rounds the topic appears in design-soundness findings (for a `refuted` topic, in either reviewer's findings);
+```
+
+**Edit 17 — ledger status definitions**
+
+old:
+```
+`adjudicated-reject` (user chose not to; recorded in the spec's Non-goals / Accepted limitations).
+```
+new:
+```
+`adjudicated-reject` (user chose not to; recorded in the spec's Non-goals / Accepted limitations), `refuted` (verification showed the finding contradicts the actual spec or files; counter-evidence recorded in your reply — applies to findings from either reviewer).
+```
+
+**Edit 18 — caller control-flow step 5**
+
+old:
+```
+5. **Otherwise** apply the round loop: always fix ALL structural-completeness findings; for
+   design-soundness findings apply the escape valve (fix, or escalate suspected over-engineering
+   or a three-round-repeated `open` topic via `AskUserQuestion`; `adjudicated-reject` topics are
+   non-blocking). Commit and re-run the whole wrapper next round. The loop ends when, in the same
+   round, structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve`
+   OR every remaining design finding maps to an `adjudicated-reject` topic).
+```
+new:
+```
+5. **Otherwise** verify every finding first (**Verify findings before acting**, below), then apply
+   the round loop: fix ALL confirmed structural-completeness findings; for confirmed
+   design-soundness findings apply the escape valve (fix, or escalate suspected over-engineering
+   or a three-round-repeated `open` topic via `AskUserQuestion`; `adjudicated-reject` topics are
+   non-blocking); refuted findings are not fixed and are non-blocking. Commit and re-run the whole
+   wrapper next round. The loop ends when, in the same round, (structural-completeness is
+   `Status: OKAY` OR its only remaining findings are `refuted`) AND (design-soundness is
+   `Verdict: approve` OR every remaining design finding maps to an `adjudicated-reject` or
+   `refuted` topic).
+```
+
+**Edit 19 — new verification section and revised round loop steps 3–6**
+
+old:
+```
+**Round loop — structural zero-tolerance + design escape valve:**
+
+Each review round, in order:
+
+1. Run `review-brainstorm.sh` once (both reviewers); parse its stdout `=== Summary ===` on any exit code.
+2. If either reviewer is `ERROR (tool failed…)`, re-run the whole wrapper with the same args — a tool failure is not a finding, so fix nothing this round.
+3. Update the per-round ledger from the design-soundness findings (semantic topics; see the ledger above). Do this only after ERROR is ruled out — a failed tool has no real findings.
+4. **Exit the loop** when structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve` OR every remaining design-soundness finding maps to an `adjudicated-reject` ledger topic). Structural `Status: OKAY` is required on both exit paths; the loop may end **even if design-soundness never returns `approve`**, as long as its only remaining findings are user-rejected topics.
+5. If structural-completeness is `Status: Issues Found`, fix all of them — structural findings are always zero-tolerance.
+6. Then handle each design-soundness finding by its ledger topic's status:
+   - `adjudicated-reject` → skip it; it is non-blocking (do not re-fix, do not re-escalate).
+```
+new:
+```
+**Verify findings before acting:** reviewer findings, and the fixes reviewers suggest, are not automatically correct. Before changing the spec for any finding from either reviewer, verify it against the actual sources: read the spec text and any repository files the finding cites, and run commands (grep, `git log`, tests) when needed. A reviewer's proposed fix is only a suggestion — decide the correct change yourself.
+
+- **Confirmed** (the sources support the finding) → handle it normally: structural findings are fixed; design-soundness findings are fixed or go through the escape valve.
+- **Refuted** (the sources contradict the finding) → do not change the spec. Record verifiable counter-evidence in your reply (quoted spec text, `file:line` content, or command output) and mark the finding's ledger topic `refuted`. "Looks fine" or "unlikely to happen" is not counter-evidence.
+- **Undecidable** (it can be neither confirmed nor refuted) → treat it as confirmed.
+- Refutation covers only findings that contradict the facts. A finding that is correct but not worth fixing is not refuted — route it through the escape valve.
+- A `refuted` topic raised again without new evidence stays refuted (do not re-fix); raised with new evidence, verify it again. If a `refuted` topic is raised for **three consecutive rounds**, escalate it via `AskUserQuestion` with the finding, your counter-evidence, and the reviewer's argument, and act on the user's decision.
+
+**Round loop — structural zero-tolerance + design escape valve:**
+
+Each review round, in order:
+
+1. Run `review-brainstorm.sh` once (both reviewers); parse its stdout `=== Summary ===` on any exit code.
+2. If either reviewer is `ERROR (tool failed…)`, re-run the whole wrapper with the same args — a tool failure is not a finding, so fix nothing this round.
+3. Read every finding in both reviewers' full sections and verify each one (**Verify findings before acting**). Then update the per-round ledger: design-soundness findings by semantic topic (see the ledger above), plus a `refuted` row for every finding you refuted from either reviewer. Do this only after ERROR is ruled out — a failed tool has no real findings.
+4. **Exit the loop** when (structural-completeness is `Status: OKAY` OR every remaining structural finding is `refuted`) AND (design-soundness is `Verdict: approve` OR every remaining design-soundness finding maps to an `adjudicated-reject` or `refuted` ledger topic). The loop may end **even if design-soundness never returns `approve`** or structural-completeness never returns `OKAY`, as long as every remaining finding is user-rejected or refuted with recorded counter-evidence.
+5. Fix every confirmed structural-completeness finding — confirmed structural findings are always zero-tolerance. Do not fix `refuted` ones; escalate a `refuted` topic raised three consecutive rounds.
+6. Then handle each design-soundness finding by its ledger topic's status:
+   - `refuted` → skip it; it is non-blocking unless it has been raised three consecutive rounds, in which case escalate it (see **Verify findings before acting**).
+   - `adjudicated-reject` → skip it; it is non-blocking (do not re-fix, do not re-escalate).
+```
+
+**Edit 20 — non-blocking statuses**
+
+old:
+```
+Only `adjudicated-reject` topics become non-blocking;
+```
+new:
+```
+Only `adjudicated-reject` and `refuted` topics become non-blocking;
+```
+
+**Edit 21 — User Review Gate exit condition**
+
+old:
+```
+After the dual review loop clears (structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR the only remaining design-soundness findings are `adjudicated-reject` topics)), ask
+```
+new:
+```
+After the dual review loop clears (step 6's exit condition: structural-completeness `Status: OKAY` or only `refuted` findings remain, AND design-soundness `Verdict: approve` or only `adjudicated-reject` / `refuted` findings remain), ask
+```
+
+Apply the edits in order (1–21); Edit 10's and Edit 21's old strings differ in their surrounding words, so each still matches exactly once at the time it is applied.
+
 - [ ] **Step 2: Verify**
 
 Prose-only change; there is no automated test for SKILL.md text (spec §9), so verification is by grep.
@@ -2416,9 +2648,16 @@ grep -c '\${CLAUDE_PLUGIN_ROOT}' skills/brainstorming/SKILL.md
 Expected: `1`, `1`, `2` (the two `${CLAUDE_PLUGIN_ROOT}` lines are unchanged).
 
 ```bash
+grep -c "^\*\*Verify findings before acting:\*\*" skills/brainstorming/SKILL.md
+grep -c "refuted" skills/brainstorming/SKILL.md
+grep -c "three consecutive rounds" skills/brainstorming/SKILL.md
+```
+Expected: `1`, `20`, `6`.
+
+```bash
 git diff --numstat -- skills/brainstorming/SKILL.md
 ```
-Expected: `11	11	skills/brainstorming/SKILL.md`
+Expected: `41	29	skills/brainstorming/SKILL.md`
 
 - [ ] **Step 3: Commit**
 
@@ -2431,7 +2670,11 @@ After the user approves the spec, brainstorming now invokes
 superpowers-codex:subagent-driven-development directly instead of
 writing-plans. The mandatory sequence becomes brainstorming -> spec
 document -> subagent-driven-development, and the fail-closed rule
-targets the SDD skill.
+targets the SDD skill. The spec review loop now verifies every
+reviewer finding against the actual spec and files before acting;
+findings the sources contradict are refuted with recorded
+counter-evidence instead of being fixed, and a refuted finding raised
+three consecutive rounds is escalated to the user.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 EOF

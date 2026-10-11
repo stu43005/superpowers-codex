@@ -26,9 +26,9 @@ You MUST create a task for each of these items and complete them in order:
 3. **Propose 2-3 approaches** — with trade-offs and your recommendation
 4. **Present design** — in sections scaled to their complexity, get user approval after each section
 5. **Write design doc** — save to `docs/superpowers/specs/YYYY-MM-DD-<topic>-design.md` and commit
-6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch both reviewers each round with ONE `review-brainstorm.sh` call (it runs the structural-completeness and design-soundness reviewers in parallel); read the wrapper's stdout `=== Summary ===` on any exit code; maintain the per-round ledger; fix ALL structural-completeness findings; for design-soundness findings apply the escape valve (escalate suspected over-engineering, or any `open` topic flagged three consecutive rounds, via `AskUserQuestion`; `adjudicated-reject` topics are non-blocking); loop until, in the same round, structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve` OR the only remaining design findings map to `adjudicated-reject` topics) (see below — do NOT do this inline)
-7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until it clears (structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR the only remaining design-soundness findings are `adjudicated-reject` topics)), then wait for explicit approval
-8. **Transition to implementation** — invoke the `superpowers-codex:writing-plans` skill to create implementation plan (this is the ONLY next step; never jump straight to code)
+6. **Spec review loop (dual reviewer, codex)** — capture `SPEC_BASE` before writing the spec; after committing, dispatch both reviewers each round with ONE `review-brainstorm.sh` call (it runs the structural-completeness and design-soundness reviewers in parallel); read the wrapper's stdout `=== Summary ===` on any exit code; verify every finding against the actual spec and files before acting (record counter-evidence and mark the finding `refuted` instead of fixing it when the sources contradict it); maintain the per-round ledger; fix ALL confirmed structural-completeness findings; for confirmed design-soundness findings apply the escape valve (escalate suspected over-engineering, or any `open` topic flagged three consecutive rounds, via `AskUserQuestion`; `adjudicated-reject` and `refuted` topics are non-blocking); loop until, in the same round, (structural-completeness is `Status: OKAY` OR its only remaining findings are `refuted`) AND (design-soundness is `Verdict: approve` OR the only remaining design findings map to `adjudicated-reject` or `refuted` topics) (see below — do NOT do this inline)
+7. **User reviews written spec** — ask user to review the spec file before proceeding; if changes requested, fix them and re-run the dual review loop (step 6) until it clears (step 6's exit condition), then wait for explicit approval
+8. **Transition to implementation** — invoke the `superpowers-codex:subagent-driven-development` skill to implement the approved spec (this is the ONLY next step; never jump straight to code)
 
 ## Process Flow
 
@@ -43,7 +43,7 @@ digraph brainstorming {
     "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [shape=box];
     "Escalate to user\n(AskUserQuestion)" [shape=diamond];
     "User reviews spec?" [shape=diamond];
-    "Invoke superpowers-codex:writing-plans" [shape=doublecircle];
+    "Invoke superpowers-codex:subagent-driven-development" [shape=doublecircle];
 
     "Explore project context" -> "Ask clarifying questions";
     "Ask clarifying questions" -> "Propose 2-3 approaches";
@@ -52,16 +52,16 @@ digraph brainstorming {
     "User approves design?" -> "Present design sections" [label="no, revise"];
     "User approves design?" -> "Write design doc\n+ capture SPEC_BASE" [label="yes"];
     "Write design doc\n+ capture SPEC_BASE" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)";
-    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [label="structural finding — fix; design finding — fix"];
+    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [label="verify each finding: confirmed — fix; refuted — record evidence"];
     "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "Escalate to user\n(AskUserQuestion)" [label="design finding: over-engineering suspected\nor 3-round backstop (open topic)"];
     "Escalate to user\n(AskUserQuestion)" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [label="adjudicated (implement / reject)"];
-    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "User reviews spec?" [label="structural OKAY + (approve OR remaining design all adjudicated-reject)"];
+    "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" -> "User reviews spec?" [label="(structural OKAY or all refuted) + (approve OR remaining design all adjudicated-reject / refuted)"];
     "User reviews spec?" -> "Spec review loop\n(review-brainstorm.sh: structural-completeness + design-soundness\nstructural zero-tolerance, design escape-valve)" [label="changes requested — re-run dual loop"];
-    "User reviews spec?" -> "Invoke superpowers-codex:writing-plans" [label="explicitly approved"];
+    "User reviews spec?" -> "Invoke superpowers-codex:subagent-driven-development" [label="explicitly approved"];
 }
 ```
 
-**The terminal state is invoking `superpowers-codex:writing-plans`.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is `superpowers-codex:writing-plans`.
+**The terminal state is invoking `superpowers-codex:subagent-driven-development`.** Do NOT invoke frontend-design, mcp-builder, or any other implementation skill. The ONLY skill you invoke after brainstorming is `superpowers-codex:subagent-driven-development`.
 
 ## The Process
 
@@ -69,7 +69,7 @@ digraph brainstorming {
 
 - Check out the current project state first (files, docs, recent commits)
 - Before asking detailed questions, assess scope: if the request describes multiple independent subsystems (e.g., "build a platform with chat, file storage, billing, and analytics"), flag this immediately. Don't spend questions refining details of a project that needs to be decomposed first.
-- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Then brainstorm the first sub-project through the normal design flow. Each sub-project gets its own spec → plan → implementation cycle.
+- If the project is too large for a single spec, help the user decompose into sub-projects: what are the independent pieces, how do they relate, what order should they be built? Then brainstorm the first sub-project through the normal design flow. Each sub-project gets its own spec → implementation cycle.
 - For appropriately-scoped projects, ask questions one at a time to refine the idea
 - Prefer multiple choice questions when possible, but open-ended is fine too
 - Only one question per message - if a topic needs more exploration, break it into multiple questions
@@ -113,7 +113,7 @@ digraph brainstorming {
 
 **Spec Review Loop (Dual Reviewer, codex companion):**
 
-Do NOT perform inline self-review. After writing and committing the spec document, dispatch **two reviewers in parallel** using the codex companion. Both reviewers examine the same spec document. Before proceeding, the loop must clear: structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR its only remaining findings are `adjudicated-reject` topics via the escape valve, below).
+Do NOT perform inline self-review. After writing and committing the spec document, dispatch **two reviewers in parallel** using the codex companion. Both reviewers examine the same spec document. Before proceeding, the loop must clear: structural-completeness `Status: OKAY` (or only `refuted` findings remain) AND (design-soundness `Verdict: approve` OR its only remaining findings are `adjudicated-reject` topics via the escape valve, or `refuted` findings, below). Every finding is verified before it is acted on (**Verify findings before acting**, below).
 
 **Before writing the spec file**, capture `SPEC_BASE`:
 
@@ -131,17 +131,17 @@ Challenges design-level soundness: failure paths / partial failure / rollback, c
 
 **Escape valve for design-soundness findings (anti-over-engineering):**
 
-The design-soundness reviewer is adversarial by construction, so it will always find "you could be more rigorous." Blindly fixing every finding drives over-engineering: writing atomicity, deploy/rollback machinery, or parsers for near-impossible edge cases that a small tool does not need or that another mechanism already covers. The escape valve hands the "is this concern worth the cost?" judgment back to the user instead of letting the loop escalate rigor without bound. It applies **only to design-soundness findings** — structural-completeness stays zero-tolerance.
+The design-soundness reviewer is adversarial by construction, so it will always find "you could be more rigorous." Blindly fixing every finding drives over-engineering: writing atomicity, deploy/rollback machinery, or parsers for near-impossible edge cases that a small tool does not need or that another mechanism already covers. The escape valve hands the "is this concern worth the cost?" judgment back to the user instead of letting the loop escalate rigor without bound. It applies **only to design-soundness findings** — structural-completeness stays zero-tolerance for confirmed findings.
 
 **Per-round ledger (required):** Each round, after parsing `=== Summary ===`, maintain a visible ledger table in your reply and update it every round:
 
 | Topic | Consecutive rounds flagged | Status |
 |---|---|---|
-| semantic summary of the concern | N | `open` / `adjudicated-implement` / `adjudicated-reject` |
+| semantic summary of the concern | N | `open` / `adjudicated-implement` / `adjudicated-reject` / `refuted` |
 
 - **Topic** is judged *semantically* — a reviewer rewording the same root concern across rounds is the same topic, and its round count accumulates.
-- **Consecutive rounds flagged** counts consecutive rounds the topic appears in design-soundness findings; a round in which it is not flagged resets it to zero.
-- **Status:** `open` (not yet adjudicated), `adjudicated-implement` (user chose to fix it), `adjudicated-reject` (user chose not to; recorded in the spec's Non-goals / Accepted limitations).
+- **Consecutive rounds flagged** counts consecutive rounds the topic appears in design-soundness findings (for a `refuted` topic, in either reviewer's findings); a round in which it is not flagged resets it to zero.
+- **Status:** `open` (not yet adjudicated), `adjudicated-implement` (user chose to fix it), `adjudicated-reject` (user chose not to; recorded in the spec's Non-goals / Accepted limitations), `refuted` (verification showed the finding contradicts the actual spec or files; counter-evidence recorded in your reply — applies to findings from either reviewer).
 
 The ledger is an in-session heuristic tracker, re-emitted in full each round from the current round's reviewer output — it is not durable repo state (the `adjudicated-reject` decisions themselves live durably in the spec). **Fail-closed degradation:** if context compaction or agent handoff makes a topic's consecutive count uncertain *and* the topic is still being flagged this round, escalate via `AskUserQuestion` rather than silently resetting the count and continuing to fight — underestimating the count would defeat the backstop. The subjective trigger and the structural-completeness reviewer are unaffected by a lost count.
 
@@ -203,12 +203,15 @@ ALL output on stdout.
    reviewer's full `## <label>` section and use judgment — re-run the whole wrapper if the output
    looks truncated, otherwise act on the verdict shown. This is neither an automatic pass nor a
    forced rerun.
-5. **Otherwise** apply the round loop: always fix ALL structural-completeness findings; for
+5. **Otherwise** verify every finding first (**Verify findings before acting**, below), then apply
+   the round loop: fix ALL confirmed structural-completeness findings; for confirmed
    design-soundness findings apply the escape valve (fix, or escalate suspected over-engineering
    or a three-round-repeated `open` topic via `AskUserQuestion`; `adjudicated-reject` topics are
-   non-blocking). Commit and re-run the whole wrapper next round. The loop ends when, in the same
-   round, structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve`
-   OR every remaining design finding maps to an `adjudicated-reject` topic).
+   non-blocking); refuted findings are not fixed and are non-blocking. Commit and re-run the whole
+   wrapper next round. The loop ends when, in the same round, (structural-completeness is
+   `Status: OKAY` OR its only remaining findings are `refuted`) AND (design-soundness is
+   `Verdict: approve` OR every remaining design finding maps to an `adjudicated-reject` or
+   `refuted` topic).
 
 **Caller HEAD contract:** Do not advance `HEAD` (commit/rebase/checkout) while
 `review-brainstorm.sh` is running — both reviewers must see the same `HEAD` and the same
@@ -216,30 +219,39 @@ ALL output on stdout.
 guarantee it. Commit each round's spec fixes BEFORE launching the next round's wrapper call,
 not while it runs.
 
+**Verify findings before acting:** reviewer findings, and the fixes reviewers suggest, are not automatically correct. Before changing the spec for any finding from either reviewer, verify it against the actual sources: read the spec text and any repository files the finding cites, and run commands (grep, `git log`, tests) when needed. A reviewer's proposed fix is only a suggestion — decide the correct change yourself.
+
+- **Confirmed** (the sources support the finding) → handle it normally: structural findings are fixed; design-soundness findings are fixed or go through the escape valve.
+- **Refuted** (the sources contradict the finding) → do not change the spec. Record verifiable counter-evidence in your reply (quoted spec text, `file:line` content, or command output) and mark the finding's ledger topic `refuted`. "Looks fine" or "unlikely to happen" is not counter-evidence.
+- **Undecidable** (it can be neither confirmed nor refuted) → treat it as confirmed.
+- Refutation covers only findings that contradict the facts. A finding that is correct but not worth fixing is not refuted — route it through the escape valve.
+- A `refuted` topic raised again without new evidence stays refuted (do not re-fix); raised with new evidence, verify it again. If a `refuted` topic is raised for **three consecutive rounds**, escalate it via `AskUserQuestion` with the finding, your counter-evidence, and the reviewer's argument, and act on the user's decision.
+
 **Round loop — structural zero-tolerance + design escape valve:**
 
 Each review round, in order:
 
 1. Run `review-brainstorm.sh` once (both reviewers); parse its stdout `=== Summary ===` on any exit code.
 2. If either reviewer is `ERROR (tool failed…)`, re-run the whole wrapper with the same args — a tool failure is not a finding, so fix nothing this round.
-3. Update the per-round ledger from the design-soundness findings (semantic topics; see the ledger above). Do this only after ERROR is ruled out — a failed tool has no real findings.
-4. **Exit the loop** when structural-completeness is `Status: OKAY` AND (design-soundness is `Verdict: approve` OR every remaining design-soundness finding maps to an `adjudicated-reject` ledger topic). Structural `Status: OKAY` is required on both exit paths; the loop may end **even if design-soundness never returns `approve`**, as long as its only remaining findings are user-rejected topics.
-5. If structural-completeness is `Status: Issues Found`, fix all of them — structural findings are always zero-tolerance.
+3. Read every finding in both reviewers' full sections and verify each one (**Verify findings before acting**). Then update the per-round ledger: design-soundness findings by semantic topic (see the ledger above), plus a `refuted` row for every finding you refuted from either reviewer. Do this only after ERROR is ruled out — a failed tool has no real findings.
+4. First, if any `refuted` topic has now been raised for three consecutive rounds, escalate it (see **Verify findings before acting**) and settle the user's decision before evaluating the exit. Then **exit the loop** when (structural-completeness is `Status: OKAY` OR every remaining structural finding is `refuted`) AND (design-soundness is `Verdict: approve` OR every remaining design-soundness finding maps to an `adjudicated-reject` or `refuted` ledger topic) AND no escalation is pending. The loop may end **even if design-soundness never returns `approve`** or structural-completeness never returns `OKAY`, as long as every remaining finding is user-rejected or refuted with recorded counter-evidence.
+5. Fix every confirmed structural-completeness finding — confirmed structural findings are always zero-tolerance. Do not fix `refuted` ones; escalate a `refuted` topic raised three consecutive rounds.
 6. Then handle each design-soundness finding by its ledger topic's status:
+   - `refuted` → skip it; it is non-blocking unless it has been raised three consecutive rounds, in which case escalate it (see **Verify findings before acting**).
    - `adjudicated-reject` → skip it; it is non-blocking (do not re-fix, do not re-escalate).
    - `open`, AND (you suspect over-engineering — disproportionate to scale / a near-impossible edge case / already covered — OR it has been flagged three consecutive rounds OR its consecutive count is uncertain after compaction or handoff) → escalate via `AskUserQuestion`, then act on the choice **before committing**: **Implement** → fix the finding and mark the topic `adjudicated-implement`; **Don't implement** → record the accepted limitation (with the user's rationale) in the spec's Non-goals / Accepted limitations section and mark the topic `adjudicated-reject`.
    - otherwise (an `open` topic you are not escalating, or an `adjudicated-implement` topic) → fix the finding this round.
 7. Commit this round's fixes, then re-run the whole wrapper next round.
 
-Only `adjudicated-reject` topics become non-blocking; an `adjudicated-implement` topic is still fixed each round it is flagged and is never re-escalated by the backstop — a genuinely new concern arising after it is a new topic with its own count.
+Only `adjudicated-reject` and `refuted` topics become non-blocking; an `adjudicated-implement` topic is still fixed each round it is flagged and is never re-escalated by the backstop — a genuinely new concern arising after it is a new topic with its own count.
 
 **Git commit discipline:** Before the first review round, commit the first version of the spec. After each round's fixes, commit again with a message noting the round (e.g. `docs(spec): fix review round 2 - resolve ambiguity in auth flow`). NEVER use `git add -f` to force-add an ignored file. `review-brainstorm.sh` is a fixed two-reviewer wrapper with no per-reviewer skip option; the design-soundness reviewer diffs `<SPEC_BASE>..HEAD`, so the spec **must be committed** for the wrapper-based review to run as designed. If the spec file is gitignored, the wrapper cannot review it — do not attempt the dual review on a gitignored spec; ask the user to un-ignore (or relocate) the spec so it can be committed before review.
 
 **User Review Gate:**
 
-After the dual review loop clears (structural-completeness `Status: OKAY` AND (design-soundness `Verdict: approve` OR the only remaining design-soundness findings are `adjudicated-reject` topics)), ask the user to review the written spec before proceeding:
+After the dual review loop clears (step 6's exit condition: structural-completeness `Status: OKAY` or only `refuted` findings remain, AND design-soundness `Verdict: approve` or only `adjudicated-reject` / `refuted` findings remain), ask the user to review the written spec before proceeding:
 
-> "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start writing out the implementation plan."
+> "Spec written and committed to `<path>`. Please review it and let me know if you want to make any changes before we start implementation."
 
 Wait for the user's response. If they request changes:
 
@@ -248,15 +260,15 @@ Wait for the user's response. If they request changes:
 3. Re-run the dual spec review loop with ONE `review-brainstorm.sh` call (both the structural-completeness and design-soundness reviewers in parallel, until it clears per the escape-valve exit condition in step 6). The wrapper takes only `--spec`/`--base` and always re-reviews the whole spec — there is no per-section focus — so any edit re-runs both reviewers over the entire spec.
 4. Report the changes back to the user and wait for their next reply.
 
-Only leave this gate and proceed to writing-plans once the user **explicitly approves** (e.g. "OK", "looks good", "start the plan"). Do not proceed on ambiguous or silent responses.
+Only leave this gate and proceed to subagent-driven-development once the user **explicitly approves** (e.g. "OK", "looks good", "start implementation"). Do not proceed on ambiguous or silent responses.
 
 **Implementation:**
 
-The mandatory workflow sequence is **brainstorming → spec document → writing-plans → plan document → implementation**, in strict order. Never jump from brainstorming straight to code, and never skip the spec or plan stages — even for "simple" tasks.
+The mandatory workflow sequence is **brainstorming → spec document → subagent-driven-development**, in strict order. Never jump from brainstorming straight to code, and never skip the spec stage — even for "simple" tasks.
 
-- Invoke the `superpowers-codex:writing-plans` skill (this exact plugin-qualified name — do NOT substitute a bare `writing-plans` or an upstream `superpowers:...` name) to create a detailed implementation plan.
-- Do NOT invoke any other skill. `superpowers-codex:writing-plans` is the ONLY next step after brainstorming.
-- **Fail closed:** if that skill cannot be loaded, STOP and tell the user the `superpowers-codex` plugin is not installed correctly. NEVER skip the skill and start planning or implementing on your own.
+- Invoke the `superpowers-codex:subagent-driven-development` skill (this exact plugin-qualified name — do NOT substitute a bare `subagent-driven-development` or an upstream `superpowers:...` name) to implement the approved spec, handing it the committed spec path.
+- Do NOT invoke any other skill. `superpowers-codex:subagent-driven-development` is the ONLY next step after brainstorming.
+- **Fail closed:** if that skill cannot be loaded, STOP and tell the user the `superpowers-codex` plugin is not installed correctly. NEVER skip the skill and start implementing on your own.
 
 ## Key Principles
 

@@ -18,6 +18,11 @@ case "$ROOT" in
 esac
 [ -d "$ROOT" ] || { printf 'FATAL: ROOT is not a directory: [%s]\n' "$ROOT" >&2; exit 1; }
 trap 'rm -rf "$ROOT"' EXIT
+# Isolate every batch temp dir under $ROOT: the cleanup / INT / TERM / grandchild tests glob
+# "${TMPDIR:-/tmp}/review-batch.*", which must never observe (or write into) a review-batch.* dir
+# owned by another process, such as a real review running concurrently.
+mkdir "$ROOT/tmp" || { printf 'FATAL: cannot create %s/tmp\n' "$ROOT" >&2; exit 1; }
+export TMPDIR="$ROOT/tmp"
 
 # write_stub <file> <body-lines...> : create an executable stub dispatch.sh.
 write_stub() {

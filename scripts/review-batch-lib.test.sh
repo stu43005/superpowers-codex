@@ -423,33 +423,89 @@ if [ "$RC_MALFORMED" -ne 0 ] \
   ok "review-plan: missing option value fails with a clear wrapper error"
 else bad "review-plan: missing option value fails with a clear wrapper error" "rc=$RC_MALFORMED out=$PLAN_ERR"; fi
 
-# review-impl.sh assembles the spec-compliance + code-quality dispatch argv (no report file).
+# section_args <blob> <label> : print the echoed ARG: lines of the "## <label>" section joined
+# by "|" (the section ends at the next "## " heading or the Summary block), so one string
+# comparison pins a job's exact argv, including order and the absence of extra arguments.
+section_args() {
+  printf '%s\n' "$1" \
+    | awk -v h="## $2" '$0==h{c=1;next} c&&(/^## /||/^=== Summary ===$/){c=0} c{print}' \
+    | grep '^ARG:' | tr '\n' '|'
+}
+
+# review-impl.sh assembles the four per-Task reviewers' dispatch argv (no report file).
 IMPL_W="$HERE/review-impl.sh"
 PROOT="${PROOT:-$ROOT/plugin}"   # fixture plugin root (defined locally)
-mkdir -p "$PROOT/skills/subagent-driven-development"
-: > "$PROOT/skills/subagent-driven-development/spec-reviewer-prompt.md"
+SDD_DIR="$PROOT/skills/subagent-driven-development"
+mkdir -p "$SDD_DIR"
+: > "$SDD_DIR/spec-reviewer-prompt.md"
+: > "$SDD_DIR/task-coverage-prompt.md"
+: > "$SDD_DIR/task-seam-prompt.md"
+# The task summary carries spaces, a colon, parentheses and a non-ASCII "§": it must reach
+# dispatch.sh as ONE intact --set value.
+IMPL_SUMMARY='Task 2: Retry policy (spec §4.2)'
 T8="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
-       bash "$IMPL_W" --plan docs/plans/x.md --task "Task 2" --task-base TBASE 2>/dev/null )"
-# spec-compliance: task --prompt <root>/.../spec-reviewer-prompt.md --set PLAN_FILE_PATH --set TASK_ID --set TASK_BASE
-if printf '%s\n' "$T8" | grep -q '^## spec-compliance$' \
-   && printf '%s\n' "$T8" | grep -qx 'ARG:task' \
-   && printf '%s\n' "$T8" | grep -qx "ARG:$PROOT/skills/subagent-driven-development/spec-reviewer-prompt.md" \
-   && printf '%s\n' "$T8" | grep -qx 'ARG:PLAN_FILE_PATH=docs/plans/x.md' \
-   && printf '%s\n' "$T8" | grep -qx 'ARG:TASK_ID=Task 2' \
-   && printf '%s\n' "$T8" | grep -qx 'ARG:TASK_BASE=TBASE'; then
-  ok "review-impl: spec-compliance argv matches expected wrapper contract"
-else bad "review-impl: spec-compliance argv" "$T8"; fi
+       bash "$IMPL_W" --spec docs/specs/x.md --task-summary "$IMPL_SUMMARY" \
+         --task-base TBASE 2>/dev/null )"
+# exactly four jobs, labels in registration order
+IMPL_LABELS="$(printf '%s\n' "$T8" | grep '^## ' | tr '\n' '|')"
+[ "$IMPL_LABELS" = '## spec-compliance|## code-quality|## task-coverage|## task-seam|' ] \
+  && ok "review-impl: four jobs registered in order" \
+  || bad "review-impl: four jobs registered in order" "labels=$IMPL_LABELS"
+# spec-compliance: task --prompt <root>/.../spec-reviewer-prompt.md + SPEC_FILE_PATH, TASK_SUMMARY, TASK_BASE
+IMPL_SC="$(section_args "$T8" spec-compliance)"
+[ "$IMPL_SC" = "ARG:task|ARG:--prompt|ARG:$SDD_DIR/spec-reviewer-prompt.md|ARG:--set|ARG:SPEC_FILE_PATH=docs/specs/x.md|ARG:--set|ARG:TASK_SUMMARY=$IMPL_SUMMARY|ARG:--set|ARG:TASK_BASE=TBASE|" ] \
+  && ok "review-impl: spec-compliance argv matches expected wrapper contract" \
+  || bad "review-impl: spec-compliance argv" "$IMPL_SC"
 # NO --report-file anywhere
 printf '%s\n' "$T8" | grep -q -- '--report-file' \
   && bad "review-impl: no --report-file passed" "$T8" \
   || ok "review-impl: no --report-file passed"
 # code-quality: review --base <TASK_BASE>
-if printf '%s\n' "$T8" | grep -q '^## code-quality$' \
-   && printf '%s\n' "$T8" | grep -qx 'ARG:review' \
-   && printf '%s\n' "$T8" | grep -qx 'ARG:--base' \
-   && printf '%s\n' "$T8" | grep -qx 'ARG:TBASE'; then
-  ok "review-impl: code-quality argv matches expected wrapper contract"
-else bad "review-impl: code-quality argv" "$T8"; fi
+IMPL_CQ="$(section_args "$T8" code-quality)"
+[ "$IMPL_CQ" = 'ARG:review|ARG:--base|ARG:TBASE|' ] \
+  && ok "review-impl: code-quality argv matches expected wrapper contract" \
+  || bad "review-impl: code-quality argv" "$IMPL_CQ"
+# task-coverage: task --prompt <root>/.../task-coverage-prompt.md + SPEC_FILE_PATH, TASK_SUMMARY, TASK_BASE
+IMPL_TC="$(section_args "$T8" task-coverage)"
+[ "$IMPL_TC" = "ARG:task|ARG:--prompt|ARG:$SDD_DIR/task-coverage-prompt.md|ARG:--set|ARG:SPEC_FILE_PATH=docs/specs/x.md|ARG:--set|ARG:TASK_SUMMARY=$IMPL_SUMMARY|ARG:--set|ARG:TASK_BASE=TBASE|" ] \
+  && ok "review-impl: task-coverage argv matches expected wrapper contract" \
+  || bad "review-impl: task-coverage argv" "$IMPL_TC"
+# task-seam: task --prompt <root>/.../task-seam-prompt.md + TASK_BASE only (never reads the spec)
+IMPL_TS="$(section_args "$T8" task-seam)"
+[ "$IMPL_TS" = "ARG:task|ARG:--prompt|ARG:$SDD_DIR/task-seam-prompt.md|ARG:--set|ARG:TASK_BASE=TBASE|" ] \
+  && ok "review-impl: task-seam argv carries only TASK_BASE (no SPEC_FILE_PATH)" \
+  || bad "review-impl: task-seam argv carries only TASK_BASE (no SPEC_FILE_PATH)" "$IMPL_TS"
+# impl_expect_err <name> <expected-stderr-fragment> <wrapper-args...> : the wrapper must exit
+# nonzero with the given wrapper error, never crash on `set -u`, and dispatch no job.
+impl_expect_err() {
+  local name="$1" want="$2" out rc; shift 2
+  out="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" bash "$IMPL_W" "$@" 2>&1 )"
+  rc=$?
+  if [ "$rc" -ne 0 ] \
+     && printf '%s\n' "$out" | grep -qF "$want" \
+     && ! printf '%s\n' "$out" | grep -qi 'unbound variable' \
+     && ! printf '%s\n' "$out" | grep -q '^## '; then
+    ok "$name"
+  else bad "$name" "rc=$rc out=$out"; fi
+}
+impl_expect_err "review-impl: missing --spec fails fast with a clear error" \
+  'review-impl: --spec is required' \
+  --task-summary "$IMPL_SUMMARY" --task-base TBASE
+impl_expect_err "review-impl: missing --task-summary fails fast with a clear error" \
+  'review-impl: --task-summary is required' \
+  --spec docs/specs/x.md --task-base TBASE
+impl_expect_err "review-impl: missing --task-base fails fast with a clear error" \
+  'review-impl: --task-base is required' \
+  --spec docs/specs/x.md --task-summary "$IMPL_SUMMARY"
+impl_expect_err "review-impl: missing option value fails with a clear wrapper error" \
+  'review-impl: --spec requires a value' \
+  --task-summary "$IMPL_SUMMARY" --task-base TBASE --spec
+impl_expect_err "review-impl: removed --plan fails as unknown arg" \
+  'review-impl: unknown arg: --plan' \
+  --plan docs/plans/x.md --spec docs/specs/x.md --task-summary "$IMPL_SUMMARY" --task-base TBASE
+impl_expect_err "review-impl: removed --task fails as unknown arg" \
+  'review-impl: unknown arg: --task' \
+  --task "Task 2" --spec docs/specs/x.md --task-summary "$IMPL_SUMMARY" --task-base TBASE
 
 # review-final.sh assembles the final adversarial reviewer's dispatch argv from its CLI.
 FINAL_W="$HERE/review-final.sh"

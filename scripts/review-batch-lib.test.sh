@@ -637,6 +637,44 @@ final_expect_err "review-final: missing --base value fails with a clear wrapper 
   'review-final: --base requires a value' \
   --spec docs/specs/x.md --base
 
+# Output guard end-to-end: each real wrapper, run as shipped (its own `set -euo pipefail`, with
+# batch_run as its last command), exits 3 and dispatches nothing when its stdout and/or stderr is
+# /dev/null. The marker stub records any dispatch; the mktemp shim records any temp dir.
+# wrapper_guard_run <tag> <mode> <wrapper> <wrapper-args...> : leave rc / captured output / mktemp
+# log under $ROOT/wguard-<tag>.*.
+wrapper_guard_run() {
+  local base="$ROOT/wguard-$1" mode="$2" w="$3"; shift 3
+  rm -f "$GUARD_MARK" "$base".*
+  : > "$base.mktemp"
+  set -- env BATCH_DISPATCH_SH="$GUARD_STUB" PLUGIN_ROOT="$PROOT" MKTEMP_LOG="$base.mktemp" \
+    PATH="$SHIM_PATH" bash "$w" "$@"
+  case "$mode" in
+    stdout-null) "$@" >/dev/null 2> "$base.err" ;;
+    stderr-null) "$@" > "$base.out" 2>/dev/null ;;
+    both-null)   "$@" &>/dev/null ;;
+    file)        "$@" > "$base.out" 2> "$base.err" ;;
+  esac
+  printf '%s' "$?" > "$base.rc"
+}
+WRAPPER_GUARD_MODES="stdout-null stderr-null both-null"
+for wg_mode in $WRAPPER_GUARD_MODES; do
+  for wg_name in brainstorm impl final; do
+    case "$wg_name" in
+      brainstorm) wrapper_guard_run "$wg_name-$wg_mode" "$wg_mode" "$BRAINSTORM" \
+                    --spec docs/specs/x-design.md --base SPECBASE ;;
+      impl)       wrapper_guard_run "$wg_name-$wg_mode" "$wg_mode" "$IMPL_W" \
+                    --spec docs/specs/x.md --task-summary "$IMPL_SUMMARY" --task-base TBASE ;;
+      final)      wrapper_guard_run "$wg_name-$wg_mode" "$wg_mode" "$FINAL_W" \
+                    --base IMPLBASE --spec docs/specs/x.md ;;
+    esac
+    wg_base="$ROOT/wguard-$wg_name-$wg_mode"
+    if [ "$(cat "$wg_base.rc")" = "3" ] && [ ! -e "$GUARD_MARK" ] && [ ! -s "$wg_base.mktemp" ]; then
+      ok "guard: review-$wg_name.sh with $wg_mode exits 3 and dispatches nothing"
+    else bad "guard: review-$wg_name.sh with $wg_mode exits 3 and dispatches nothing" \
+      "rc=$(cat "$wg_base.rc") marker=$([ -e "$GUARD_MARK" ] && echo yes || echo no) mktemp=$(cat "$wg_base.mktemp")"; fi
+  done
+done
+
 # decide_action <stdout-blob> <exit-code> : print PROCEED | RERUN_WRAPPER | FIX_AND_REREVIEW | INSPECT.
 # The exit code is accepted but NOT used to decide — the decision is read from the stdout, which
 # is authoritative at any exit code. This is the reference parser the SKILL.md callers model.

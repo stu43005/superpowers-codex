@@ -1795,7 +1795,8 @@ rewrite it as one line and re-run.
 
 **Pass condition:** in a single run with no edits in between, every `Status:` reviewer is either
 `Status: OKAY` or has only findings you attributed to a later task or refuted with recorded
-counter-evidence, and code-quality has no confirmed blocking finding.
+counter-evidence, code-quality has no confirmed blocking finding, and no escalation is pending (a
+refuted finding raised in three consecutive runs must be settled with your human partner first).
 
 ### Verify Findings Before Acting
 
@@ -1924,7 +1925,7 @@ Read the wrapper's stdout `=== Summary ===` on any exit code:
 **Final gate pass condition:** in a single run, `spec-coverage` is `Status: OKAY` (or its only
 remaining findings are refuted with recorded counter-evidence) and `final-adversarial` is
 `Verdict: approve` (or its only remaining findings are non-blocking spec-adjudicated rejections,
-below, or refuted). Verify every final-gate finding first (**Verify Findings Before Acting**). All
+below, or refuted), with no escalation pending. Verify every final-gate finding first (**Verify Findings Before Acting**). All
 tasks are complete, so "belongs to a later task" no longer applies: every confirmed spec-coverage
 gap or drift item is blocking.
 
@@ -2590,7 +2591,7 @@ Each review round, in order:
 1. Run `review-brainstorm.sh` once (both reviewers); parse its stdout `=== Summary ===` on any exit code.
 2. If either reviewer is `ERROR (tool failed…)`, re-run the whole wrapper with the same args — a tool failure is not a finding, so fix nothing this round.
 3. Read every finding in both reviewers' full sections and verify each one (**Verify findings before acting**). Then update the per-round ledger: design-soundness findings by semantic topic (see the ledger above), plus a `refuted` row for every finding you refuted from either reviewer. Do this only after ERROR is ruled out — a failed tool has no real findings.
-4. **Exit the loop** when (structural-completeness is `Status: OKAY` OR every remaining structural finding is `refuted`) AND (design-soundness is `Verdict: approve` OR every remaining design-soundness finding maps to an `adjudicated-reject` or `refuted` ledger topic). The loop may end **even if design-soundness never returns `approve`** or structural-completeness never returns `OKAY`, as long as every remaining finding is user-rejected or refuted with recorded counter-evidence.
+4. First, if any `refuted` topic has now been raised for three consecutive rounds, escalate it (see **Verify findings before acting**) and settle the user's decision before evaluating the exit. Then **exit the loop** when (structural-completeness is `Status: OKAY` OR every remaining structural finding is `refuted`) AND (design-soundness is `Verdict: approve` OR every remaining design-soundness finding maps to an `adjudicated-reject` or `refuted` ledger topic) AND no escalation is pending. The loop may end **even if design-soundness never returns `approve`** or structural-completeness never returns `OKAY`, as long as every remaining finding is user-rejected or refuted with recorded counter-evidence.
 5. Fix every confirmed structural-completeness finding — confirmed structural findings are always zero-tolerance. Do not fix `refuted` ones; escalate a `refuted` topic raised three consecutive rounds.
 6. Then handle each design-soundness finding by its ledger topic's status:
    - `refuted` → skip it; it is non-blocking unless it has been raised three consecutive rounds, in which case escalate it (see **Verify findings before acting**).
@@ -2652,7 +2653,7 @@ grep -c "^\*\*Verify findings before acting:\*\*" skills/brainstorming/SKILL.md
 grep -c "refuted" skills/brainstorming/SKILL.md
 grep -c "three consecutive rounds" skills/brainstorming/SKILL.md
 ```
-Expected: `1`, `20`, `6`.
+Expected: `1`, `20`, `7`.
 
 ```bash
 git diff --numstat -- skills/brainstorming/SKILL.md

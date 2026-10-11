@@ -115,17 +115,26 @@ Depends on: Task 1 (HttpError type)
 
 `SPEC_FILE_PATH` 由 `dispatch.sh` 既有的 `*_FILE_PATH` 存在性檢查把關。
 
+**共用證據規則**（spec-compliance、task-coverage、spec-coverage 三份 prompt 寫入同一段文字）。每個需求依性質歸入一類，各有對應的充分證據：
+
+| 類別 | 範例 | 充分證據 |
+|---|---|---|
+| 可執行行為 | 函式回傳值、CLI 行為、錯誤處理 | 實作位置**且**測試證據；有機會寫測試卻沒寫，判為缺漏 |
+| 宣告式 / 文件變更 | skill 指令文字、README、設定值、prompt 內容 | diff 中的對應位置即可，不要求可執行測試 |
+| 本質上需人工確認 | 外部系統的副作用、需要人操作才能觀察的行為 | 標註為需人工確認，不判缺漏，交由 §5.4 收尾 |
+
 **`spec-reviewer-prompt.md`（改寫）**
 
 - 依據從「plan 中的 Task」改為「spec 中任務題目所列章節」；任務題目只用來界定本次 diff 的範圍，需求的唯一真相是 spec。
-- 保留：Misunderstandings、Extra/unneeded work、Evidence Verifiability、Issue Reporting Requirements、Output Contract。
+- 保留：Misunderstandings、Extra/unneeded work、Issue Reporting Requirements、Output Contract。
+- Evidence Verifiability 段落改為共用證據規則的文字。
 - 新增：檢查 diff 是否實作了 spec **Non-goals / Accepted limitations** 中明列不做的事。
 - 移除：Missing requirements 整節（移交 `task-coverage`）。
 
 **`task-coverage-prompt.md`（新增，由 `writing-plans/coverage-verifier-prompt.md` 改寫）**
 
 - 列出任務題目所列 spec 章節中的功能需求，以及以 must / should / need / must not / avoid 或同義語表述的條件。
-- 每一條給出實作位置**與**測試證據；缺任一者列為未完成。證據以 `git diff [TASK_BASE]..HEAD` 為主；先前已存在於 `HEAD` 的程式碼與測試可以作為輔助證據。無法以 diff 或測試驗證的項目，沿用 spec-compliance 的 Evidence Verifiability 規則：標註並移交 final gate，不判失敗。
+- 每一條依共用證據規則給出該類別的充分證據；不足者列為未完成。證據以 `git diff [TASK_BASE]..HEAD` 為主；先前已存在於 `HEAD` 的程式碼與測試可以作為輔助證據。
 - prompt 明確告知：同一章節可能拆給多個 Task，reviewer 看不到 Task 清單，因此**列出所有未完成的條目即可，不需要判斷它是否屬於後面的 Task**；歸屬由 controller 判斷（§5.3）。
 - 輸出格式：對照表（條件 / 來源章節 / 實作位置 / 測試證據 / 結果），最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 
@@ -159,7 +168,7 @@ Depends on: Task 1 (HttpError type)
 **`spec-coverage-prompt.md`（新增）**
 
 - 讀完整份 spec，並執行 `git diff [IMPL_BASE]..HEAD`。
-- 逐條列出 spec 的功能需求、設計決策、must / should 類條件，各自指出實作位置**與**測試證據；缺任一者為缺漏。無法以 diff 或測試驗證的項目沿用 Evidence Verifiability 規則：標註為需人工確認，不判缺漏。
+- 逐條列出 spec 的功能需求、設計決策、must / should 類條件，各自依共用證據規則（§5.1）給出該類別的充分證據；不足者為缺漏。
 - spec 的 **Non-goals / Accepted limitations** 所列項目不算缺漏。
 - 最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 
@@ -193,7 +202,7 @@ controller **不得**為了讓 reviewer 通過而刪減 Task 的 `Acceptance:`�
 
 ### 5.4 需人工確認的項目
 
-spec-compliance、task-coverage、spec-coverage 依 Evidence Verifiability 規則標註為「無法以 diff 或測試驗證、需人工確認」的項目，不阻擋 reviewer 通過，但必須有明確的收尾：
+spec-compliance、task-coverage、spec-coverage 依共用證據規則（§5.1）標註為「本質上需人工確認」的項目，不阻擋 reviewer 通過，但必須有明確的收尾：
 
 - controller 在整個執行過程中收集這些項目（項目內容、來源 reviewer、所屬 Task），存在 session 狀態中。
 - final gate 通過後、呼叫 `finishing-a-development-branch` 之前，若清單不為空，controller 把清單列給使用者，以 `AskUserQuestion` 請使用者逐項確認已驗證，或明確豁免。使用者回報某項未通過時，視同 final gate 的缺漏：追加 Task 修正後重跑 `review-final.sh`。
@@ -250,7 +259,8 @@ spec-compliance、task-coverage、spec-coverage 依 Evidence Verifiability 規�
 ### 6.7 README 與 plugin metadata
 
 - `.claude-plugin/plugin.json` 的 `description` 移除 `writing-plans`。
-- `README.md`：skill 清單移除 `writing-plans`；遷移指令中的 `rm -rf` 與 legacy 檢查**保留** `writing-plans`（理由同 §6.6）；說明流程時改為 brainstorming → SDD。
+- `README.md`：skill 清單移除 `writing-plans`；遷移指令中的 `rm -rf` 與 legacy 殘留檢查迴圈**保留** `writing-plans`（理由同 §6.6）；說明流程時改為 brainstorming → SDD。
+- `README.md` 遷移步驟 3 的**正向安裝檢查**目前以 `~/.claude/plugins/cache/*/superpowers-codex/*/skills/writing-plans` 判斷 plugin 已安裝，必須改為檢查保留下來的 `skills/subagent-driven-development`。否則新安裝會永遠回報 FAIL，而殘留舊版快取的環境則會用過時的證據誤判為 OK。
 
 ## 7. 錯誤處理
 

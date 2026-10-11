@@ -79,7 +79,7 @@ Depends on: Task 1 (HttpError type)
 - `Files:`：預計建立或修改的檔案，標註 `(new)`。
 - `Interface:`：此 Task 對其他 Task 暴露的介面（函式、型別、CLI 參數、檔案格式等）；沒有就寫 `none`。只寫簽名，不寫實作。
 - `Acceptance:`：可用測試驗證的驗收條件，每條一行。
-- `Depends on:`：依賴的 Task 與其使用的介面；沒有就寫 `none`。
+- `Depends on:`：依賴的 Task 與其使用的介面；沒有就寫 `none`。**只能引用編號較小的 Task**：Phase 0 依依賴關係排定 Task 順序，使每個 Task 開始時其依賴都已完成；若依賴關係無法排出這樣的順序（循環依賴），就把循環中的 Task 合併成一個。追加的 Task（§5.2、§5.3）同樣遵守此規則。
 - **不寫實作程式碼、測試程式碼或逐步指令。** implementer 在 TDD 中自行設計。
 
 `task-list-format.md` 同時收納從 `writing-plans/SKILL.md` 移入的拆分原則：Scope Check（spec 涵蓋多個獨立子系統時應已在 brainstorming 拆開）與 File Structure（以職責劃分檔案、每個 Task 產出可獨立成立的變更、在既有 codebase 中遵循既有模式）。
@@ -182,7 +182,7 @@ Depends on: Task 1 (HttpError type)
 
 reviewer 看不到 Task 清單，task-coverage（以及 spec-compliance）可能把屬於後面 Task 的需求回報為未完成。controller 持有完整清單，負責分類每一項 finding：
 
-- **屬於後面的 Task**：只有在 Task 工具中**確實存在**一個尚未完成的 Task，其 `Acceptance:` **明確涵蓋**該項，**且**其 `Spec:`（因而其任務題目）包含該項所在的 spec 章節時，才能如此判定。第二個條件確保接收方的 task-coverage 一定會檢查該項的實作與測試證據。controller 必須在回報中寫出對應的 Task 編號與 Acceptance 條目。此類 finding 不阻擋本 Task 通過，也不修改。
+- **屬於後面的 Task**：只有在 Task 工具中**確實存在**一個尚未完成的 Task，其 `Acceptance:` **明確涵蓋**該項，**且**其 `Spec:`（因而其任務題目）包含該項所在的 spec 章節時，才能如此判定。第二個條件確保接收方的 task-coverage 一定會檢查該項的實作與測試證據。另有第三個條件：該項**不是本 Task 的前置條件**（本 Task 的實作或測試不需要用到它）。前置條件即使已經分配給後面的 Task，也一律 blocking，改走下表「併入本 Task」的路徑，並從原本負責的 Task 移除該條目。controller 必須在回報中寫出對應的 Task 編號與 Acceptance 條目。此類 finding 不阻擋本 Task 通過，也不修改。
 - **其他一律 blocking**：找不到明確涵蓋的未完成 Task、涵蓋只是部分重疊、或判斷有疑義時，一律視為本 Task 的 finding。這條規則刻意保守，避免歸屬判斷變成放行漏洞。
 
 blocking finding 的處理：

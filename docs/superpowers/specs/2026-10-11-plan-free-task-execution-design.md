@@ -1,7 +1,7 @@
 # 免 plan 執行流程：以 Task 清單取代 implementation plan
 
 - **日期**：2026-10-11
-- **狀態**：使用者審閱後新增接續模式、commit trailer、實作期間修改 spec 三段，spec 雙審查迴圈進行中
+- **狀態**：spec 雙審查迴圈已通過（structural `OKAY`、design-soundness `approve`，含使用者審閱後新增的接續模式、commit trailer、實作期間修改 spec），待使用者確認
 - **提交類型**：`feat!:`（移除 `writing-plans` 階段，改變整條工作流的行為契約）
 
 ## 1. 問題

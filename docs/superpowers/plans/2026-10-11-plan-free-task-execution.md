@@ -1971,7 +1971,11 @@ spec. The normal flow (handoff from brainstorming) never probes git history.
    next task with no commits yet), dispatch an implementer to finish that task on top of the
    existing changes, committing with that task's trailer; its `TASK_BASE` follows step 5 if the
    task already has commits, otherwise it is the current `HEAD`. If you cannot tell which task
-   the changes belong to, say so in the same question.
+   the changes belong to, say so in the same question. Uncommitted changes to the spec file itself
+   (a spec edit interrupted before its commit) belong to no task: in the same question, ask whether
+   to keep the edit (you commit it on its own per **Mid-Implementation Spec Edits**, no `Task:`
+   trailer) or discard it. Settle the spec first, then rebuild the task list from the committed
+   spec and handle the remaining implementation changes.
 1. **Locate the start.** `S` = the commit that added the spec:
    `git log --diff-filter=A --format=%H -- <SPEC>`.
 2. **Rebuild `IMPL_BASE`.** List the trailers in order:

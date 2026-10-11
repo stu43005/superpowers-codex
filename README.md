@@ -4,6 +4,11 @@ A trimmed set of skills cherry-picked from [obra/superpowers](https://github.com
 with local customizations (e.g. removing worktree / executing-plans steps), kept in sync
 with upstream over time.
 
+Workflow: `brainstorming` produces a user-approved design spec, then
+`subagent-driven-development` derives a task list from that spec and implements it task by
+task with codex reviewers, and `finishing-a-development-branch` integrates the result. The
+upstream `writing-plans` stage (a separate implementation-plan document) has been removed.
+
 > Distribution form: a Claude Code **plugin** (with `.claude-plugin/plugin.json` and a
 > `.claude-plugin/marketplace.json`). Skills under `skills/<name>/` are auto-discovered;
 > reviewers are dispatched through the bundled `scripts/dispatch.sh` via
@@ -28,6 +33,7 @@ content, **not** in your shell, so locate the bundled script by path.)
 
 ```bash
 # 1. Remove legacy copies AND any ~/.agents/skills symlink targets
+#    (writing-plans is no longer shipped, but a leftover legacy copy must still be removed)
 rm -rf ~/.claude/skills/{brainstorming,writing-plans,subagent-driven-development,finishing-a-development-branch}
 rm -rf ~/.agents/skills/{brainstorming,writing-plans,subagent-driven-development,finishing-a-development-branch}
 
@@ -37,7 +43,7 @@ if [ -z "$PF" ]; then echo "plugin not installed; run '/plugin install superpowe
 
 # 3. Deterministic post-install check: the plugin copy resolves under the plugin cache and
 #    no legacy skill dir remains
-ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/skills/writing-plans >/dev/null 2>&1 \
+ls -d ~/.claude/plugins/cache/*/superpowers-codex/*/skills/subagent-driven-development >/dev/null 2>&1 \
   && echo "OK: plugin skill present" || echo "FAIL: plugin skill not found in cache"
 for s in brainstorming writing-plans subagent-driven-development finishing-a-development-branch; do
   for d in ~/.claude/skills/$s ~/.agents/skills/$s; do
@@ -84,7 +90,6 @@ Defined by [`vendored-skills.txt`](./vendored-skills.txt) (single source of trut
 - `brainstorming`
 - `finishing-a-development-branch`
 - `subagent-driven-development`
-- `writing-plans`
 
 Currently synced from upstream: **v5.1.0**
 

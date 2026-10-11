@@ -1,7 +1,7 @@
 # 免 plan 執行流程：以 Task 清單取代 implementation plan
 
 - **日期**：2026-10-11
-- **狀態**：spec 雙審查迴圈已通過（structural `OKAY`、design-soundness `approve`，含使用者審閱後新增的接續模式、commit trailer、實作期間修改 spec），待使用者確認
+- **狀態**：使用者審閱中；最近一次修改為 final gate 職責重新分配（final-adversarial 只做程式碼層面審查，整體意圖偏離移交 spec-coverage）
 - **提交類型**：`feat!:`（移除 `writing-plans` 階段，改變整條工作流的行為契約）
 
 ## 1. 問題
@@ -20,7 +20,7 @@
 - SDD 在開始實作前，從 spec 拆出一份**不含程式碼**的 Task 清單（目標＋驗收條件），存放在 controller 的 session 狀態中，不寫成檔案。
 - 使用者明確要求接續實作某份 spec 時，controller 從 git 歷史（以 commit trailer 標記）重建執行狀態（§4.4）。
 - 每個 Task 依序由 implementer subagent 以 TDD 實作；實作完成後由四個 reviewer 並行審查：spec-compliance（改為對 spec 驗證）、code-quality、task-coverage、task-seam。reviewer 不讀 Task 清單，需要範圍資訊的 reviewer 只收到一行任務題目（§5.1）。
-- final gate 新增 spec-coverage reviewer，補上「清單整個漏掉某項 spec 需求」的檢查。
+- final gate 新增 spec-coverage reviewer，補上「清單整個漏掉某項 spec 需求」與「各 Task 合起來偏離 spec 整體意圖」的檢查；final-adversarial 維持程式碼層面的對抗審查。
 
 ### 非目標
 
@@ -210,14 +210,16 @@ Task: <N> <name>
 
 `--base`、`--spec` 皆為必填。wrapper 並行註冊兩個 job：
 
-- `final-adversarial`：呼叫方式不變（`adversarial --base <IMPL_BASE> --focus final-code-reviewer-focus.md`），不接收 spec。它的職責是對整體變更做程式碼層面的對抗審查（跨 Task 的介面縫隙、權限與隔離、資料遺失、rollback 與部分失敗、race condition、observability、ship/no-ship 判斷），不負責檢查實作是否符合 spec。`final-code-reviewer-focus.md` 移除「drift from the plan's overall intent (requirements that fell through the cracks between tasks, …)」一項：需求是否遺漏改由 spec-coverage 負責。同一句中「scaffolding or TODOs left behind, dead code from the task-by-task process」屬於程式碼層面，保留為獨立一項。
+- `final-adversarial`：呼叫方式不變（`adversarial --base <IMPL_BASE> --focus final-code-reviewer-focus.md`），不接收 spec。它的職責是對整體變更做程式碼層面的對抗審查（跨 Task 的介面縫隙、權限與隔離、資料遺失、rollback 與部分失敗、race condition、observability、ship/no-ship 判斷），不負責檢查實作是否符合 spec。`final-code-reviewer-focus.md` 移除「drift from the plan's overall intent (requirements that fell through the cracks between tasks, …)」一項：需求是否遺漏與整體意圖是否偏離，都改由 spec-coverage 負責（見下方 `spec-coverage-prompt.md` 的「逐條覆蓋」與「整體意圖偏離」）。同一句中「scaffolding or TODOs left behind, dead code from the task-by-task process」屬於程式碼層面，保留為獨立一項。
 - `spec-coverage`：`task`，prompt `spec-coverage-prompt.md`，placeholder `[SPEC_FILE_PATH]`、`[IMPL_BASE]`。
 
 **`spec-coverage-prompt.md`（新增）**
 
 - 讀完整份 spec，並執行 `git diff [IMPL_BASE]..HEAD`。
-- 逐條列出 spec 的功能需求、設計決策、must / should 類條件，各自依共用證據規則（§5.1）給出該類別的充分證據；不足者為缺漏。
-- spec 的 **Non-goals / Accepted limitations** 所列項目不算缺漏。
+- **逐條覆蓋**：列出 spec 的功能需求、設計決策、must / should 類條件，各自依共用證據規則（§5.1）給出該類別的充分證據；不足者為缺漏。
+- **整體意圖偏離**：在逐條覆蓋之外，以整個 `IMPL_BASE..HEAD` 為對象，檢查各 Task 的實作合起來是否仍符合 spec 描述的架構、元件分工、資料流與設計方向。逐條覆蓋通過但整體仍可能偏離，例如各部分以 spec 未描述的方式組合、職責落在與 spec 不同的元件、多個 Task 各自做了局部合理但彼此矛盾的取捨。每項偏離要指出對應的 spec 段落與實作位置。per-Task 的 spec-compliance 只看單一 Task 的 diff，無法發現這類跨 Task 的偏離，所以由這裡負責。
+- spec 的 **Non-goals / Accepted limitations** 所列項目不算缺漏，也不算偏離。
+- 輸出分兩段：Coverage Gaps 與 Intent Drift。任一段有項目即為 `Status: Issues Found`。
 - 最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 
 **Final gate 通過條件**：同一輪中，`spec-coverage` 為 `Status: OKAY`，且 `final-adversarial` 為 `Verdict: approve`（或其剩餘 findings 全部符合既有的 spec-adjudicated carve-out）。此時所有 Task 都已完成，§5.3 的「屬於後面的 Task」不再適用：spec-coverage 的每一項缺漏都是 blocking。
@@ -344,4 +346,4 @@ skill 文字（SKILL.md、prompt）沒有自動化測試，正確性由 spec 審
 
 - **Concern**：spec 通常早於 `IMPL_BASE`、不在 final gate 的 diff 中，而 final-adversarial 只收到 base 與靜態 focus 文字。在有多份 spec 的 repo 裡，它無法得知哪份設計主導這次變更，因而無法可靠地偵測設計偏離。reviewer 建議由 wrapper 產生含 spec 路徑的暫存 focus 檔，並加測試證明 spec 有送達。
 - **Decision**：不實作。final-adversarial 不接收 spec；其 focus 移除「drift from the overall intent」一項（§5.2）。
-- **Rationale**：final-adversarial 的職責是程式碼層面的對抗審查，不是用來檢查實作是否偏離 spec 的整體意圖（使用者裁決）。實作是否符合 spec 已由 per-Task 的 spec-compliance（理解與設計決策）、task-coverage，以及 final gate 的 spec-coverage（整份 spec 的需求覆蓋）負責。**前提**：以「spec-compliance 與 spec-coverage 都維持讀取來源 spec」為裁決前提；若其中任一被移除或改為不讀 spec，此前提即改變，須依 stale-waiver 規則重新評估。
+- **Rationale**：final-adversarial 的職責是程式碼層面的對抗審查，不是用來檢查實作是否偏離 spec 的整體意圖（使用者裁決）。實作是否符合 spec 已由 per-Task 的 spec-compliance（理解與設計決策）、task-coverage，以及 final gate 的 spec-coverage（整份 spec 的需求覆蓋與跨 Task 的整體意圖偏離）負責。**前提**：以「spec-compliance 與 spec-coverage 都維持讀取來源 spec」為裁決前提；若其中任一被移除或改為不讀 spec，此前提即改變，須依 stale-waiver 規則重新評估。

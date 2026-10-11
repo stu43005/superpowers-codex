@@ -191,10 +191,10 @@ blocking finding 的處理：
 |---|---|
 | 實作錯誤（任一 reviewer） | implementer 修正並 commit |
 | 本 Task 少做了某項需求，且沒有任何 Task 涵蓋 | controller 在本 Task 的 `Acceptance:` 補上條目，派 implementer 補實作 |
-| 該需求較適合由後面的 Task 負責，但目前沒有 Task 涵蓋 | controller 把條目加到某個尚未完成 Task 的 `Acceptance:`，並在其 `Spec:` 補上該需求所在章節（任務題目隨之更新）；或追加新 Task。本 Task 不補實作 |
+| 該需求較適合由後面的 Task 負責，但目前沒有 Task 涵蓋 | controller 把條目加到某個尚未完成 Task 的 `Acceptance:`，並在其 `Spec:` 補上該需求所在章節（任務題目隨之更新）；或追加新 Task。本 Task 不補實作。**限制**：若本 Task 的實作或測試需要用到該需求（即它是本 Task 的前置條件），不得轉給後面的 Task，必須走上一列併入本 Task。這確保執行順序永遠不會出現「目前的 Task 依賴尚未執行的 Task」 |
 | 需要修改已完成 Task 的程式碼才能讓本 Task 成立 | controller 把該修正併入本 Task 的 `Acceptance:`，由本 Task 的 implementer 一起完成；不追加獨立的修正 Task，避免本 Task 卡在等待後面的 Task |
 
-**範圍同步通則**：任何 Task 的 `Acceptance:` 被新增或修改時（上表任一路徑，包括把需求或已完成 Task 的修正併入本 Task），controller 必須同時把新條目所在的 spec 章節補進該 Task 的 `Spec:`，並依 §4.3 重新產生任務題目，之後的 `review-impl.sh` 一律使用更新後的題目。reviewer 看不到 `Acceptance:`，只有這樣，spec-compliance 才不會把併入的工作判為超出範圍，task-coverage 也才會檢查它。
+**範圍同步通則**：任何 Task 的 `Acceptance:` 被新增或修改時（上表任一路徑，包括把需求或已完成 Task 的修正併入本 Task），controller 必須同時把新條目所在的 spec 章節補進該 Task 的 `Spec:`，並依 §4.3 重新產生任務題目，之後的 `review-impl.sh` 一律使用更新後的題目。新條目若改變了該 Task 對外暴露的介面或它依賴的介面，也一併更新 `Interface:` 與 `Depends on:`。reviewer 看不到 `Acceptance:`，只有這樣，spec-compliance 才不會把併入的工作判為超出範圍，task-coverage 也才會檢查它。
 
 **任何修正之後都重跑整個 `review-impl.sh`**（同一個 `TASK_BASE`），包括只改了 Task 工具中的定義、沒有新 commit 的情況。
 

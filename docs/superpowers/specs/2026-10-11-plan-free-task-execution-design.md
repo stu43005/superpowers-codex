@@ -1,7 +1,7 @@
 # 免 plan 執行流程：以 Task 清單取代 implementation plan
 
 - **日期**：2026-10-11
-- **狀態**：設計已獲使用者口頭核准，待 spec 雙審查迴圈
+- **狀態**：設計已獲使用者口頭核准，spec 雙審查迴圈進行中
 - **提交類型**：`feat!:`（移除 `writing-plans` 階段，改變整條工作流的行為契約）
 
 ## 1. 問題
@@ -17,16 +17,17 @@
 ### 目標
 
 - 移除 `writing-plans` 階段：brainstorming 完成並經使用者核准 spec 後，直接進入 SDD。
-- SDD 在開始實作前，從 spec 拆出一份**不含程式碼**的 Task 清單（目標＋驗收條件），存成**不簽入 git** 的檔案，並在 harness 的 Task 工具中建立對應的進度條目。
-- 每個 Task 依序由 implementer subagent 以 TDD 實作；實作完成後由四個 reviewer 並行審查：spec-compliance（改為對 spec 驗證）、code-quality、task-coverage、task-seam。
+- SDD 在開始實作前，從 spec 拆出一份**不含程式碼**的 Task 清單（目標＋驗收條件），只存放在 harness 的 Task 工具中，不寫成檔案。
+- 每個 Task 依序由 implementer subagent 以 TDD 實作；實作完成後由四個 reviewer 並行審查：spec-compliance（改為對 spec 驗證）、code-quality、task-coverage、task-seam。reviewer 不讀 Task 清單，需要範圍資訊的 reviewer 只收到一行任務題目（§5.1）。
 - final gate 新增 spec-coverage reviewer，補上「清單整個漏掉某項 spec 需求」的檢查。
 
 ### 非目標
 
 - **不改 brainstorming 的設計與 spec 審查流程**，只改其終點（§6.1）。
-- **不在動工前審查 Task 清單、也不設使用者確認關卡。** 使用者已核准 spec；清單產生後直接開始實作。清單品質由 per-Task 的四個 reviewer 與 final gate 的 spec-coverage 在事後把關。
+- **不在動工前審查 Task 清單、也不設使用者確認關卡。** 使用者已核准 spec；清單產生後直接開始實作。清單品質由 per-Task 的四個 reviewer、controller 的歸屬判斷（§5.3）與 final gate 的 spec-coverage 在事後把關。
 - **不提供 plan 與免 plan 兩條路徑並存。** 本設計完全取代 `writing-plans`。
-- **不處理實作期間修改 spec 的協定。** spec 仍簽入 git，其修正問題維持現狀。`2026-08-10-requirement-doc-amendment-protocol-design.md` 中針對 plan 的部分已被本設計取代（tasks 檔不在 git 內，修改它不會污染 diff）；其針對 spec 的部分仍未實作，不在本次範圍內。
+- **不支援跨 session 接續執行。** Task 清單與 `IMPL_BASE` / `TASK_BASE` 都只存在 session 內（Task 工具與 controller 狀態），與現行 SDD 相同。session 中斷後的處理方式維持現狀，不在本設計範圍內。
+- **不處理實作期間修改 spec 的協定。** spec 仍簽入 git，其修正問題維持現狀。`2026-08-10-requirement-doc-amendment-protocol-design.md` 中針對 plan 的部分已被本設計取代（不再有簽入 git 的需求檔可以污染 diff）；其針對 spec 的部分仍未實作，不在本次範圍內。
 - **不改 `dispatch.sh` 與 `review-batch-lib.sh`。** 只改兩個 wrapper（`review-impl.sh`、`review-final.sh`）的參數與註冊的 job。
 
 ## 3. 整體流程
@@ -34,53 +35,33 @@
 ```
 brainstorming（不變，直到使用者明確核准 spec）
   └─> superpowers-codex:subagent-driven-development
-        Phase 0：從 spec 拆出 Task 清單（§4）
-          - 寫入 tasks 檔；每個 Task 在 Task 工具建一個條目
+        Phase 0：從 spec 拆出 Task 清單，建立在 Task 工具中（§4）
           - 不審查、不等使用者，直接進入 Phase 1
+        捕捉 IMPL_BASE
         Phase 1：逐個 Task 依序執行
           捕捉 TASK_BASE → implementer（TDD）→ review-impl.sh（四個 reviewer，§5.1）
-          → 有 finding 就修正（§5.3）並重跑整個 review-impl.sh，直到通過
-          → tasks 檔該 Task 標為 done、Task 工具條目標為 completed
+          → controller 依歸屬規則分類 findings（§5.3）→ 修正後重跑整個 review-impl.sh，直到通過
+          → Task 工具條目標為 completed
         Phase 2：review-final.sh（final-adversarial + spec-coverage，§5.2）
-  └─> superpowers-codex:finishing-a-development-branch（清理步驟改為刪除 tasks 檔，§6.4）
+  └─> superpowers-codex:finishing-a-development-branch
 ```
 
-SDD 既有的 invocation discipline、caller control-flow、HEAD 契約、continuous execution 原則全部沿用，只把其中「plan」的依據替換成 spec 與 tasks 檔。
-
-**Base SHA 改為持久化在 tasks 檔中**（既有 SDD 只存在 controller 的 task-tracking 狀態，跨 session 接續時會遺失）：
-
-- `IMPL_BASE`：Phase 0 寫 tasks 檔時以 `git rev-parse HEAD` 捕捉，寫入檔頭的 `Impl base:` 欄位。之後不再改變。
-- `TASK_BASE`：每個 Task 派發 implementer **之前**以 `git rev-parse HEAD` 捕捉，先寫入該 Task 的 `Task base:` 欄位，再派發 implementer。同一個 Task 的修正與重審一律沿用這個值，不重新捕捉。
-- 所有 `review-impl.sh` / `review-final.sh` 呼叫的 base 參數一律從 tasks 檔讀取，不依賴 controller 記憶。
+SDD 既有的 Base SHA 追蹤（`IMPL_BASE`、`TASK_BASE`，存在 controller 的 task-tracking 狀態）、invocation discipline、caller control-flow、HEAD 契約、continuous execution 原則全部沿用，只把其中「plan」的依據替換成 spec 與 Task 工具中的清單。
 
 ## 4. Task 清單（Phase 0）
 
-### 4.1 位置與命名
+### 4.1 存放位置
 
-- 路徑：`$(git rev-parse --git-dir)/superpowers/tasks/<topic>.md`。
-- `<topic>`：spec 檔名去掉 `.md` 與結尾的 `-design`。例如 spec `docs/superpowers/specs/2026-10-11-plan-free-task-execution-design.md` 對應 `<topic>` = `2026-10-11-plan-free-task-execution`。
-- 放在 git 目錄內的理由：永遠不會被簽入、不需修改 `.gitignore`、跨 session 仍存在、codex reviewer（外部 process，於 repo root 執行）可以讀取。
-- wrapper 呼叫時以 `git rev-parse --git-dir` 的實際輸出組成路徑傳入（在一般 repo 為相對路徑 `.git/...`），不寫死 `.git`。
+- Task 清單只存放在 harness 的 Task 工具中，每個 Task 一個條目：條目標題為 `Task N: <name>`，條目內容為 §4.2 的完整定義。
+- Task 清單**不寫成檔案、不簽入 git**。controller 派發 implementer 時，從 Task 工具條目取出完整定義貼進 implementer prompt；reviewer 不讀清單。
+- SKILL.md 以「the harness's task-tracking tool」稱呼，不綁定特定工具名稱。harness 沒有可存放內容的 task 工具時，controller 把完整清單寫在自己的回覆中並在每個 Task 開始時重新列出該 Task 的定義（見 §8）。
 
-### 4.2 正本與 Task 工具的分工
+### 4.2 Task 定義格式
 
-- **tasks 檔是唯一正本**：codex reviewer 從它讀 Task 定義；controller 從它擷取 Task 全文貼給 implementer。
-- **Task 工具只追蹤進度**：每個 Task 一個條目，標題對應 `Task N: <name>`，不存放 Task 內容。controller 更新 tasks 檔的 `Status` 時同步更新 Task 工具條目。
-- 兩者狀態不一致時，以 tasks 檔為準。
+格式定義寫在新的 sidecar `skills/subagent-driven-development/task-list-format.md`：
 
-### 4.3 檔案格式
-
-格式定義寫在新的 sidecar `skills/subagent-driven-development/task-list-format.md`，內容如下：
-
-````markdown
-# <Feature Name> Tasks
-
-Source spec: docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
-Impl base: <IMPL_BASE SHA>
-
-### Task 1: <Component Name>
-Status: pending
-Task base: none
+```
+Task 3: Retry policy
 Spec: §4.2, §4.3
 Files: src/retry.ts (new), src/client.ts
 Interface: export function withRetry(fn, opts)
@@ -88,34 +69,26 @@ Acceptance:
 - retries up to opts.max on 5xx
 - no retry on 4xx
 - backoff doubles each attempt
-Depends on: none
-````
+Depends on: Task 1 (HttpError type)
+```
 
 欄位規則：
 
-- `Source spec:`：必填，恰好一個 spec 路徑。供 final gate 的 spec-adjudicated carve-out 以 fail-closed 方式辨識唯一來源 spec（取代原本 plan→spec 的參照）。
-- `Impl base:`：必填，見 §3。
-- 標題：`### Task N: <name>`，N 從 1 遞增；wrapper 的 `--task "Task N"` 以此比對。
-- `Status:`：`pending` 或 `done`，只由 controller 更新。
-- `Task base:`：尚未開始為 `none`；開始時寫入 SHA（見 §3）。`Status: pending` 且 `Task base:` 為 SHA，代表此 Task 已開始、尚未通過審查。
-- `Spec:`：此 Task 涉及的 spec 章節，至少一個。同一章節可以被多個 Task 引用（一個章節拆給多個 Task）；此 Task 在該章節中**實際負責**哪些需求，由 `Acceptance:` 界定。
+- `Spec:`：此 Task 涉及的 spec 章節，至少一個。同一章節可以拆給多個 Task；此 Task 在該章節中實際負責哪些需求，由 `Acceptance:` 界定。
 - `Files:`：預計建立或修改的檔案，標註 `(new)`。
 - `Interface:`：此 Task 對其他 Task 暴露的介面（函式、型別、CLI 參數、檔案格式等）；沒有就寫 `none`。只寫簽名，不寫實作。
 - `Acceptance:`：可用測試驗證的驗收條件，每條一行。
-- `Depends on:`：依賴的 Task 與其使用的介面，例如 `Task 1 (HttpError type)`；沒有就寫 `none`。
+- `Depends on:`：依賴的 Task 與其使用的介面；沒有就寫 `none`。
 - **不寫實作程式碼、測試程式碼或逐步指令。** implementer 在 TDD 中自行設計。
 
 `task-list-format.md` 同時收納從 `writing-plans/SKILL.md` 移入的拆分原則：Scope Check（spec 涵蓋多個獨立子系統時應已在 brainstorming 拆開）與 File Structure（以職責劃分檔案、每個 Task 產出可獨立成立的變更、在既有 codebase 中遵循既有模式）。
 
-### 4.4 Phase 0 的進入條件
+### 4.3 任務題目（task summary）
 
-- **tasks 檔不存在**：依 spec 產生清單，所有 Task 為 `pending`、`Task base: none`，並寫入 `Impl base:`。
-- **tasks 檔已存在且有進度**（至少一個 Task 為 `done`，或有 Task 的 `Task base:` 為 SHA）：視為接續執行，依 tasks 檔重建 Task 工具條目，然後：
-  - 先驗證 `Impl base:` 與每個非 `none` 的 `Task base:` 都是目前 `HEAD` 的祖先（`git merge-base --is-ancestor <sha> HEAD`）。任一驗證失敗（例如分支被 rebase、reset），fail closed，以 `AskUserQuestion` 詢問使用者，不自行重新捕捉。
-  - 若有「已開始、尚未通過審查」的 Task（`pending` + `Task base:` 為 SHA），從它接續：以既有 `Task base:` 直接跑 `review-impl.sh`。implementer 已 commit 的部分會被納入審查；尚未完成的部分會以 finding 的形式回報，再派 implementer 補完。
-  - 否則從第一個 `pending` 開始。
-- **tasks 檔已存在且沒有進度**（全部 `pending` 且 `Task base: none`）：以 `AskUserQuestion` 詢問要接續還是重建。
-- **tasks 檔已存在且全部為 `done`**：驗證 `Impl base:` 是 `HEAD` 的祖先後直接進入 Phase 2；驗證失敗時同上 fail closed。
+每個 Task 由 controller 產生一行任務題目，格式為 `Task N: <name> (spec §X, §Y)`，章節與該 Task 的 `Spec:` 一致。例如 `Task 3: Retry policy (spec §4.2, §4.3)`。
+
+- 這是傳給 reviewer 的**唯一**範圍資訊，透過 `--task-summary` 傳入（§5.1）。
+- 必須是單行：`dispatch.sh` 既有的 `require_no_newline` 會拒絕含換行的 `--set` 值，wrapper 直接失敗。
 
 ## 5. 審查
 
@@ -126,54 +99,46 @@ Depends on: none
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/review-impl.sh" \
   --spec docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md \
-  --tasks <git-dir>/superpowers/tasks/<topic>.md \
-  --task "Task N" \
+  --task-summary "Task N: <name> (spec §X, §Y)" \
   --task-base <TASK_BASE>
 ```
 
-`--spec`、`--tasks`、`--task`、`--task-base` 皆為必填；保留 `--max-parallel`；移除 `--plan`。wrapper 一次並行註冊四個 job。重疊的處理原則是**每個 reviewer 只回答一個問題**：
+`--spec`、`--task-summary`、`--task-base` 皆為必填；保留 `--max-parallel`；移除 `--plan` 與 `--task`。wrapper 一次並行註冊四個 job。分工原則是**每個 reviewer 只回答一個問題**，並且只拿到回答該問題所需的輸入：
 
-| Label | 回答的問題 | 機制與依據 | 輸出 |
+| Label | 回答的問題 | 機制與輸入 | 輸出 |
 |---|---|---|---|
-| `spec-compliance` | 做出來的東西**對不對**：對 spec 的理解是否偏差、做法是否違背 spec 的設計決策、是否有超出此 Task 範圍的額外工作、是否碰到 spec 的 Non-goals | `task`，prompt `spec-reviewer-prompt.md`；`git diff <TASK_BASE>..HEAD` 對照此 Task `Spec:` 引用的 spec 章節。spec 是需求的唯一真相，Task 定義只用來界定範圍 | `Status: OKAY \| Issues Found` |
+| `spec-compliance` | 做出來的東西**對不對**：對 spec 的理解是否偏差、做法是否違背 spec 的設計決策、是否有超出任務題目範圍的額外工作、是否碰到 spec 的 Non-goals | `task`，prompt `spec-reviewer-prompt.md`；`[SPEC_FILE_PATH]`、`[TASK_SUMMARY]`、`[TASK_BASE]` | `Status: OKAY \| Issues Found` |
 | `code-quality` | 做得**好不好** | `review --base <TASK_BASE>`（codex 原生 review，不變） | prose |
-| `task-coverage` | **做完了沒** | `task`，prompt `task-coverage-prompt.md`；diff + tasks 檔 + spec | 逐條對照表 + `Status:` |
-| `task-seam` | 跟其他 Task **接不接得起來** | `task`，prompt `task-seam-prompt.md`；diff + tasks 檔所有 sibling Task | `Status:` |
+| `task-coverage` | **做完了沒** | `task`，prompt `task-coverage-prompt.md`；`[SPEC_FILE_PATH]`、`[TASK_SUMMARY]`、`[TASK_BASE]` | 對照表 + `Status:` |
+| `task-seam` | 跟既有程式碼**接不接得起來** | `task`，prompt `task-seam-prompt.md`；只有 `[TASK_BASE]`，不讀 spec | `Status:` |
 
-各 prompt 的 placeholder（皆由 wrapper 以 `--set` 注入）：
-
-- `spec-reviewer-prompt.md`：`[SPEC_FILE_PATH]`、`[TASKS_FILE_PATH]`、`[TASK_ID]`、`[TASK_BASE]`
-- `task-coverage-prompt.md`：同上四個
-- `task-seam-prompt.md`：同上四個
-
-`*_FILE_PATH` 的值由 `dispatch.sh` 既有的存在性檢查把關，tasks 檔不存在時 wrapper 直接失敗。
+`SPEC_FILE_PATH` 由 `dispatch.sh` 既有的 `*_FILE_PATH` 存在性檢查把關。
 
 **`spec-reviewer-prompt.md`（改寫）**
 
-- 依據從「plan 中的 Task」改為「spec 中此 Task `Spec:` 所列章節」；Task 定義只用來界定本次 diff 的範圍。
+- 依據從「plan 中的 Task」改為「spec 中任務題目所列章節」；任務題目只用來界定本次 diff 的範圍，需求的唯一真相是 spec。
 - 保留：Misunderstandings、Extra/unneeded work、Evidence Verifiability、Issue Reporting Requirements、Output Contract。
 - 新增：檢查 diff 是否實作了 spec **Non-goals / Accepted limitations** 中明列不做的事。
 - 移除：Missing requirements 整節（移交 `task-coverage`）。
 
 **`task-coverage-prompt.md`（新增，由 `writing-plans/coverage-verifier-prompt.md` 改寫）**
 
-分兩部分檢查，範圍刻意限定在**此 Task 負責的需求**，整份 spec 的完整性留給 final gate 的 spec-coverage（§5.2）：
-
-- **實作完整性**：逐條檢查此 Task 的每一條 `Acceptance`，各自給出實作位置**與**測試證據；缺任一者即為「實作缺漏」。證據以 `git diff [TASK_BASE]..HEAD` 為主；若某條 Acceptance 依賴的行為由先前的 Task 實作，可以引用 `HEAD` 上既有的程式碼與測試作為輔助證據，但此 Task 自己新增的行為必須出現在 diff 中。無法以 diff 或測試驗證的項目，沿用 spec-compliance 的 Evidence Verifiability 規則：標註並移交 final gate，不判失敗。
-- **定義歸屬**：列出此 Task `Spec:` 所列章節中所有以 must / should / need / must not / avoid 或同義語表述的條件，對每一條判斷：是否被此 Task 的某條 `Acceptance` 涵蓋，或被 tasks 檔中**任一其他 Task**（`done` 或 `pending`）的 `Acceptance` 涵蓋。兩者皆否時，回報為「Task 定義缺漏」，並建議該條件應歸屬哪個 Task（可以是此 Task、某個 `pending` sibling，或新增 Task）。被其他 Task 涵蓋的條件不屬於此 Task 的責任，不要求出現在此 Task 的 diff 中。
-- 輸出格式：兩張對照表——實作完整性（Acceptance / 實作位置 / 測試證據 / 結果）與定義歸屬（條件 / 來源章節 / 歸屬 Task / 結果），最後一行 `Status: OKAY` 或 `Status: Issues Found`。
+- 列出任務題目所列 spec 章節中的功能需求，以及以 must / should / need / must not / avoid 或同義語表述的條件。
+- 每一條給出實作位置**與**測試證據；缺任一者列為未完成。證據以 `git diff [TASK_BASE]..HEAD` 為主；先前已存在於 `HEAD` 的程式碼與測試可以作為輔助證據。無法以 diff 或測試驗證的項目，沿用 spec-compliance 的 Evidence Verifiability 規則：標註並移交 final gate，不判失敗。
+- prompt 明確告知：同一章節可能拆給多個 Task，reviewer 看不到 Task 清單，因此**列出所有未完成的條目即可，不需要判斷它是否屬於後面的 Task**；歸屬由 controller 判斷（§5.3）。
+- 輸出格式：對照表（條件 / 來源章節 / 實作位置 / 測試證據 / 結果），最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 
 **`task-seam-prompt.md`（新增，由 `writing-plans/plan-document-reviewer-prompt.md` 改寫）**
 
-保留並改寫三項準則，對象從 plan 文字改為實際 diff：
+只看 `git diff [TASK_BASE]..HEAD` 與 repo 現有程式碼，不讀 spec，檢查三項：
 
-1. **介面一致性**：diff 實際對外暴露的介面是否符合此 Task 的 `Interface:`；是否符合所有在 `Depends on:` 中引用此 Task 的 sibling Task 的預期（名稱、參數、型別、回傳值）。不一致時指明是此 Task 的實作要改，還是某個 `pending` sibling 的定義要改。
-2. **文件引用洩漏**：程式碼與註解不得引用 spec、tasks 檔或 Task 編號（例如「per spec §4」、「see Task 2」）。
+1. **介面一致性**：diff 新增或修改的介面（函式、型別、CLI 參數、檔案格式）與 repo 中既有的呼叫端、被呼叫端是否一致（名稱、參數、型別、回傳值）。
+2. **文件引用洩漏**：程式碼與註解不得引用 spec、plan、Task 編號（例如「per spec §4」、「see Task 2」）。
 3. **殘留 placeholder**：交付的程式碼不得含 TODO、TBD、未實作的 stub。
 
-刪除原 plan reviewer 的 Spec Coverage（移交 `spec-compliance` 與 `task-coverage`）、Code Completeness、Command Accuracy、Pre-Implementation Research Task Leak（Task 不再含程式碼與指令，這三項不再適用）。最後一行 `Status: OKAY` 或 `Status: Issues Found`。
+刪除原 plan reviewer 的 Spec Coverage（移交 `spec-compliance` 與 `task-coverage`）、Type Consistency 中針對 plan 文字的 sibling 比對（改為上面第 1 項對實際程式碼的比對）、Code Completeness、Command Accuracy、Pre-Implementation Research Task Leak（Task 不再含程式碼與指令，這三項不再適用）。最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 
-**通過條件**：同一輪、沒有中途修改的情況下，三個 `Status:` reviewer 全部 `Status: OKAY`，且 code-quality 沒有 blocking finding。任一 reviewer `ERROR` 即重跑整個 wrapper（沿用既有 caller control-flow）。
+**通過條件**：同一輪、沒有中途修改的情況下，每個 `Status:` reviewer 要嘛是 `Status: OKAY`，要嘛其所有 findings 都已依 §5.3 被 controller 判定為「屬於後面的 Task」；且 code-quality 沒有 blocking finding。任一 reviewer `ERROR` 即重跑整個 wrapper（沿用既有 caller control-flow）。
 
 ### 5.2 Final gate：`review-final.sh`
 
@@ -182,42 +147,46 @@ Depends on: none
 ```bash
 "${CLAUDE_PLUGIN_ROOT}/scripts/review-final.sh" \
   --base <IMPL_BASE> \
-  --spec docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md \
-  --tasks <git-dir>/superpowers/tasks/<topic>.md
+  --spec docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
 ```
 
-`--base`、`--spec`、`--tasks` 皆為必填。wrapper 並行註冊兩個 job：
+`--base`、`--spec` 皆為必填。wrapper 並行註冊兩個 job：
 
 - `final-adversarial`：不變（`adversarial --focus final-code-reviewer-focus.md`）。focus 中「drift from the plan's overall intent」改為「drift from the spec's overall intent」。
-- `spec-coverage`：`task`，prompt `spec-coverage-prompt.md`，placeholder `[SPEC_FILE_PATH]`、`[TASKS_FILE_PATH]`、`[IMPL_BASE]`。
+- `spec-coverage`：`task`，prompt `spec-coverage-prompt.md`，placeholder `[SPEC_FILE_PATH]`、`[IMPL_BASE]`。
 
 **`spec-coverage-prompt.md`（新增）**
 
-- 讀完整份 spec 與 tasks 檔，並執行 `git diff [IMPL_BASE]..HEAD`。
+- 讀完整份 spec，並執行 `git diff [IMPL_BASE]..HEAD`。
 - 逐條列出 spec 的功能需求、設計決策、must / should 類條件，各自指出實作位置；找不到者為缺漏。
 - spec 的 **Non-goals / Accepted limitations** 所列項目不算缺漏。
-- 另外列出：沒有任何 Task 在 `Spec:` 引用的 spec 章節（清單拆分漏洞的直接證據）。
 - 最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 
-**Final gate 通過條件**：同一輪中，`spec-coverage` 為 `Status: OKAY`，且 `final-adversarial` 為 `Verdict: approve`（或其剩餘 findings 全部符合既有的 spec-adjudicated carve-out）。
+**Final gate 通過條件**：同一輪中，`spec-coverage` 為 `Status: OKAY`，且 `final-adversarial` 為 `Verdict: approve`（或其剩餘 findings 全部符合既有的 spec-adjudicated carve-out）。此時所有 Task 都已完成，§5.3 的「屬於後面的 Task」不再適用：spec-coverage 的每一項缺漏都是 blocking。
 
-**缺漏的處理**：controller 在 tasks 檔末尾追加新 Task（`pending`）涵蓋缺漏，並建立 Task 工具條目；新 Task 走完整 Phase 1 流程後，以同一個 `IMPL_BASE` 重跑整個 `review-final.sh`。final-adversarial 的 blocking findings 沿用既有做法（派 implementer 修正後重跑）。
+**缺漏的處理**：controller 在 Task 工具中追加新 Task 涵蓋缺漏，新 Task 走完整 Phase 1 流程後，以同一個 `IMPL_BASE` 重跑整個 `review-final.sh`。final-adversarial 的 blocking findings 沿用既有做法（派 implementer 修正後重跑）。
 
-**既有 carve-out 的來源 spec 辨識**：改為讀 tasks 檔的 `Source spec:`。欄位缺失、指向不存在的檔案、或找不到 **Non-goals / Accepted limitations** 章節時，不壓制任何 finding（沿用既有 fail-closed 規則）。
+**既有 carve-out 的來源 spec 辨識**：改為「傳給 `review-final.sh --spec` 的那份 spec」。這是 SDD 從 brainstorming 交接時收到的唯一 spec，不再需要從 plan 反查。找不到 **Non-goals / Accepted limitations** 章節時，不壓制任何 finding（沿用既有 fail-closed 規則）。
 
-### 5.3 Finding 的修正路徑
+### 5.3 Controller 的歸屬判斷與修正路徑
+
+reviewer 看不到 Task 清單，task-coverage（以及 spec-compliance）可能把屬於後面 Task 的需求回報為未完成。controller 持有完整清單，負責分類每一項 finding：
+
+- **屬於後面的 Task**：只有在 Task 工具中**確實存在**一個尚未完成的 Task，其 `Acceptance:` **明確涵蓋**該項時，才能如此判定。controller 必須在回報中寫出對應的 Task 編號與 Acceptance 條目。此類 finding 不阻擋本 Task 通過，也不修改。
+- **其他一律 blocking**：找不到明確涵蓋的未完成 Task、涵蓋只是部分重疊、或判斷有疑義時，一律視為本 Task 的 finding。這條規則刻意保守，避免歸屬判斷變成放行漏洞。
+
+blocking finding 的處理：
 
 | Finding 性質 | 處理 |
 |---|---|
-| 實作錯誤（任一 reviewer） | implementer 修正並 commit；重跑整個 `review-impl.sh`（同一個 `TASK_BASE`） |
-| Task 定義缺漏，建議歸屬此 Task（`task-coverage`） | controller 先在此 Task 的 `Acceptance` 補上條目，再派 implementer 補實作；重跑 `review-impl.sh` |
-| Task 定義缺漏，建議歸屬某個 `pending` sibling 或新增 Task（`task-coverage`） | controller 把條目加到該 sibling 的 `Acceptance`，或在 tasks 檔末尾追加新 Task；此 Task 不補實作；重跑 `review-impl.sh` |
-| 某個 `pending` sibling 的定義需要調整（`task-seam`） | controller 直接修改該 sibling 的定義；重跑 `review-impl.sh` |
-| 某個 `done` sibling 需要調整 | 在 tasks 檔末尾追加修正 Task，不重開已完成的 Task；重跑 `review-impl.sh` |
+| 實作錯誤（任一 reviewer） | implementer 修正並 commit |
+| 本 Task 少做了某項需求，且沒有任何 Task 涵蓋 | controller 在本 Task 的 `Acceptance:` 補上條目，派 implementer 補實作 |
+| 該需求較適合由後面的 Task 負責，但目前沒有 Task 涵蓋 | controller 把條目加到某個尚未完成 Task 的 `Acceptance:`，或追加新 Task；本 Task 不補實作 |
+| 需要修改已完成 Task 的程式碼才能讓本 Task 成立 | controller 把該修正併入本 Task 的 `Acceptance:`，由本 Task 的 implementer 一起完成；不追加獨立的修正 Task，避免本 Task 卡在等待後面的 Task |
 
-**任何修正之後都重跑整個 `review-impl.sh`**，包括只改了 tasks 檔、沒有新 commit 的情況。通過條件（§5.1）因此沒有例外：只改定義的那一輪，重跑讓 reviewer 依更新後的 tasks 檔確認 finding 已解決。
+**任何修正之後都重跑整個 `review-impl.sh`**（同一個 `TASK_BASE`），包括只改了 Task 工具中的定義、沒有新 commit 的情況。
 
-tasks 檔不在 git 內，上述修改都不會出現在任何 reviewer 看到的 diff 中。controller **不得**為了讓 reviewer 通過而刪減 Task 的 `Acceptance` 或 `Spec:`：定義只能因為更貼近 spec 而修改，不能因為遷就實作而放寬。
+controller **不得**為了讓 reviewer 通過而刪減 Task 的 `Acceptance:`：定義只能因為更貼近 spec 而修改，不能因為遷就實作而放寬。
 
 ## 6. 其他檔案變更
 
@@ -233,15 +202,16 @@ tasks 檔不在 git 內，上述修改都不會出現在任何 reviewer 看到�
 - 新增 Phase 0（§4），並在流程圖加入對應節點。
 - When to Use 的判斷從「Have implementation plan?」改為「Have an approved spec?」。
 - `review-impl.sh`、`review-final.sh` 的呼叫範例與 caller control-flow 改為 §5 的新介面與四個 / 兩個 reviewer。
-- 「Read plan, extract all tasks」改為「Read tasks file」；Red Flags 中「Make subagent read plan file」改為「Make subagent read the tasks file (provide full text instead)」。
-- 新增 Red Flags：寫入或簽入 tasks 檔到 repo 工作目錄；為了讓 reviewer 通過而放寬 Task 定義；在 Task 工具而非 tasks 檔中存放 Task 內容。
+- 新增 §5.3 的歸屬判斷規則與修正路徑。
+- 「Read plan, extract all tasks」改為「Derive the task list from the spec into the task-tracking tool」；Red Flags 中「Make subagent read plan file」改為「Make subagent derive its own task from the spec (provide the full task definition instead)」。
+- 新增 Red Flags：把 finding 判定為「屬於後面的 Task」卻無法指出明確涵蓋它的 Task 與 Acceptance 條目；為了讓 reviewer 通過而放寬 Task 定義；把 Task 清單寫成檔案或簽入 git。
 - Example Workflow 改寫為新流程。
 - Integration 移除 writing-plans。
 - Sidecar files 列出：`implementer-prompt.md`、`task-list-format.md`、`spec-reviewer-prompt.md`、`task-coverage-prompt.md`、`task-seam-prompt.md`、`spec-coverage-prompt.md`、`final-code-reviewer-focus.md`。
 
 ### 6.3 `skills/subagent-driven-development/implementer-prompt.md`
 
-- Task Description 改為「FULL TEXT of the task from the tasks file」。
+- Task Description 改為「FULL TEXT of the task definition from the task-tracking tool」，並另外提供 spec 路徑，讓 implementer 能查閱 `Spec:` 所列章節。
 - Your Job 明訂：Task 不含程式碼，implementer 依 `Interface:` 與 `Acceptance:` 自行設計，並遵守 TDD 順序（先寫測試、看到失敗、再實作）。
 - 新增：若實作需要的第三方 API 行為在 spec 中沒有記載研究結論，回報 `NEEDS_CONTEXT` 並列出需要確認的 API，不得自行猜測。controller 收到後依使用者的 research subagent 規範取得結論，再重新派發。
 - Subagent model 說明從「sonnet — follows code already specified in the plan」改為依 SDD 的 Model Selection 依複雜度選擇（implementer 現在需要做程式設計，不再只是照抄）。
@@ -249,15 +219,11 @@ tasks 檔不在 git 內，上述修改都不會出現在任何 reviewer 看到�
 
 ### 6.4 `skills/finishing-a-development-branch/SKILL.md`
 
-移除現有的 Step 4（「Clean Up Completed Plan Files」，原本在 Step 5 之前 `git rm` plan 並 commit）。改為在 Step 5 **之後**新增「Clean Up Completed Tasks File」：
-
-- 只適用 Option 1、2（不變）。
-- 只在所選的整合操作**成功之後**執行：Option 1 為 merge 完成且 merge 後的測試通過；Option 2 為 push 與 PR 建立都成功。任一步失敗時保留 tasks 檔，讓之後的 session 能依 §4.4 接續。
-- 刪除 `$(git rev-parse --git-dir)/superpowers/tasks/<topic>.md`（`rm`，不是 `git rm`，不需要 commit）。tasks 檔不在 git 內，刪除後無法從 git 復原，因此必須等整合成功。
-- 若 tasks 檔中仍有 `pending` 的 Task，保留檔案並明確告知使用者。
-- 原 Step 4 的編號由後續步驟遞補，避免步驟號斷層；開頭的 Core principle 改為「Verify tests → Present options → Execute choice → Clean up completed tasks file」。
-- 「Never delete `docs/superpowers/specs/`」保留。
-- Common Mistakes 中「Leaving completed plans in `docs/superpowers/plans/`」改為對應 tasks 檔的版本。
+- 移除 Step 4「Clean Up Completed Plan Files」，因為不再產生 plan 檔。後續步驟編號遞補。
+- 開頭的 Core principle 改為「Verify tests → Present options → Execute choice」。
+- Quick Reference 表格移除「Remove Completed Plan」欄。
+- Common Mistakes 移除「Leaving completed plans in `docs/superpowers/plans/`」與「Deleting specs along with plans」兩項。
+- Red Flags 的 Never 清單移除「Delete anything under `docs/superpowers/specs/`」與「Remove a plan whose implementation is only partially complete」；Always 清單移除「Remove the completed plan file before merging…」。這些條目都只為 Step 4 的清理動作而存在；Step 4 移除後此 skill 不再觸及 `docs/superpowers/` 下的任何檔案。
 
 ### 6.5 刪除
 
@@ -277,22 +243,21 @@ tasks 檔不在 git 內，上述修改都不會出現在任何 reviewer 看到�
 
 ## 7. 錯誤處理
 
-- **執行途中 tasks 檔消失**（換 session 後被清除、手動刪除）：fail closed，停下來以 `AskUserQuestion` 詢問使用者，不憑記憶或 Task 工具重建。
-- **tasks 檔格式不符**（缺 `Source spec:`、Task 缺必填欄位、Task 編號重複）：Phase 0 寫完後由 controller 自檢；執行途中發現時先修正 tasks 檔再繼續。wrapper 不解析 tasks 檔內容，格式錯誤只會反映在 reviewer 的 findings 中。
+- **`--task-summary` 含換行**：`dispatch.sh` 拒絕，wrapper 失敗。controller 改成單行後重跑。
 - **implementer 回報 `NEEDS_CONTEXT`（第三方 API）**：見 §6.3。
+- **歸屬判斷有疑義**：一律 blocking（§5.3）。
 - **wrapper `ERROR`、`(tool exit N)`**：沿用既有 caller control-flow。
 
 ## 8. 假設
 
-- codex companion 的 read-only 任務可以讀取 git 目錄內的一般檔案。依據：既有 reviewer 已在同一 sandbox 中執行 `git diff`，需要讀取 git 目錄。若實作時發現不可讀，改用 repo 工作目錄內、由 `.git/info/exclude` 排除的路徑，其餘設計不變。
-- harness 提供 Task 工具（或等效的 TodoWrite）。SKILL.md 以「the harness's task-tracking tool」稱呼，不綁定特定工具名稱；正本在 tasks 檔，Task 工具不可用時不影響正確性。
+- harness 提供可存放條目內容的 task 工具（例如 TaskCreate / TaskUpdate）。不提供時，controller 把完整清單寫在回覆中，並在每個 Task 開始時重新列出該 Task 的定義；這會讓清單受 context 壓縮影響，但不影響 reviewer（reviewer 本來就不讀清單），歸屬判斷仍以「指不出明確涵蓋的 Task 就 blocking」的保守規則把關。
 
 ## 9. 測試
 
 更新 `scripts/review-batch-lib.test.sh`（以既有的 `BATCH_DISPATCH_SH` echo stub 驗證 argv 契約）：
 
-- `review-impl.sh`：註冊四個 job，label 依序為 `spec-compliance`、`code-quality`、`task-coverage`、`task-seam`；三個 `task` job 的 prompt 路徑與 `SPEC_FILE_PATH`、`TASKS_FILE_PATH`、`TASK_ID`、`TASK_BASE` 的 `--set` 值正確；code-quality 為 `review --base <TASK_BASE>`；缺少 `--spec`、`--tasks`、`--task`、`--task-base` 任一者時 fail fast 並輸出清楚的錯誤；傳入已移除的 `--plan` 時以 unknown arg 失敗。
-- `review-final.sh`：註冊兩個 job（`final-adversarial`、`spec-coverage`），`spec-coverage` 的 prompt 路徑與三個 `--set` 值正確；缺少 `--base`、`--spec`、`--tasks` 任一者時 fail fast。
+- `review-impl.sh`：註冊四個 job，label 依序為 `spec-compliance`、`code-quality`、`task-coverage`、`task-seam`；`spec-compliance` 與 `task-coverage` 的 prompt 路徑與 `SPEC_FILE_PATH`、`TASK_SUMMARY`、`TASK_BASE` 的 `--set` 值正確；`task-seam` 的 prompt 路徑正確且只帶 `TASK_BASE`（不帶 `SPEC_FILE_PATH`）；code-quality 為 `review --base <TASK_BASE>`；缺少 `--spec`、`--task-summary`、`--task-base` 任一者時 fail fast 並輸出清楚的錯誤；傳入已移除的 `--plan` 或 `--task` 時以 unknown arg 失敗。
+- `review-final.sh`：註冊兩個 job（`final-adversarial`、`spec-coverage`），`spec-coverage` 的 prompt 路徑與 `SPEC_FILE_PATH`、`IMPL_BASE` 的 `--set` 值正確；缺少 `--base`、`--spec` 任一者時 fail fast。
 - 刪除 review-plan 的所有測試與 plan caller shape 測試。
 - `bash scripts/review-batch-lib.test.sh`、`bash scripts/dispatch.test.sh`、`bash scripts/preflight.test.sh` 全部通過；所有修改過的 `.sh` 通過 `shellcheck` 與 `bash -n`。
 

@@ -2299,7 +2299,7 @@ Expected:
 - Seventh command prints exactly one line.
 - Eighth command prints exactly six heading lines; ninth prints exactly four.
 - The `plan-free-task-execution` grep prints nothing (exit status 1): the skill does not reference the design spec document.
-- The `Verify Findings Before Acting` heading count is `1`; the `three consecutive runs` count is `3` (the continuous-execution stop list, the verification section, and the Red Flags entry).
+- The `Verify Findings Before Acting` heading count is `1`; the `three consecutive runs` count is `4` (the continuous-execution stop list, the per-task pass condition, the verification section, and the Red Flags entry).
 
 - [ ] **Step 3: Commit**
 

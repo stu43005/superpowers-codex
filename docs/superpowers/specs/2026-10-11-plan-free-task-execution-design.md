@@ -109,8 +109,9 @@ Depends on: Task 1 (HttpError type)
 
 **Fail closed**：以下任一情況成立，controller 把目前的重建結果與疑點列給使用者，以 `AskUserQuestion` 確認後才繼續，不自行猜測：
 
+- 工作目錄不乾淨（`git status --porcelain` 有輸出：staged、unstaged 或 untracked 的變更）。這通常是上個 session 在 commit 前中斷留下的實作。controller 不得忽略或自行歸屬它們，必須請使用者決定 commit 到哪個 Task、stash 或捨棄；工作目錄乾淨後才開始重建，確保審查與測試看到的是同一個已 commit 的狀態。此檢查在第 1 步之前執行。
 - 找不到 spec 的新增 commit，或 `S..HEAD` 中沒有任何帶 `Task:` trailer 的 commit。
-- `IMPL_BASE..HEAD` 中有不帶 trailer、且不是只修改 spec 檔的 commit（無法判斷它屬於哪個 Task，或根本與此 spec 無關）。
+- **整段 `S..HEAD`**（包括第一個帶 trailer 的 commit 之前的部分）中，有不帶 trailer、且不是只修改 spec 檔的 commit：可能無法判斷它屬於哪個 Task、根本與此 spec 無關，或是以舊流程（沒有 trailer）做到一半的實作。最後一種情況下，使用者需要明確指定 `IMPL_BASE` 與這些 commit 的 Task 歸屬，這也是從舊流程遷移的分支的接續方式。
 - 同一個 Task 的 commit 與其他 Task 的 commit 交錯。
 - 依目前 spec 重建的清單無法與 trailer 中的 Task 對應。
 

@@ -102,7 +102,7 @@ Depends on: Task 1 (HttpError type)
 1. **定位起點**：`S` = 新增 spec 檔的 commit（`git log --diff-filter=A --format=%H -- <spec>` 的結果）。
 2. **重建 `IMPL_BASE`**：在 `S..HEAD` 中找出第一個帶 `Task:` trailer（§4.5）的 commit，`IMPL_BASE` = 它的 parent。實作期間的 spec 修正 commit（§4.6）不帶 trailer，不影響判定。
 3. **分組**：依 trailer 把 `IMPL_BASE..HEAD` 中帶 trailer 的 commit 分到各個 Task。
-4. **重建 Task 清單**：依**目前的** spec 重新拆出 Task 清單（§4.2），再對照第 3 步的分組與程式碼現況，判定哪些 Task 已完成。**Task 身分沿用歷史**：已出現在 trailer 中的 Task，重建後必須**沿用 trailer 上的原編號與原名稱**（逐字相同），之後它的修正 commit 也使用這個 trailer，確保同一個 Task 的 commit 在多次接續後仍屬於同一組。依目前 spec 拆出、但歷史中沒有出現過的 Task，編號從歷史中最大的編號往後接。對應時以 trailer 的 Task 名稱與 commit 內容為準，不以拆分順序硬套編號。
+4. **重建 Task 清單**：依**目前的** spec 重新拆出 Task 清單（§4.2），再對照第 3 步的分組與程式碼現況，判定哪些 Task 已完成。**Task 身分沿用歷史**：已出現在 trailer 中的 Task，重建後必須**沿用 trailer 上的原編號與原名稱**（逐字相同），之後它的修正 commit 也使用這個 trailer，確保同一個 Task 的 commit 在多次接續後仍屬於同一組。依目前 spec 拆出、但歷史中沒有出現過的 Task，編號從歷史中最大的編號往後接。對應時以 trailer 的 Task 名稱與 commit 內容為準，不以拆分順序硬套編號。**只有最後一組（第 5 步的 Task）可以繼續使用原 trailer 提交 commit**；歷史中更早的 Task 一律視為已關閉，不再出現帶其 trailer 的 commit。依目前 spec（例如 spec 修改後）判定已關閉的 Task 需要補做的工作，依 §5.3 處理：若是目前 Task 的前置條件就併入目前 Task，否則追加新 Task（新編號、新 trailer）。這與一般流程中「不重開已完成 Task」的規則一致，也確保歷史永遠不會出現交錯。
 5. **處理最後一個 Task**：trailer 中最後出現的 Task 一律視為**尚未通過審查**（無法得知上個 session 是否在審查途中中斷）。它的 `TASK_BASE` = 該 Task 第一個 commit 的 parent；先以此跑 `review-impl.sh`，之後照一般流程處理 findings。若這個 Task 之後的 commit 混有其他 Task 的 commit（交錯），視為無法判定，走下方 fail closed。
 6. 之後照一般流程從下一個未完成的 Task 繼續。final gate 使用重建的 `IMPL_BASE`，因此涵蓋整段實作，包括上個 session 的部分。
 7. 重建完成後，controller 在回覆中列出重建結果（`IMPL_BASE`、各 Task 狀態與對應 commit），然後直接繼續，不等使用者確認。

@@ -2048,7 +2048,7 @@ Implementer subagents report one of four statuses. Handle each appropriately:
 **BLOCKED:** The implementer cannot complete the task. Assess the blocker:
 1. If it's a context problem, provide more context and re-dispatch with the same model
 2. If the task requires more reasoning, re-dispatch with a more capable model
-3. If the task is too large, split it into smaller tasks (keep `Depends on:` pointing only at lower-numbered tasks)
+3. If the task is too large: when it has **no commits yet**, split it into smaller tasks (keep `Depends on:` pointing only at lower-numbered tasks); when it **already has commits**, keep its identity — dispatch the remaining work as sequential implementer assignments under the same task, trailer, and `TASK_BASE`, then review their combined result with one `review-impl.sh` run. Never split a task that has commits into new task numbers.
 4. If the spec itself is wrong, follow **Mid-Implementation Spec Edits**
 
 **Never** ignore an escalation or force the same model to retry without changes. If the implementer said it's stuck, something needs to change.

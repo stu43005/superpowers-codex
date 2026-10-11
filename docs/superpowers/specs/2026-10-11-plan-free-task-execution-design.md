@@ -222,7 +222,7 @@ Task: <N> <name>
 
 **Final gate 通過條件**：同一輪中，`spec-coverage` 為 `Status: OKAY`，且 `final-adversarial` 為 `Verdict: approve`（或其剩餘 findings 全部符合既有的 spec-adjudicated carve-out）。此時所有 Task 都已完成，§5.3 的「屬於後面的 Task」不再適用：spec-coverage 的每一項缺漏都是 blocking。
 
-**缺漏的處理**：controller 在 Task 清單中追加新 Task 涵蓋缺漏，新 Task 走完整 Phase 1 流程後，以同一個 `IMPL_BASE` 重跑整個 `review-final.sh`。final-adversarial 的 blocking findings 沿用既有做法（派 implementer 修正後重跑）。
+**缺漏與 blocking findings 的處理**：spec-coverage 的缺漏與 final-adversarial 的 blocking findings 採同一條路徑：controller 在 Task 清單末尾追加新 Task（新的編號與名稱、依 §4.2 寫出 `Spec:` 與 `Acceptance:`，修正 final-adversarial finding 的 Task 其 `Spec:` 為該 finding 涉及的章節），新 Task 走完整 Phase 1 流程（捕捉 `TASK_BASE`、帶自己的 `Task:` trailer、四個 reviewer），全部完成後以同一個 `IMPL_BASE` 重跑整個 `review-final.sh`。這取代既有「直接派 implementer 修正 final-adversarial findings」的做法，確保每個 commit 都屬於唯一一個 Task，接續模式不需要任何特例（不會出現「已完成的 Task 之後又出現它的 commit」這種交錯）。
 
 **既有 carve-out 的來源 spec 辨識**：改為「傳給 `review-final.sh --spec` 的那份 spec」。這是 SDD 從 brainstorming 交接時收到的唯一 spec，不再需要從 plan 反查。找不到 **Non-goals / Accepted limitations** 章節時，不壓制任何 finding（沿用既有 fail-closed 規則）。
 

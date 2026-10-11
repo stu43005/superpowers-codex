@@ -45,7 +45,13 @@ brainstorming（不變，直到使用者明確核准 spec）
   └─> superpowers-codex:finishing-a-development-branch（清理步驟改為刪除 tasks 檔，§6.4）
 ```
 
-SDD 既有的 Base SHA 追蹤（`IMPL_BASE`、`TASK_BASE`）、invocation discipline、caller control-flow、HEAD 契約、continuous execution 原則全部沿用，只把其中「plan」的依據替換成 spec 與 tasks 檔。`IMPL_BASE` 在 Phase 0 寫完 tasks 檔之後、第一個 implementer 開始之前捕捉；tasks 檔不在 git 內，捕捉時機前後不影響 SHA。
+SDD 既有的 invocation discipline、caller control-flow、HEAD 契約、continuous execution 原則全部沿用，只把其中「plan」的依據替換成 spec 與 tasks 檔。
+
+**Base SHA 改為持久化在 tasks 檔中**（既有 SDD 只存在 controller 的 task-tracking 狀態，跨 session 接續時會遺失）：
+
+- `IMPL_BASE`：Phase 0 寫 tasks 檔時以 `git rev-parse HEAD` 捕捉，寫入檔頭的 `Impl base:` 欄位。之後不再改變。
+- `TASK_BASE`：每個 Task 派發 implementer **之前**以 `git rev-parse HEAD` 捕捉，先寫入該 Task 的 `Task base:` 欄位，再派發 implementer。同一個 Task 的修正與重審一律沿用這個值，不重新捕捉。
+- 所有 `review-impl.sh` / `review-final.sh` 呼叫的 base 參數一律從 tasks 檔讀取，不依賴 controller 記憶。
 
 ## 4. Task 清單（Phase 0）
 
@@ -70,9 +76,11 @@ SDD 既有的 Base SHA 追蹤（`IMPL_BASE`、`TASK_BASE`）、invocation discip
 # <Feature Name> Tasks
 
 Source spec: docs/superpowers/specs/<YYYY-MM-DD-topic>-design.md
+Impl base: <IMPL_BASE SHA>
 
 ### Task 1: <Component Name>
 Status: pending
+Task base: none
 Spec: §4.2, §4.3
 Files: src/retry.ts (new), src/client.ts
 Interface: export function withRetry(fn, opts)
@@ -86,9 +94,11 @@ Depends on: none
 欄位規則：
 
 - `Source spec:`：必填，恰好一個 spec 路徑。供 final gate 的 spec-adjudicated carve-out 以 fail-closed 方式辨識唯一來源 spec（取代原本 plan→spec 的參照）。
+- `Impl base:`：必填，見 §3。
 - 標題：`### Task N: <name>`，N 從 1 遞增；wrapper 的 `--task "Task N"` 以此比對。
 - `Status:`：`pending` 或 `done`，只由 controller 更新。
-- `Spec:`：此 Task 負責的 spec 章節，至少一個。
+- `Task base:`：尚未開始為 `none`；開始時寫入 SHA（見 §3）。`Status: pending` 且 `Task base:` 為 SHA，代表此 Task 已開始、尚未通過審查。
+- `Spec:`：此 Task 涉及的 spec 章節，至少一個。同一章節可以被多個 Task 引用（一個章節拆給多個 Task）；此 Task 在該章節中**實際負責**哪些需求，由 `Acceptance:` 界定。
 - `Files:`：預計建立或修改的檔案，標註 `(new)`。
 - `Interface:`：此 Task 對其他 Task 暴露的介面（函式、型別、CLI 參數、檔案格式等）；沒有就寫 `none`。只寫簽名，不寫實作。
 - `Acceptance:`：可用測試驗證的驗收條件，每條一行。
@@ -99,10 +109,13 @@ Depends on: none
 
 ### 4.4 Phase 0 的進入條件
 
-- **tasks 檔不存在**：依 spec 產生清單，所有 Task 為 `pending`。
-- **tasks 檔已存在且至少一個 Task 為 `done`**：視為接續執行，跳過已完成的 Task，從第一個 `pending` 開始；依 tasks 檔重建 Task 工具條目。
-- **tasks 檔已存在且全部為 `pending`**：以 `AskUserQuestion` 詢問要接續還是重建。
-- **tasks 檔已存在且全部為 `done`**：直接進入 Phase 2。
+- **tasks 檔不存在**：依 spec 產生清單，所有 Task 為 `pending`、`Task base: none`，並寫入 `Impl base:`。
+- **tasks 檔已存在且有進度**（至少一個 Task 為 `done`，或有 Task 的 `Task base:` 為 SHA）：視為接續執行，依 tasks 檔重建 Task 工具條目，然後：
+  - 先驗證 `Impl base:` 與每個非 `none` 的 `Task base:` 都是目前 `HEAD` 的祖先（`git merge-base --is-ancestor <sha> HEAD`）。任一驗證失敗（例如分支被 rebase、reset），fail closed，以 `AskUserQuestion` 詢問使用者，不自行重新捕捉。
+  - 若有「已開始、尚未通過審查」的 Task（`pending` + `Task base:` 為 SHA），從它接續：以既有 `Task base:` 直接跑 `review-impl.sh`。implementer 已 commit 的部分會被納入審查；尚未完成的部分會以 finding 的形式回報，再派 implementer 補完。
+  - 否則從第一個 `pending` 開始。
+- **tasks 檔已存在且沒有進度**（全部 `pending` 且 `Task base: none`）：以 `AskUserQuestion` 詢問要接續還是重建。
+- **tasks 檔已存在且全部為 `done`**：驗證 `Impl base:` 是 `HEAD` 的祖先後直接進入 Phase 2；驗證失敗時同上 fail closed。
 
 ## 5. 審查
 
@@ -144,10 +157,11 @@ Depends on: none
 
 **`task-coverage-prompt.md`（新增，由 `writing-plans/coverage-verifier-prompt.md` 改寫）**
 
-- 逐條列出：(a) 此 Task 的每一條 `Acceptance`；(b) 此 Task `Spec:` 所列章節中所有以 must / should / need / must not / avoid 或同義語表述的條件。
-- 每一條要給出 diff 中的實作位置**與**測試證據；缺任一者即為缺漏。無法以 diff 或測試驗證的項目，沿用 spec-compliance 的 Evidence Verifiability 規則：標註並移交 final gate，不判失敗。
-- (b) 中有條件未被 (a) 涵蓋時，回報為「Task 定義缺漏」，與「實作缺漏」分開列出。
-- 輸出格式：對照表（條目 / 來源 / 實作位置 / 測試證據 / 結果），最後一行 `Status: OKAY` 或 `Status: Issues Found`。
+分兩部分檢查，範圍刻意限定在**此 Task 負責的需求**，整份 spec 的完整性留給 final gate 的 spec-coverage（§5.2）：
+
+- **實作完整性**：逐條檢查此 Task 的每一條 `Acceptance`，各自給出實作位置**與**測試證據；缺任一者即為「實作缺漏」。證據以 `git diff [TASK_BASE]..HEAD` 為主；若某條 Acceptance 依賴的行為由先前的 Task 實作，可以引用 `HEAD` 上既有的程式碼與測試作為輔助證據，但此 Task 自己新增的行為必須出現在 diff 中。無法以 diff 或測試驗證的項目，沿用 spec-compliance 的 Evidence Verifiability 規則：標註並移交 final gate，不判失敗。
+- **定義歸屬**：列出此 Task `Spec:` 所列章節中所有以 must / should / need / must not / avoid 或同義語表述的條件，對每一條判斷：是否被此 Task 的某條 `Acceptance` 涵蓋，或被 tasks 檔中**任一其他 Task**（`done` 或 `pending`）的 `Acceptance` 涵蓋。兩者皆否時，回報為「Task 定義缺漏」，並建議該條件應歸屬哪個 Task（可以是此 Task、某個 `pending` sibling，或新增 Task）。被其他 Task 涵蓋的條件不屬於此 Task 的責任，不要求出現在此 Task 的 diff 中。
+- 輸出格式：兩張對照表——實作完整性（Acceptance / 實作位置 / 測試證據 / 結果）與定義歸屬（條件 / 來源章節 / 歸屬 Task / 結果），最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 
 **`task-seam-prompt.md`（新增，由 `writing-plans/plan-document-reviewer-prompt.md` 改寫）**
 
@@ -196,9 +210,12 @@ Depends on: none
 | Finding 性質 | 處理 |
 |---|---|
 | 實作錯誤（任一 reviewer） | implementer 修正並 commit；重跑整個 `review-impl.sh`（同一個 `TASK_BASE`） |
-| 此 Task 的定義缺漏（`task-coverage` 回報 Task 定義缺漏） | controller 先修改 tasks 檔中此 Task 的定義，再派 implementer 補實作；重跑 `review-impl.sh` |
-| 某個 `pending` sibling 的定義需要調整（`task-seam` 回報） | controller 直接修改該 sibling 的定義；若此 Task 本身沒有問題，不需要重跑 |
-| 某個 `done` sibling 需要調整 | 在 tasks 檔末尾追加修正 Task，不重開已完成的 Task |
+| Task 定義缺漏，建議歸屬此 Task（`task-coverage`） | controller 先在此 Task 的 `Acceptance` 補上條目，再派 implementer 補實作；重跑 `review-impl.sh` |
+| Task 定義缺漏，建議歸屬某個 `pending` sibling 或新增 Task（`task-coverage`） | controller 把條目加到該 sibling 的 `Acceptance`，或在 tasks 檔末尾追加新 Task；此 Task 不補實作；重跑 `review-impl.sh` |
+| 某個 `pending` sibling 的定義需要調整（`task-seam`） | controller 直接修改該 sibling 的定義；重跑 `review-impl.sh` |
+| 某個 `done` sibling 需要調整 | 在 tasks 檔末尾追加修正 Task，不重開已完成的 Task；重跑 `review-impl.sh` |
+
+**任何修正之後都重跑整個 `review-impl.sh`**，包括只改了 tasks 檔、沒有新 commit 的情況。通過條件（§5.1）因此沒有例外：只改定義的那一輪，重跑讓 reviewer 依更新後的 tasks 檔確認 finding 已解決。
 
 tasks 檔不在 git 內，上述修改都不會出現在任何 reviewer 看到的 diff 中。controller **不得**為了讓 reviewer 通過而刪減 Task 的 `Acceptance` 或 `Spec:`：定義只能因為更貼近 spec 而修改，不能因為遷就實作而放寬。
 
@@ -232,11 +249,13 @@ tasks 檔不在 git 內，上述修改都不會出現在任何 reviewer 看到�
 
 ### 6.4 `skills/finishing-a-development-branch/SKILL.md`
 
-Step 4 改為「Clean Up Completed Tasks File」：
+移除現有的 Step 4（「Clean Up Completed Plan Files」，原本在 Step 5 之前 `git rm` plan 並 commit）。改為在 Step 5 **之後**新增「Clean Up Completed Tasks File」：
 
 - 只適用 Option 1、2（不變）。
-- 刪除 `$(git rev-parse --git-dir)/superpowers/tasks/<topic>.md`（`rm`，不是 `git rm`，不需要 commit）。
+- 只在所選的整合操作**成功之後**執行：Option 1 為 merge 完成且 merge 後的測試通過；Option 2 為 push 與 PR 建立都成功。任一步失敗時保留 tasks 檔，讓之後的 session 能依 §4.4 接續。
+- 刪除 `$(git rev-parse --git-dir)/superpowers/tasks/<topic>.md`（`rm`，不是 `git rm`，不需要 commit）。tasks 檔不在 git 內，刪除後無法從 git 復原，因此必須等整合成功。
 - 若 tasks 檔中仍有 `pending` 的 Task，保留檔案並明確告知使用者。
+- 原 Step 4 的編號由後續步驟遞補，避免步驟號斷層；開頭的 Core principle 改為「Verify tests → Present options → Execute choice → Clean up completed tasks file」。
 - 「Never delete `docs/superpowers/specs/`」保留。
 - Common Mistakes 中「Leaving completed plans in `docs/superpowers/plans/`」改為對應 tasks 檔的版本。
 

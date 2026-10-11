@@ -353,4 +353,4 @@ skill 文字（SKILL.md、prompt）沒有自動化測試，正確性由 spec 審
 
 - **Concern**：乾淨工作目錄檢查只存在於接續模式。一般流程（brainstorming 交接）開始時若工作目錄已有無關的 staged / unstaged 修改，捕捉 HEAD 不會包含它們，但 implementer 在同一個目錄工作、且被要求不得帶著未 commit 的變更回報，無關修改可能被併入 Task commit，或在未經歸屬決定的情況下被改動；測試也可能執行到不在審查範圍內的內容。reviewer 建議在捕捉 `IMPL_BASE` 前與每次審查前都檢查工作目錄。
 - **Decision**：不實作。一般流程不加乾淨工作目錄檢查，每次審查前也不檢查。
-- **Rationale**：(1) 現行 SDD 同樣沒有此檢查，實務上未出現問題；(2) implementer 與 commit 流程一律以明確路徑 `git add <file>` 加入變更、禁止 `git add -A` / `git add .`，無關修改不會被順帶 commit；(3) 每次審查前都檢查會增加停止點，與 continuous execution 原則衝突，成本高於防護價值（使用者裁決）。**前提**：以「implementer 與 commit 流程維持只以明確路徑加入變更」為裁決前提；若日後改為允許整批加入，此前提即改變，須依 stale-waiver 規則重新評估。
+- **Rationale**：(1) 無關的雜項檔案本來就不會進 git（由 `.gitignore` 或使用者全域 excludes 排除），不會在一般流程中被誤 commit；(2) 現行 SDD 同樣沒有此檢查，實務上未出現問題；(3) agent 本身有能力判斷工作目錄中的檔案與目前 Task 是否相關；(4) 每次審查前都檢查會增加停止點，與 continuous execution 原則衝突，成本高於防護價值（使用者裁決）。**前提**：以「無關的雜項檔案由 git 的 ignore 機制排除、不會進入 git」為裁決前提；若日後出現無法以 ignore 機制排除、又會被一般流程誤納入 commit 的情況，此前提即改變，須依 stale-waiver 規則重新評估。

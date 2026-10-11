@@ -334,7 +334,8 @@ spec-compliance、task-coverage、spec-coverage 依共用證據規則（§5.1）
 - `review-impl.sh`：註冊四個 job，label 依序為 `spec-compliance`、`code-quality`、`task-coverage`、`task-seam`；`spec-compliance` 與 `task-coverage` 的 prompt 路徑與 `SPEC_FILE_PATH`、`TASK_SUMMARY`、`TASK_BASE` 的 `--set` 值正確；`task-seam` 的 prompt 路徑正確且只帶 `TASK_BASE`（不帶 `SPEC_FILE_PATH`）；code-quality 為 `review --base <TASK_BASE>`；缺少 `--spec`、`--task-summary`、`--task-base` 任一者時 fail fast 並輸出清楚的錯誤；傳入已移除的 `--plan` 或 `--task` 時以 unknown arg 失敗。
 - `review-final.sh`：註冊兩個 job（`final-adversarial`、`spec-coverage`），`spec-coverage` 的 prompt 路徑與 `SPEC_FILE_PATH`、`IMPL_BASE` 的 `--set` 值正確；`final-adversarial` 的 argv 與舊版相同（`adversarial --base <IMPL_BASE> --focus <root>/skills/subagent-driven-development/final-code-reviewer-focus.md`）；缺少 `--base`、`--spec` 任一者時 fail fast。
 - 刪除 review-plan 的所有測試與 plan caller shape 測試。
-- `bash scripts/review-batch-lib.test.sh`、`bash scripts/dispatch.test.sh`、`bash scripts/preflight.test.sh` 全部通過；所有修改過的 `.sh` 通過 `shellcheck` 與 `bash -n`。
+- `bash scripts/review-batch-lib.test.sh`、`bash scripts/dispatch.test.sh`、`bash scripts/preflight.test.sh` 全部通過；所有修改過的 `.sh` 通過 `bash -n`。
+- shellcheck：修改過的 wrapper（`review-impl.sh`、`review-final.sh`）必須完全通過（在 `scripts/` 目錄下執行 `shellcheck -x`）。測試檔 `review-batch-lib.test.sh` 在本次修改前就已有既存的 shellcheck finding（SC1090、SC2015 等 info/warning），清理它們不在本次範圍內；其標準為**不新增 finding**：以 `shellcheck -x -f gcc` 的輸出去除「檔名:行:欄」前綴後取唯一集合，與修改前版本的同一集合比對，不得出現修改前沒有的項目。
 
 skill 文字（SKILL.md、prompt）沒有自動化測試，正確性由 spec 審查與實作階段的四個 reviewer 把關。
 

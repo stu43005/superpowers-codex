@@ -157,9 +157,16 @@ greps before dispatching. `${CLAUDE_PLUGIN_ROOT}` is inline-expanded at load tim
 - **Do NOT append `echo "EXIT_CODE=$?"`** or any exit-code probe. On a nonzero exit Claude Code
   surfaces the code to you automatically, and the wrapper's authoritative status is its stdout
   `=== Summary ===`, not the process exit code.
-- **Do NOT redirect, pipe, or `tee` the output.** You need the full stdout; if it is too long or the
-  call times out, Claude Code writes the complete output to a file on its own — then read that file
-  in segments.
+- **The command line is the wrapper and its arguments — nothing else.** Forbidden: `>`, `>>`, `2>`,
+  `2>&1`, `&>`, `|`, `tee`; no `$(...)` or backtick wrapping; no chaining other commands with `&&`,
+  `||`, or `;`. Forbidden examples: `>/dev/null`, `2>/dev/null`, `&>/dev/null`, `| grep Status`,
+  `| grep -A`, `| tail -50`, `| head`, `> out.txt`, `| tee out.txt`. Filtering or discarding output
+  loses the full findings and the `[stderr excerpt]`, and makes `(prose — 見全文)` reviewers
+  impossible to interpret. If the output is too long or the call times out, Claude Code writes the
+  complete output to a file on its own — read that file in segments; never filter it yourself.
+- **Exit 3 means the wrapper's stdout or stderr was redirected to /dev/null.** No reviewer ran and
+  there is no `=== Summary ===`. Remove ALL redirections and pipes from the command and re-run it
+  with the same arguments.
 - **If the foreground call times out**, do NOT re-run it and do NOT poll for its output. It becomes a
   background task; end your turn and wait for Claude Code's completion notification, then read the
   captured output file.
@@ -191,7 +198,8 @@ rewrite it as one line and re-run.
 **Caller control-flow (read stdout on ANY exit code):**
 
 1. **Regardless of the wrapper's exit code, read and parse its entire stdout** and locate the
-   `=== Summary ===` section — stdout is preserved in full even on a nonzero exit.
+   `=== Summary ===` section — stdout is preserved in full even on a nonzero exit. **Exception:**
+   exit 3 produces no Summary — handle it by the exit-3 rule above instead of Summary parsing.
 2. Classify each reviewer from its Summary line: spec-compliance, task-coverage, and task-seam as
    `Status: OKAY` / `Status: Issues Found`; code-quality as `(prose — 見全文)` — read its full
    `## code-quality` section and treat any blocking-severity defect as a finding; or

@@ -1959,9 +1959,11 @@ If a serious problem means the spec itself must change:
 Enter Resume Mode **only** when your human partner explicitly asks you to resume implementing a
 spec. The normal flow (handoff from brainstorming) never probes git history.
 
-0. **Clean worktree check.** Run `git status --porcelain --untracked-files=no`. Any output (staged
-   or unstaged changes to tracked files) is a fail-closed condition — usually implementation
-   interrupted before commit. Untracked files (for example `.DS_Store`) are not checked. Do not ignore or attribute it yourself; your human partner decides which task to commit
+0. **Clean worktree check.** Run `git status --porcelain`. Any output (staged, unstaged, or
+   untracked changes) is a fail-closed condition — usually implementation interrupted before
+   commit, which can include new source or test files never added. Files excluded by `.gitignore`
+   or global excludes never appear; disposable files that still appear (for example `.DS_Store`)
+   are listed too, and your human partner disposes of them in the same confirmation. Do not ignore or attribute it yourself; your human partner decides which task to commit
    it to, or to stash or discard it. Start rebuilding only once the worktree is clean.
 1. **Locate the start.** `S` = the commit that added the spec:
    `git log --diff-filter=A --format=%H -- <SPEC>`.

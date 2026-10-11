@@ -109,7 +109,7 @@ Depends on: Task 1 (HttpError type)
 
 **Fail closed**：以下任一情況成立，controller 把目前的重建結果與疑點列給使用者，以 `AskUserQuestion` 確認後才繼續，不自行猜測：
 
-- 工作目錄不乾淨（`git status --porcelain` 有輸出：staged、unstaged 或 untracked 的變更）。這通常是上個 session 在 commit 前中斷留下的實作。controller 不得忽略或自行歸屬它們，必須請使用者決定 commit 到哪個 Task、stash 或捨棄；工作目錄乾淨後才開始重建，確保審查與測試看到的是同一個已 commit 的狀態。此檢查在第 1 步之前執行。
+- 工作目錄不乾淨（`git status --porcelain --untracked-files=no` 有輸出：已追蹤檔案的 staged 或 unstaged 變更）。untracked 檔案不列入（例如作業系統產生的 `.DS_Store`），以免每次接續都被無關檔案擋下。這通常是上個 session 在 commit 前中斷留下的實作。controller 不得忽略或自行歸屬它們，必須請使用者決定 commit 到哪個 Task、stash 或捨棄；工作目錄乾淨後才開始重建，確保審查與測試看到的是同一個已 commit 的狀態。此檢查在第 1 步之前執行。
 - 找不到 spec 的新增 commit，或 `S..HEAD` 中沒有任何帶 `Task:` trailer 的 commit。
 - **整段 `S..HEAD`**（包括第一個帶 trailer 的 commit 之前的部分）中，有不帶 trailer、且不是只修改 spec 檔的 commit：可能無法判斷它屬於哪個 Task、根本與此 spec 無關，或是以舊流程（沒有 trailer）做到一半的實作。最後一種情況下，使用者需要明確指定 `IMPL_BASE` 與這些 commit 的 Task 歸屬，這也是從舊流程遷移的分支的接續方式。
 - 同一個 Task 的 commit 與其他 Task 的 commit 交錯。
@@ -348,3 +348,9 @@ skill 文字（SKILL.md、prompt）沒有自動化測試，正確性由 spec 審
 - **Concern**：spec 通常早於 `IMPL_BASE`、不在 final gate 的 diff 中，而 final-adversarial 只收到 base 與靜態 focus 文字。在有多份 spec 的 repo 裡，它無法得知哪份設計主導這次變更，因而無法可靠地偵測設計偏離。reviewer 建議由 wrapper 產生含 spec 路徑的暫存 focus 檔，並加測試證明 spec 有送達。
 - **Decision**：不實作。final-adversarial 不接收 spec；其 focus 移除「drift from the overall intent」一項（§5.2）。
 - **Rationale**：final-adversarial 的職責是程式碼層面的對抗審查，不是用來檢查實作是否偏離 spec 的整體意圖（使用者裁決）。實作是否符合 spec 已由 per-Task 的 spec-compliance（理解與設計決策）、task-coverage，以及 final gate 的 spec-coverage（整份 spec 的需求覆蓋與跨 Task 的整體意圖偏離）負責。**前提**：以「spec-compliance 與 spec-coverage 都維持讀取來源 spec」為裁決前提；若其中任一被移除或改為不讀 spec，此前提即改變，須依 stale-waiver 規則重新評估。
+
+### 一般流程開始前與每次審查前檢查工作目錄是否乾淨
+
+- **Concern**：乾淨工作目錄檢查只存在於接續模式。一般流程（brainstorming 交接）開始時若工作目錄已有無關的 staged / unstaged 修改，捕捉 HEAD 不會包含它們，但 implementer 在同一個目錄工作、且被要求不得帶著未 commit 的變更回報，無關修改可能被併入 Task commit，或在未經歸屬決定的情況下被改動；測試也可能執行到不在審查範圍內的內容。reviewer 建議在捕捉 `IMPL_BASE` 前與每次審查前都檢查工作目錄。
+- **Decision**：不實作。一般流程不加乾淨工作目錄檢查，每次審查前也不檢查。
+- **Rationale**：(1) 現行 SDD 同樣沒有此檢查，實務上未出現問題；(2) implementer 與 commit 流程一律以明確路徑 `git add <file>` 加入變更、禁止 `git add -A` / `git add .`，無關修改不會被順帶 commit；(3) 每次審查前都檢查會增加停止點，與 continuous execution 原則衝突，成本高於防護價值（使用者裁決）。**前提**：以「implementer 與 commit 流程維持只以明確路徑加入變更」為裁決前提；若日後改為允許整批加入，此前提即改變，須依 stale-waiver 規則重新評估。

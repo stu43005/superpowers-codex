@@ -218,7 +218,7 @@ Task: <N> <name>
 - 讀完整份 spec，並執行 `git diff [IMPL_BASE]..HEAD`。
 - **逐條覆蓋**：列出 spec 的功能需求、設計決策、must / should 類條件，各自依共用證據規則（§5.1）給出該類別的充分證據；不足者為缺漏。
 - **整體意圖偏離**：在逐條覆蓋之外，以整個 `IMPL_BASE..HEAD` 為對象，檢查各 Task 的實作合起來是否仍符合 spec 描述的架構、元件分工、資料流與設計方向。逐條覆蓋通過但整體仍可能偏離，例如各部分以 spec 未描述的方式組合、職責落在與 spec 不同的元件、多個 Task 各自做了局部合理但彼此矛盾的取捨。每項偏離要指出對應的 spec 段落與實作位置。per-Task 的 spec-compliance 只看單一 Task 的 diff，無法發現這類跨 Task 的偏離，所以由這裡負責。
-- spec 的 **Non-goals / Accepted limitations** 所列項目不算缺漏，也不算偏離。
+- spec 的 **Non-goals / Accepted limitations** 只豁免「**沒有實作**」：所列項目沒做，不算缺漏也不算偏離。反過來，若 diff **實作了** Non-goals 明列不做的事（例如 spec 修改後才變成非目標的功能），列為偏離。Accepted limitations 的每一項在豁免前，都要依其記錄的前提（Rationale 中的「前提」）確認該前提在目前的實作下仍然成立；前提已不成立的，不予豁免。這與 final-adversarial 既有 carve-out 的前提檢查規則一致。
 - 輸出分兩段：Coverage Gaps 與 Intent Drift。任一段有項目即為 `Status: Issues Found`。
 - 最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 

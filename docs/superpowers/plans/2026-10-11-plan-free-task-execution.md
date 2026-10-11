@@ -527,6 +527,7 @@ Expected: no `FAIL` lines; last line `68 passed, 0 failed`; exit status 0.
 Run: `bash scripts/dispatch.test.sh` — expected last line `17 passed, 0 failed`.
 Run: `bash scripts/preflight.test.sh` — expected last line `6 passed, 0 failed`.
 Run: `bash -n scripts/review-batch-lib.test.sh` — expected no output, exit status 0.
+Run: `(cd scripts && shellcheck -x -S error review-batch-lib.test.sh)` — expected no output, exit status 0. (The test harness already carries style/info/warning-level findings such as SC1090 and SC2015 that predate this plan; they are out of scope, so the gate for this modified file is error severity.)
 
 - [ ] **Step 5: Commit**
 
@@ -931,7 +932,7 @@ items behind this change. Forbidden examples:
 - "per spec §4"
 - "see Task 2"
 - "as described in the design doc"
-- "according to the implementation plan"
+- "as required by the task list"
 Code must be self-explanatory. Remove every such reference.
 Not leaks: commit messages, including their `Task:` trailers; and product content whose
 subject is tasks or specs themselves (for example, a skill that defines a task-list format
@@ -1120,7 +1121,7 @@ Status: Issues Found
 - [ ] **Step 2: Replace `skills/subagent-driven-development/final-code-reviewer-focus.md` with this complete content (single line)**
 
 ```text
-Focus: challenge cross-task integration seams — types, interfaces, naming conventions, and shared state that must be consistent across task boundaries; scaffolding or TODOs left behind, and dead code from the task-by-task process; and the ship/no-ship merge judgment for the implementation as a whole. Adversarially probe: auth/permissions/isolation correctness across the full change set, data-loss or corruption risks introduced by the combined changes, rollback and partial-failure behavior end-to-end, race conditions and ordering assumptions that span multiple tasks, missing observability (logging/metrics/tracing) for the integrated feature.
+Focus: challenge cross-task integration seams — types, interfaces, naming conventions, and shared state that must be consistent across task boundaries; scaffolding or TODOs left behind, and dead code from the task-by-task process; and the ship/no-ship merge judgment for the implementation as a whole. Adversarially probe: auth/permissions/isolation correctness across the full change set, data-loss or corruption risks introduced by the combined changes, rollback and partial-failure behavior end-to-end, race conditions and ordering assumptions that span multiple tasks, missing observability (logging/metrics/tracing) for the integrated feature. Ignore changes under docs/superpowers/specs/: those files are design documents edited during implementation, not code, and are outside this review.
 ```
 
 - [ ] **Step 3: Verify the spec-coverage prompt**
@@ -1171,10 +1172,18 @@ Expected: exit status 0; output contains `--- DRY RUN: command ---` and `--- DRY
 Run:
 
 ```bash
-grep -niE 'spec|plan|intent|requirement' skills/subagent-driven-development/final-code-reviewer-focus.md
+grep -oiE "plan|intent|requirement|spec's|the spec|source spec" skills/subagent-driven-development/final-code-reviewer-focus.md
 ```
 
-Expected: no output, exit status 1 (the focus references no spec, no plan, and no intent/requirement drift).
+Expected: no output, exit status 1 (the focus references no plan, no spec as a review source, and no intent/requirement drift; the only spec-related text is the `docs/superpowers/specs/` exclusion path).
+
+Run:
+
+```bash
+grep -c 'Ignore changes under docs/superpowers/specs/' skills/subagent-driven-development/final-code-reviewer-focus.md
+```
+
+Expected output: `1`
 
 Run:
 
@@ -1409,9 +1418,9 @@ Task tool (general-purpose):
        Declarative changes (instruction text, configuration values, documentation) need no
        executable test; make the change at the right location.
     2. Implement exactly what the task specifies — every `Acceptance:` item, nothing more
-    3. Verify the implementation works (run the relevant tests and checks)
-    4. Commit your work
-    5. Self-review (see below)
+    3. Self-review (see below) and fix anything it finds
+    4. Verify the implementation works (run the relevant tests and checks, after any self-review fixes)
+    5. Commit your work (every commit with the trailer below)
     6. Report back
 
     Work from: [directory]
@@ -1441,9 +1450,11 @@ Task tool (general-purpose):
 
     ## Third-Party APIs
 
-    If the implementation depends on third-party library or tool behavior that the spec does not
-    document with a confirmed research conclusion, do not guess it. Report NEEDS_CONTEXT and list
-    each API and behavior that needs confirmation (package, version, the exact question).
+    If the implementation depends on third-party library or tool behavior that neither the spec
+    nor the Context section above documents with a confirmed research conclusion, do not guess
+    it. Report NEEDS_CONTEXT and list each API and behavior that needs confirmation (package,
+    version, the exact question). A confirmed research conclusion the controller supplies in the
+    Context section resolves the need just as one in the spec does.
 
     ## Code Organization
 
@@ -1501,7 +1512,8 @@ Task tool (general-purpose):
     - Did I write each test and see it fail before implementing?
     - Are tests comprehensive?
 
-    If you find issues during self-review, fix them now before reporting.
+    If you find issues during self-review, fix them now, re-run the relevant tests, and commit the
+    fixes with the trailer before reporting. Never report with uncommitted changes.
 
     ## Report Format
 

@@ -123,15 +123,21 @@ guard_rejected() {
   [ "$(cat "$base.rc")" = "3" ] && [ ! -e "$GUARD_MARK" ] \
     && [ ! -s "$base.mktemp" ] && [ ! -s "$base.trap" ]
 }
+# guard_diag_ok <file> : the file holds exactly one line, and it is the guard's full diagnostic
+# (names /dev/null and instructs removing all redirections and pipes, then re-running).
+GUARD_MSG='review-batch: wrapper output is redirected to /dev/null; remove ALL redirections and pipes from the command and re-run it'
+guard_diag_ok() {
+  [ "$(wc -l < "$1" | tr -d ' ')" = "1" ] && [ "$(cat "$1")" = "$GUARD_MSG" ]
+}
 
 guard_run g1 stdout-null
-if guard_rejected g1 && grep -q '^review-batch: .*/dev/null' "$ROOT/guard-g1.err"; then
+if guard_rejected g1 && guard_diag_ok "$ROOT/guard-g1.err"; then
   ok "guard: stdout to /dev/null -> exit 3, no dispatch/temp dir, diagnostic on stderr"
 else bad "guard: stdout to /dev/null -> exit 3, no dispatch/temp dir, diagnostic on stderr" \
   "rc=$(cat "$ROOT/guard-g1.rc") marker=$([ -e "$GUARD_MARK" ] && echo yes || echo no) mktemp=$(cat "$ROOT/guard-g1.mktemp") err=$(cat "$ROOT/guard-g1.err" 2>/dev/null)"; fi
 
 guard_run g2 stderr-null
-if guard_rejected g2 && grep -q '^review-batch: .*/dev/null' "$ROOT/guard-g2.out" \
+if guard_rejected g2 && guard_diag_ok "$ROOT/guard-g2.out" \
    && ! grep -q '^=== Summary ===$' "$ROOT/guard-g2.out"; then
   ok "guard: stderr to /dev/null -> exit 3, no dispatch/temp dir, diagnostic on stdout"
 else bad "guard: stderr to /dev/null -> exit 3, no dispatch/temp dir, diagnostic on stdout" \

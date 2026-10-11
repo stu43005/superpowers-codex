@@ -1959,12 +1959,13 @@ If a serious problem means the spec itself must change:
 Enter Resume Mode **only** when your human partner explicitly asks you to resume implementing a
 spec. The normal flow (handoff from brainstorming) never probes git history.
 
-0. **Clean worktree check.** Run `git status --porcelain`. Any output (staged, unstaged, or
-   untracked changes) is a fail-closed condition — usually implementation interrupted before
-   commit, which can include new source or test files never added. Files excluded by `.gitignore`
-   or global excludes never appear; disposable files that still appear (for example `.DS_Store`)
-   are listed too, and your human partner disposes of them in the same confirmation. Do not ignore or attribute it yourself; your human partner decides which task to commit
-   it to, or to stash or discard it. Start rebuilding only once the worktree is clean.
+0. **Interrupted-work check.** Run `git status --porcelain`. Staged or unstaged changes to tracked
+   files, and untracked files that look like part of this spec's implementation (for example new
+   source or test files an interrupted implementer never added), are a fail-closed condition —
+   usually implementation interrupted before commit. Judge untracked files yourself: ignore files
+   unrelated to the implementation (they typically existed before it started) without asking. Do
+   not ignore or attribute interrupted work yourself; your human partner decides which task to
+   commit it to, or to stash or discard it. Start rebuilding only once no interrupted work remains.
 1. **Locate the start.** `S` = the commit that added the spec:
    `git log --diff-filter=A --format=%H -- <SPEC>`.
 2. **Rebuild `IMPL_BASE`.** List the trailers in order:
@@ -1993,7 +1994,7 @@ spec. The normal flow (handoff from brainstorming) never probes git history.
 **Fail closed:** if any of the following holds, list the current rebuild result and the doubts,
 and confirm with your human partner via `AskUserQuestion` before continuing — never guess:
 
-- The worktree is not clean (step 0).
+- Interrupted work remains in the worktree (step 0).
 - The commit that added the spec cannot be found, or no commit in `S..HEAD` carries a `Task:`
   trailer.
 - Anywhere in **all of `S..HEAD`** (including before the first trailer-carrying commit) there is a

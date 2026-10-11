@@ -1,7 +1,7 @@
 # 免 plan 執行流程：以 Task 清單取代 implementation plan
 
 - **日期**：2026-10-11
-- **狀態**：spec 雙審查迴圈已通過（structural `OKAY`、design-soundness `approve`），待使用者確認
+- **狀態**：使用者審閱後新增接續模式、commit trailer、實作期間修改 spec 三段，spec 雙審查迴圈進行中
 - **提交類型**：`feat!:`（移除 `writing-plans` 階段，改變整條工作流的行為契約）
 
 ## 1. 問題
@@ -17,7 +17,8 @@
 ### 目標
 
 - 移除 `writing-plans` 階段：brainstorming 完成並經使用者核准 spec 後，直接進入 SDD。
-- SDD 在開始實作前，從 spec 拆出一份**不含程式碼**的 Task 清單（目標＋驗收條件），只存放在 harness 的 Task 工具中，不寫成檔案。
+- SDD 在開始實作前，從 spec 拆出一份**不含程式碼**的 Task 清單（目標＋驗收條件），存放在 controller 的 session 狀態中，不寫成檔案。
+- 使用者明確要求接續實作某份 spec 時，controller 從 git 歷史（以 commit trailer 標記）重建執行狀態（§4.4）。
 - 每個 Task 依序由 implementer subagent 以 TDD 實作；實作完成後由四個 reviewer 並行審查：spec-compliance（改為對 spec 驗證）、code-quality、task-coverage、task-seam。reviewer 不讀 Task 清單，需要範圍資訊的 reviewer 只收到一行任務題目（§5.1）。
 - final gate 新增 spec-coverage reviewer，補上「清單整個漏掉某項 spec 需求」的檢查。
 
@@ -26,8 +27,8 @@
 - **不改 brainstorming 的設計與 spec 審查流程**，只改其終點（§6.1）。
 - **不在動工前審查 Task 清單、也不設使用者確認關卡。** 使用者已核准 spec；清單產生後直接開始實作。清單品質由 per-Task 的四個 reviewer、controller 的歸屬判斷（§5.3）與 final gate 的 spec-coverage 在事後把關。
 - **不提供 plan 與免 plan 兩條路徑並存。** 本設計完全取代 `writing-plans`。
-- **不支援跨 session 接續執行。** Task 清單與 `IMPL_BASE` / `TASK_BASE` 都只存在 session 內（Task 工具與 controller 狀態），與現行 SDD 相同。session 中斷後的處理方式維持現狀，不在本設計範圍內。
-- **不處理實作期間修改 spec 的協定。** spec 仍簽入 git，其修正問題維持現狀。`2026-08-10-requirement-doc-amendment-protocol-design.md` 中針對 plan 的部分已被本設計取代（不再有簽入 git 的需求檔可以污染 diff）；其針對 spec 的部分仍未實作，不在本次範圍內。
+- **不持久化執行狀態。** Task 清單與 `IMPL_BASE` / `TASK_BASE` 只存在 session 內，不寫入任何檔案或外部儲存。跨 session 接續改由 §4.4 從 git 歷史重建，不另設狀態檔。
+- **不定義完整的 spec 修正協定。** 實作期間遇到重大問題時可以回頭修改 spec，本設計只規定最低限度的處理（§4.6）：由 controller 在使用者同意後修改、獨立 commit、reviewer 不把 spec 檔本身的變更當成實作來審。更細的權限與順序規範屬於 `2026-08-10-requirement-doc-amendment-protocol-design.md` 的範圍（其針對 plan 的部分已被本設計取代；針對 spec 的部分仍未實作），不在本次範圍內。
 - **不改 `dispatch.sh` 與 `review-batch-lib.sh`。** 只改兩個 wrapper（`review-impl.sh`、`review-final.sh`）的參數與註冊的 job。
 
 ## 3. 整體流程
@@ -35,27 +36,28 @@
 ```
 brainstorming（不變，直到使用者明確核准 spec）
   └─> superpowers-codex:subagent-driven-development
-        Phase 0：從 spec 拆出 Task 清單，建立在 Task 工具中（§4）
+        Phase 0：從 spec 拆出 Task 清單（§4）
           - 不審查、不等使用者，直接進入 Phase 1
+          - 使用者要求接續實作時，改走接續模式重建狀態（§4.4）
         捕捉 IMPL_BASE
         Phase 1：逐個 Task 依序執行
           捕捉 TASK_BASE → implementer（TDD）→ review-impl.sh（四個 reviewer，§5.1）
           → controller 依歸屬規則分類 findings（§5.3）→ 修正後重跑整個 review-impl.sh，直到通過
-          → Task 工具條目標為 completed
+          → 標記該 Task 完成
         Phase 2：review-final.sh（final-adversarial + spec-coverage，§5.2）
         若有需人工確認的項目：請使用者確認或豁免（§5.4）
   └─> superpowers-codex:finishing-a-development-branch
 ```
 
-SDD 既有的 Base SHA 追蹤（`IMPL_BASE`、`TASK_BASE`，存在 controller 的 task-tracking 狀態）、invocation discipline、caller control-flow、HEAD 契約、continuous execution 原則全部沿用，只把其中「plan」的依據替換成 spec 與 Task 工具中的清單。
+SDD 既有的 Base SHA 追蹤（`IMPL_BASE`、`TASK_BASE`，存在 controller 的 session 狀態）、invocation discipline、caller control-flow、HEAD 契約、continuous execution 原則全部沿用，只把其中「plan」的依據替換成 spec 與 session 內的 Task 清單。
 
 ## 4. Task 清單（Phase 0）
 
 ### 4.1 存放位置
 
-- Task 清單只存放在 harness 的 Task 工具中，每個 Task 一個條目：條目標題為 `Task N: <name>`，條目內容為 §4.2 的完整定義。
-- Task 清單**不寫成檔案、不簽入 git**。controller 派發 implementer 時，從 Task 工具條目取出完整定義貼進 implementer prompt；reviewer 不讀清單。
-- SKILL.md 以「the harness's task-tracking tool」稱呼，不綁定特定工具名稱。harness 沒有可存放內容的 task 工具時，controller 把完整清單寫在自己的回覆中並在每個 Task 開始時重新列出該 Task 的定義（見 §8）。
+- Task 清單存放在 controller 的 session 狀態中：Phase 0 拆完後，controller 在回覆中列出完整清單（每個 Task 依 §4.2 格式），並在每個 Task 開始時重新列出該 Task 的定義，降低 context 壓縮造成的遺失風險。
+- Task 清單**不寫成檔案、不簽入 git**。controller 派發 implementer 時把該 Task 的完整定義貼進 implementer prompt；reviewer 不讀清單。
+- harness 有可用的 task-tracking 工具時，controller 為每個 Task 建一個條目（標題 `Task N: <name>`）並同步狀態，作為給使用者看的進度顯示。**正確性不依賴這些工具**：它們在新版模型上預設停用，跨 session 恢復也不可靠（§8）。SKILL.md 以「the harness's task-tracking tool, if available」稱呼，不綁定特定工具名稱。
 
 ### 4.2 Task 定義格式
 
@@ -90,6 +92,50 @@ Depends on: Task 1 (HttpError type)
 
 - 這是傳給 reviewer 的**唯一**範圍資訊，透過 `--task-summary` 傳入（§5.1）。
 - 必須是單行：`dispatch.sh` 既有的 `require_no_newline` 會拒絕含換行的 `--set` 值，wrapper 直接失敗。
+
+### 4.4 接續模式（從 git 歷史重建）
+
+**觸發條件**：只有使用者明確要求「接續實作某份 spec」時才進入。一般流程（brainstorming 交接後直接實作）不做任何偵測，狀態完全在 session 內。
+
+**重建步驟**：
+
+1. **定位起點**：`S` = 新增 spec 檔的 commit（`git log --diff-filter=A --format=%H -- <spec>` 的結果）。
+2. **重建 `IMPL_BASE`**：在 `S..HEAD` 中找出第一個帶 `Task:` trailer（§4.5）的 commit，`IMPL_BASE` = 它的 parent。實作期間的 spec 修正 commit（§4.6）不帶 trailer，不影響判定。
+3. **分組**：依 trailer 把 `IMPL_BASE..HEAD` 中帶 trailer 的 commit 分到各個 Task。
+4. **重建 Task 清單**：依**目前的** spec 重新拆出 Task 清單（§4.2），再對照第 3 步的分組與程式碼現況，判定哪些 Task 已完成。重建出的清單與原本的編號或切分不一致時，以 trailer 中的 Task 名稱與 commit 內容對應，不以編號硬套。
+5. **處理最後一個 Task**：trailer 中最後出現的 Task 一律視為**尚未通過審查**（無法得知上個 session 是否在審查途中中斷）。它的 `TASK_BASE` = 該 Task 第一個 commit 的 parent；先以此跑 `review-impl.sh`，之後照一般流程處理 findings。若這個 Task 之後的 commit 混有其他 Task 的 commit（交錯），視為無法判定，走下方 fail closed。
+6. 之後照一般流程從下一個未完成的 Task 繼續。final gate 使用重建的 `IMPL_BASE`，因此涵蓋整段實作，包括上個 session 的部分。
+7. 重建完成後，controller 在回覆中列出重建結果（`IMPL_BASE`、各 Task 狀態與對應 commit），然後直接繼續，不等使用者確認。
+
+**Fail closed**：以下任一情況成立，controller 把目前的重建結果與疑點列給使用者，以 `AskUserQuestion` 確認後才繼續，不自行猜測：
+
+- 找不到 spec 的新增 commit，或 `S..HEAD` 中沒有任何帶 `Task:` trailer 的 commit。
+- `IMPL_BASE..HEAD` 中有不帶 trailer、且不是只修改 spec 檔的 commit（無法判斷它屬於哪個 Task，或根本與此 spec 無關）。
+- 同一個 Task 的 commit 與其他 Task 的 commit 交錯。
+- 依目前 spec 重建的清單無法與 trailer 中的 Task 對應。
+
+### 4.5 Commit trailer
+
+implementer 的每一個 commit（含審查後的修正 commit）的 message 結尾必須加上 trailer：
+
+```
+Task: <N> <name>
+```
+
+例如 `Task: 3 Retry policy`，`<N>` 與 `<name>` 與該 Task 的定義一致。它與其他 trailer（例如 `Co-Authored-By:`）並列於 message 最後一段。
+
+- 用途只有一個：讓 §4.4 能從 `git log` 把 commit 分組。一般流程中 controller 不讀它。
+- trailer 是 commit message，不是程式碼，不受 task-seam 「程式碼與註解不得引用 Task 編號」的限制。
+- controller 派發 implementer 時把要用的 trailer 字串一併給出；implementer 不得自行編造。
+
+### 4.6 實作期間修改 spec
+
+實作期間遇到重大問題、需要修改 spec 時：
+
+- 只有 controller 可以修改 spec，且必須先以 `AskUserQuestion` 取得使用者同意；implementer 不得修改 spec 檔。
+- spec 修改以**獨立 commit** 提交：只包含 spec 檔、不帶 `Task:` trailer、message 使用 `docs(spec): ...`。
+- 修改 spec 後，controller 依新的 spec 調整尚未完成的 Task 定義（遵守 §5.3 的範圍同步通則）。已完成的 Task 若受影響，依 §5.3 追加或併入修正。
+- 所有 reviewer prompt 都明訂：diff 中對來源 spec 檔（`[SPEC_FILE_PATH]`）本身的變更不是實作，不納入 Extra/unneeded work 或其他實作審查。task-seam 不讀 spec，但同樣排除 `docs/superpowers/specs/` 下的變更。code-quality 為 codex 原生 review，無法排除，controller 忽略它對 spec 文字的意見。
 
 ## 5. 審查
 
@@ -175,7 +221,7 @@ Depends on: Task 1 (HttpError type)
 
 **Final gate 通過條件**：同一輪中，`spec-coverage` 為 `Status: OKAY`，且 `final-adversarial` 為 `Verdict: approve`（或其剩餘 findings 全部符合既有的 spec-adjudicated carve-out）。此時所有 Task 都已完成，§5.3 的「屬於後面的 Task」不再適用：spec-coverage 的每一項缺漏都是 blocking。
 
-**缺漏的處理**：controller 在 Task 工具中追加新 Task 涵蓋缺漏，新 Task 走完整 Phase 1 流程後，以同一個 `IMPL_BASE` 重跑整個 `review-final.sh`。final-adversarial 的 blocking findings 沿用既有做法（派 implementer 修正後重跑）。
+**缺漏的處理**：controller 在 Task 清單中追加新 Task 涵蓋缺漏，新 Task 走完整 Phase 1 流程後，以同一個 `IMPL_BASE` 重跑整個 `review-final.sh`。final-adversarial 的 blocking findings 沿用既有做法（派 implementer 修正後重跑）。
 
 **既有 carve-out 的來源 spec 辨識**：改為「傳給 `review-final.sh --spec` 的那份 spec」。這是 SDD 從 brainstorming 交接時收到的唯一 spec，不再需要從 plan 反查。找不到 **Non-goals / Accepted limitations** 章節時，不壓制任何 finding（沿用既有 fail-closed 規則）。
 
@@ -183,7 +229,7 @@ Depends on: Task 1 (HttpError type)
 
 reviewer 看不到 Task 清單，task-coverage（以及 spec-compliance）可能把屬於後面 Task 的需求回報為未完成。controller 持有完整清單，負責分類每一項 finding：
 
-- **屬於後面的 Task**：只有在 Task 工具中**確實存在**一個尚未完成的 Task，其 `Acceptance:` **明確涵蓋**該項，**且**其 `Spec:`（因而其任務題目）包含該項所在的 spec 章節時，才能如此判定。第二個條件確保接收方的 task-coverage 一定會檢查該項的實作與測試證據。另有第三個條件：該項**不是本 Task 的前置條件**（本 Task 的實作或測試不需要用到它）。前置條件即使已經分配給後面的 Task，也一律 blocking，改走下表「併入本 Task」的路徑，並從原本負責的 Task 移除該條目。controller 必須在回報中寫出對應的 Task 編號與 Acceptance 條目。此類 finding 不阻擋本 Task 通過，也不修改。
+- **屬於後面的 Task**：只有在 Task 清單中**確實存在**一個尚未完成的 Task，其 `Acceptance:` **明確涵蓋**該項，**且**其 `Spec:`（因而其任務題目）包含該項所在的 spec 章節時，才能如此判定。第二個條件確保接收方的 task-coverage 一定會檢查該項的實作與測試證據。另有第三個條件：該項**不是本 Task 的前置條件**（本 Task 的實作或測試不需要用到它）。前置條件即使已經分配給後面的 Task，也一律 blocking，改走下表「併入本 Task」的路徑，並從原本負責的 Task 移除該條目。controller 必須在回報中寫出對應的 Task 編號與 Acceptance 條目。此類 finding 不阻擋本 Task 通過，也不修改。
 - **其他一律 blocking**：找不到明確涵蓋的未完成 Task、涵蓋只是部分重疊、或判斷有疑義時，一律視為本 Task 的 finding。這條規則刻意保守，避免歸屬判斷變成放行漏洞。
 
 blocking finding 的處理：
@@ -197,7 +243,7 @@ blocking finding 的處理：
 
 **範圍同步通則**：任何 Task 的 `Acceptance:` 被新增或修改時（上表任一路徑，包括把需求或已完成 Task 的修正併入本 Task），controller 必須同時把新條目所在的 spec 章節補進該 Task 的 `Spec:`，並依 §4.3 重新產生任務題目，之後的 `review-impl.sh` 一律使用更新後的題目。新條目若改變了該 Task 對外暴露的介面或它依賴的介面，也一併更新 `Interface:` 與 `Depends on:`。reviewer 看不到 `Acceptance:`，只有這樣，spec-compliance 才不會把併入的工作判為超出範圍，task-coverage 也才會檢查它。
 
-**任何修正之後都重跑整個 `review-impl.sh`**（同一個 `TASK_BASE`），包括只改了 Task 工具中的定義、沒有新 commit 的情況。
+**任何修正之後都重跑整個 `review-impl.sh`**（同一個 `TASK_BASE`），包括只改了 Task 定義、沒有新 commit 的情況。
 
 controller **不得**為了讓 reviewer 通過而刪減 Task 的 `Acceptance:`：定義只能因為更貼近 spec 而修改，不能因為遷就實作而放寬。
 
@@ -224,15 +270,17 @@ spec-compliance、task-coverage、spec-coverage 依共用證據規則（§5.1）
 - When to Use 的判斷從「Have implementation plan?」改為「Have an approved spec?」。
 - `review-impl.sh`、`review-final.sh` 的呼叫範例與 caller control-flow 改為 §5 的新介面與四個 / 兩個 reviewer。
 - 新增 §5.3 的歸屬判斷規則、修正路徑與範圍同步通則，以及 §5.4 的人工確認收尾；Continuous execution 段落的停止理由加上「§5.4 的人工確認清單不為空」。
-- 「Read plan, extract all tasks」改為「Derive the task list from the spec into the task-tracking tool」；Red Flags 中「Make subagent read plan file」改為「Make subagent derive its own task from the spec (provide the full task definition instead)」。
-- 新增 Red Flags：把 finding 判定為「屬於後面的 Task」卻無法指出明確涵蓋它的 Task 與 Acceptance 條目；為了讓 reviewer 通過而放寬 Task 定義；把 Task 清單寫成檔案或簽入 git。
+- 「Read plan, extract all tasks」改為「Derive the task list from the spec and list it in full in your reply (mirror into the task-tracking tool if available)」；Red Flags 中「Make subagent read plan file」改為「Make subagent derive its own task from the spec (provide the full task definition instead)」。
+- 新增接續模式（§4.4）、commit trailer（§4.5）、實作期間修改 spec（§4.6）三段。
+- 新增 Red Flags：把 finding 判定為「屬於後面的 Task」卻無法指出明確涵蓋它的 Task 與 Acceptance 條目；為了讓 reviewer 通過而放寬 Task 定義；把 Task 清單寫成檔案或簽入 git；implementer commit 缺少 `Task:` trailer；未經使用者同意修改 spec，或把 spec 修改與實作混在同一個 commit；接續模式遇到 fail closed 條件仍自行猜測繼續。
 - Example Workflow 改寫為新流程。
 - Integration 移除 writing-plans。
 - Sidecar files 列出：`implementer-prompt.md`、`task-list-format.md`、`spec-reviewer-prompt.md`、`task-coverage-prompt.md`、`task-seam-prompt.md`、`spec-coverage-prompt.md`、`final-code-reviewer-focus.md`。
 
 ### 6.3 `skills/subagent-driven-development/implementer-prompt.md`
 
-- Task Description 改為「FULL TEXT of the task definition from the task-tracking tool」，並另外提供 spec 路徑，讓 implementer 能查閱 `Spec:` 所列章節。
+- Task Description 改為「FULL TEXT of the task definition (provided by the controller)」，並另外提供 spec 路徑，讓 implementer 能查閱 `Spec:` 所列章節。
+- 新增：每個 commit 的 message 結尾都要加上 controller 提供的 `Task:` trailer（§4.5）；不得修改 spec 檔，認為 spec 有問題時回報 `DONE_WITH_CONCERNS` 或 `BLOCKED` 交給 controller（§4.6）。
 - Your Job 明訂：Task 不含程式碼，implementer 依 `Interface:` 與 `Acceptance:` 自行設計，並遵守 TDD 順序（先寫測試、看到失敗、再實作）。
 - 新增：若實作需要的第三方 API 行為在 spec 中沒有記載研究結論，回報 `NEEDS_CONTEXT` 並列出需要確認的 API，不得自行猜測。controller 收到後依使用者的 research subagent 規範取得結論，再重新派發。
 - Subagent model 說明從「sonnet — follows code already specified in the plan」改為依 SDD 的 Model Selection 依複雜度選擇（implementer 現在需要做程式設計，不再只是照抄）。
@@ -268,11 +316,13 @@ spec-compliance、task-coverage、spec-coverage 依共用證據規則（§5.1）
 - **`--task-summary` 含換行**：`dispatch.sh` 拒絕，wrapper 失敗。controller 改成單行後重跑。
 - **implementer 回報 `NEEDS_CONTEXT`（第三方 API）**：見 §6.3。
 - **歸屬判斷有疑義**：一律 blocking（§5.3）。
+- **接續模式重建有疑義**：fail closed，詢問使用者（§4.4）。
 - **wrapper `ERROR`、`(tool exit N)`**：沿用既有 caller control-flow。
 
 ## 8. 假設
 
-- harness 提供可存放條目內容的 task 工具（例如 TaskCreate / TaskUpdate）。不提供時，controller 把完整清單寫在回覆中，並在每個 Task 開始時重新列出該 Task 的定義；這會讓清單受 context 壓縮影響，但不影響 reviewer（reviewer 本來就不讀清單），歸屬判斷仍以「指不出明確涵蓋的 Task 就 blocking」的保守規則把關。
+- **不假設 harness 的 task-tracking 工具可用或可靠。** 已查證（Claude Code 2.1.296）：`TaskCreate` / `TaskGet` / `TaskUpdate` / `TaskList` / `TodoWrite` 自 2.1.233 起在 Opus 4.8 以後、Sonnet 5、Fable 5、Opus 5.x 等新模型上預設停用，需 `CLAUDE_CODE_ENABLE_TODO_TOOLS=1` 才會開啟；條目存在 `~/.claude/tasks/<list-id>/`，可撐過 context 壓縮，但 `--resume` / `--continue` 的恢復有尚未修復的回報（anthropics/claude-code#76844）。因此 Task 清單以 controller 回覆中的完整列表為準（§4.1），跨 session 以 git 歷史重建（§4.4）。
+- 清單放在回覆中會受 context 壓縮影響。這不影響 reviewer（reviewer 本來就不讀清單）；歸屬判斷仍以「指不出明確涵蓋的 Task 就 blocking」的保守規則把關；清單在同一個 session 內遺失時，controller 可以用 §4.4 的同一套步驟從 git 歷史重建。
 
 ## 9. 測試
 

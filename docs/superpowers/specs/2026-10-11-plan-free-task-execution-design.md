@@ -1,7 +1,7 @@
 # 免 plan 執行流程：以 Task 清單取代 implementation plan
 
 - **日期**：2026-10-11
-- **狀態**：使用者審閱中；最近一次修改為 final gate 職責重新分配（final-adversarial 只做程式碼層面審查，整體意圖偏離移交 spec-coverage）
+- **狀態**：spec 雙審查迴圈已通過（structural `OKAY`、design-soundness `approve`，含 final gate 職責重新分配：final-adversarial 只做程式碼層面審查，整體意圖偏離移交 spec-coverage），待使用者確認
 - **提交類型**：`feat!:`（移除 `writing-plans` 階段，改變整條工作流的行為契約）
 
 ## 1. 問題

@@ -1964,8 +1964,14 @@ spec. The normal flow (handoff from brainstorming) never probes git history.
    source or test files an interrupted implementer never added), are a fail-closed condition —
    usually implementation interrupted before commit. Judge untracked files yourself: ignore files
    unrelated to the implementation (they typically existed before it started) without asking. Do
-   not ignore or attribute interrupted work yourself; your human partner decides which task to
-   commit it to, or to stash or discard it. Start rebuilding only once no interrupted work remains.
+   not silently ignore interrupted work. Ask your human partner via `AskUserQuestion` to choose:
+   (a) **revert and redo** — discard the changes (restore tracked files, delete the related
+   untracked files) and redo the interrupted task from scratch; or (b) **keep and continue** —
+   you decide which task the changes belong to (usually the last task in trailer order, or the
+   next task with no commits yet), dispatch an implementer to finish that task on top of the
+   existing changes, committing with that task's trailer; its `TASK_BASE` follows step 5 if the
+   task already has commits, otherwise it is the current `HEAD`. If you cannot tell which task
+   the changes belong to, say so in the same question.
 1. **Locate the start.** `S` = the commit that added the spec:
    `git log --diff-filter=A --format=%H -- <SPEC>`.
 2. **Rebuild `IMPL_BASE`.** List the trailers in order:
@@ -1994,7 +2000,7 @@ spec. The normal flow (handoff from brainstorming) never probes git history.
 **Fail closed:** if any of the following holds, list the current rebuild result and the doubts,
 and confirm with your human partner via `AskUserQuestion` before continuing — never guess:
 
-- Interrupted work remains in the worktree (step 0).
+- Interrupted work remains in the worktree (step 0) — the question is revert-and-redo or keep-and-continue.
 - The commit that added the spec cannot be found, or no commit in `S..HEAD` carries a `Task:`
   trailer.
 - Anywhere in **all of `S..HEAD`** (including before the first trailer-carrying commit) there is a

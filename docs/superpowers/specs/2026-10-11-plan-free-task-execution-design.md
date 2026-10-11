@@ -109,7 +109,7 @@ Depends on: Task 1 (HttpError type)
 
 **Fail closed**：以下任一情況成立，controller 把目前的重建結果與疑點列給使用者，以 `AskUserQuestion` 確認後才繼續，不自行猜測：
 
-- 工作目錄有中斷留下的實作：`git status --porcelain` 列出已追蹤檔案的 staged / unstaged 變更，或列出看起來屬於此 spec 實作的 untracked 檔案（例如中斷的 implementer 尚未 `git add` 的新原始碼或測試檔）。untracked 檔案是否與實作相關由 controller 自行判斷；與實作無關的檔案（通常在實作開始前就已存在）直接忽略，不詢問使用者。這通常是上個 session 在 commit 前中斷留下的實作。controller 不得忽略或自行歸屬它們，必須請使用者決定 commit 到哪個 Task、stash 或捨棄；工作目錄乾淨後才開始重建，確保審查與測試看到的是同一個已 commit 的狀態。此檢查在第 1 步之前執行。
+- 工作目錄有中斷留下的實作：`git status --porcelain` 列出已追蹤檔案的 staged / unstaged 變更，或列出看起來屬於此 spec 實作的 untracked 檔案（例如中斷的 implementer 尚未 `git add` 的新原始碼或測試檔）。untracked 檔案是否與實作相關由 controller 自行判斷；與實作無關的檔案（通常在實作開始前就已存在）直接忽略，不詢問使用者。這通常是上個 session 在 commit 前中斷留下的實作。controller 不得自行忽略它們，必須以 `AskUserQuestion` 請使用者二選一：(a) **復原重做**：捨棄這些變更（還原已追蹤檔案、刪除相關的 untracked 檔案），被中斷的 Task 從頭重做；(b) **保留變更直接接續**：controller 判斷這些變更屬於哪個 Task（通常是 trailer 中最後一個 Task，或尚無 commit 的下一個 Task），派 implementer 在現有變更上完成該 Task，並以該 Task 的 trailer commit；該 Task 的 `TASK_BASE` 依第 5 步（已有 commit）或取當下的 `HEAD`（尚無 commit）。controller 無法判斷變更屬於哪個 Task 時，在同一次詢問中列出疑點。此檢查在第 1 步之前執行。
 - 找不到 spec 的新增 commit，或 `S..HEAD` 中沒有任何帶 `Task:` trailer 的 commit。
 - **整段 `S..HEAD`**（包括第一個帶 trailer 的 commit 之前的部分）中，有不帶 trailer、且不是只修改 spec 檔的 commit：可能無法判斷它屬於哪個 Task、根本與此 spec 無關，或是以舊流程（沒有 trailer）做到一半的實作。最後一種情況下，使用者需要明確指定 `IMPL_BASE` 與這些 commit 的 Task 歸屬，這也是從舊流程遷移的分支的接續方式。
 - 同一個 Task 的 commit 與其他 Task 的 commit 交錯。

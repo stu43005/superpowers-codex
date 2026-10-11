@@ -43,6 +43,7 @@ brainstorming（不變，直到使用者明確核准 spec）
           → controller 依歸屬規則分類 findings（§5.3）→ 修正後重跑整個 review-impl.sh，直到通過
           → Task 工具條目標為 completed
         Phase 2：review-final.sh（final-adversarial + spec-coverage，§5.2）
+        若有需人工確認的項目：請使用者確認或豁免（§5.4）
   └─> superpowers-codex:finishing-a-development-branch
 ```
 
@@ -184,9 +185,19 @@ blocking finding 的處理：
 | 該需求較適合由後面的 Task 負責，但目前沒有 Task 涵蓋 | controller 把條目加到某個尚未完成 Task 的 `Acceptance:`，並在其 `Spec:` 補上該需求所在章節（任務題目隨之更新）；或追加新 Task。本 Task 不補實作 |
 | 需要修改已完成 Task 的程式碼才能讓本 Task 成立 | controller 把該修正併入本 Task 的 `Acceptance:`，由本 Task 的 implementer 一起完成；不追加獨立的修正 Task，避免本 Task 卡在等待後面的 Task |
 
+**範圍同步通則**：任何 Task 的 `Acceptance:` 被新增或修改時（上表任一路徑，包括把需求或已完成 Task 的修正併入本 Task），controller 必須同時把新條目所在的 spec 章節補進該 Task 的 `Spec:`，並依 §4.3 重新產生任務題目，之後的 `review-impl.sh` 一律使用更新後的題目。reviewer 看不到 `Acceptance:`，只有這樣，spec-compliance 才不會把併入的工作判為超出範圍，task-coverage 也才會檢查它。
+
 **任何修正之後都重跑整個 `review-impl.sh`**（同一個 `TASK_BASE`），包括只改了 Task 工具中的定義、沒有新 commit 的情況。
 
 controller **不得**為了讓 reviewer 通過而刪減 Task 的 `Acceptance:`：定義只能因為更貼近 spec 而修改，不能因為遷就實作而放寬。
+
+### 5.4 需人工確認的項目
+
+spec-compliance、task-coverage、spec-coverage 依 Evidence Verifiability 規則標註為「無法以 diff 或測試驗證、需人工確認」的項目，不阻擋 reviewer 通過，但必須有明確的收尾：
+
+- controller 在整個執行過程中收集這些項目（項目內容、來源 reviewer、所屬 Task），存在 session 狀態中。
+- final gate 通過後、呼叫 `finishing-a-development-branch` 之前，若清單不為空，controller 把清單列給使用者，以 `AskUserQuestion` 請使用者逐項確認已驗證，或明確豁免。使用者回報某項未通過時，視同 final gate 的缺漏：追加 Task 修正後重跑 `review-final.sh`。
+- 清單為空時不打斷，直接進入 finishing。這是 continuous execution 原則的唯一新增停點。
 
 ## 6. 其他檔案變更
 
@@ -202,7 +213,7 @@ controller **不得**為了讓 reviewer 通過而刪減 Task 的 `Acceptance:`�
 - 新增 Phase 0（§4），並在流程圖加入對應節點。
 - When to Use 的判斷從「Have implementation plan?」改為「Have an approved spec?」。
 - `review-impl.sh`、`review-final.sh` 的呼叫範例與 caller control-flow 改為 §5 的新介面與四個 / 兩個 reviewer。
-- 新增 §5.3 的歸屬判斷規則與修正路徑。
+- 新增 §5.3 的歸屬判斷規則、修正路徑與範圍同步通則，以及 §5.4 的人工確認收尾；Continuous execution 段落的停止理由加上「§5.4 的人工確認清單不為空」。
 - 「Read plan, extract all tasks」改為「Derive the task list from the spec into the task-tracking tool」；Red Flags 中「Make subagent read plan file」改為「Make subagent derive its own task from the spec (provide the full task definition instead)」。
 - 新增 Red Flags：把 finding 判定為「屬於後面的 Task」卻無法指出明確涵蓋它的 Task 與 Acceptance 條目；為了讓 reviewer 通過而放寬 Task 定義；把 Task 清單寫成檔案或簽入 git。
 - Example Workflow 改寫為新流程。

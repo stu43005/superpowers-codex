@@ -380,48 +380,10 @@ if printf '%s\n' "$T6" | grep -q '^## design-soundness$' \
   ok "review-brainstorm: design-soundness argv matches expected wrapper contract"
 else bad "review-brainstorm: design-soundness argv" "$T6"; fi
 
-# review-plan.sh assembles per-Task (+ optional coverage) dispatch argv from its CLI.
-PLAN_W="$HERE/review-plan.sh"
-PROOT="${PROOT:-$ROOT/plugin}"   # fixture plugin root (defined locally; do not rely on it being set elsewhere)
-mkdir -p "$PROOT/skills/writing-plans"
-: > "$PROOT/skills/writing-plans/plan-document-reviewer-prompt.md"
-: > "$PROOT/skills/writing-plans/coverage-verifier-prompt.md"
-T7="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
-       bash "$PLAN_W" --plan docs/plans/x.md --spec docs/specs/x.md \
-         --task "Task 1" --task "Task 3" --coverage 2>/dev/null )"
-# per-task Task 1 job: label + TASK_ID with a space intact
-if printf '%s\n' "$T7" | grep -q '^## per-task Task 1$' \
-   && printf '%s\n' "$T7" | grep -qx "ARG:--prompt" \
-   && printf '%s\n' "$T7" | grep -qx "ARG:$PROOT/skills/writing-plans/plan-document-reviewer-prompt.md" \
-   && printf '%s\n' "$T7" | grep -qx 'ARG:PLAN_FILE_PATH=docs/plans/x.md' \
-   && printf '%s\n' "$T7" | grep -qx 'ARG:SPEC_FILE_PATH=docs/specs/x.md' \
-   && printf '%s\n' "$T7" | grep -qx 'ARG:TASK_ID=Task 1'; then
-  ok "review-plan: per-task Task 1 argv matches expected wrapper contract"
-else bad "review-plan: per-task Task 1 argv" "$T7"; fi
-printf '%s\n' "$T7" | grep -q '^## per-task Task 3$' \
-  && ok "review-plan: second per-task job registered" \
-  || bad "review-plan: second per-task job registered" "$T7"
-# coverage-verifier job
-if printf '%s\n' "$T7" | grep -q '^## coverage-verifier$' \
-   && printf '%s\n' "$T7" | grep -qx "ARG:$PROOT/skills/writing-plans/coverage-verifier-prompt.md"; then
-  ok "review-plan: coverage-verifier argv matches expected wrapper contract"
-else bad "review-plan: coverage-verifier argv" "$T7"; fi
-# require at least one --task or --coverage
-( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
-  bash "$PLAN_W" --plan docs/plans/x.md --spec docs/specs/x.md ) >/dev/null 2>&1
-RC_REQ=$?
-[ "$RC_REQ" -ne 0 ] && ok "review-plan: no --task/--coverage fails fast" \
-  || bad "review-plan: no --task/--coverage fails fast" "rc=$RC_REQ"
-# malformed CLI: a trailing option with no value fails with a clear wrapper error, NOT a
-# raw `set -u` unbound-variable crash.
-PLAN_ERR="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
-  bash "$PLAN_W" --spec docs/specs/x.md --task "Task 1" --plan 2>&1 )"
-RC_MALFORMED=$?
-if [ "$RC_MALFORMED" -ne 0 ] \
-   && printf '%s\n' "$PLAN_ERR" | grep -q 'review-plan: --plan requires a value' \
-   && ! printf '%s\n' "$PLAN_ERR" | grep -qi 'unbound variable'; then
-  ok "review-plan: missing option value fails with a clear wrapper error"
-else bad "review-plan: missing option value fails with a clear wrapper error" "rc=$RC_MALFORMED out=$PLAN_ERR"; fi
+# The plan-review wrapper is retired: no review-plan.sh may ship next to the other wrappers.
+[ ! -e "$HERE/review-plan.sh" ] \
+  && ok "review-plan.sh wrapper is removed" \
+  || bad "review-plan.sh wrapper is removed" "still present: $HERE/review-plan.sh"
 
 # section_args <blob> <label> : print the echoed ARG: lines of the "## <label>" section joined
 # by "|" (the section ends at the next "## " heading or the Summary block), so one string
@@ -629,26 +591,6 @@ BR_FIND="$(printf '%s\n' \
   '- structural-completeness: Status: OKAY' \
   '- design-soundness: Verdict: needs-attention')"; BR_FIND_RC=0
 
-# --- plan caller shape: per-task (Status:) + coverage-verifier (Status:) ---
-PL_OK="$(printf '%s\n' \
-  '## per-task Task 1' 'Status: OKAY' '' \
-  '## coverage-verifier' 'Status: OKAY' '' \
-  '=== Summary ===' \
-  '- per-task Task 1: Status: OKAY' \
-  '- coverage-verifier: Status: OKAY')"; PL_OK_RC=0
-PL_ERR="$(printf '%s\n' \
-  '## per-task Task 1' '[stderr excerpt]' 'boom' '' \
-  '## coverage-verifier' 'Status: OKAY' '' \
-  '=== Summary ===' \
-  '- per-task Task 1: ERROR (tool failed, exit 2)' \
-  '- coverage-verifier: Status: OKAY')"; PL_ERR_RC=2
-PL_FIND="$(printf '%s\n' \
-  '## per-task Task 1' 'Status: Issues Found' '' \
-  '## coverage-verifier' 'Status: OKAY' '' \
-  '=== Summary ===' \
-  '- per-task Task 1: Status: Issues Found' \
-  '- coverage-verifier: Status: OKAY')"; PL_FIND_RC=0
-
 # --- impl caller shape: spec-compliance (Status:) + code-quality (prose, no verdict line) ---
 IM_OK="$(printf '%s\n' \
   '## spec-compliance' 'Status: OKAY' '' \
@@ -740,9 +682,6 @@ expect_action() {
 expect_action "brainstorm all-clear (rc 0)"        "$BR_OK"   "$BR_OK_RC"   "PROCEED"
 expect_action "brainstorm ERROR (rc nonzero)"      "$BR_ERR"  "$BR_ERR_RC"  "RERUN_WRAPPER"
 expect_action "brainstorm needs-attention (rc 0)"  "$BR_FIND" "$BR_FIND_RC" "FIX_AND_REREVIEW"
-expect_action "plan all-clear (rc 0)"              "$PL_OK"   "$PL_OK_RC"   "PROCEED"
-expect_action "plan ERROR (rc nonzero)"            "$PL_ERR"  "$PL_ERR_RC"  "RERUN_WRAPPER"
-expect_action "plan Issues Found (rc 0)"           "$PL_FIND" "$PL_FIND_RC" "FIX_AND_REREVIEW"
 expect_action "impl all-clear prose (rc 0)"        "$IM_OK"   "$IM_OK_RC"   "PROCEED"
 expect_action "impl ERROR (rc nonzero)"            "$IM_ERR"  "$IM_ERR_RC"  "RERUN_WRAPPER"
 expect_action "impl Issues Found (rc 0)"           "$IM_FIND" "$IM_FIND_RC" "FIX_AND_REREVIEW"
@@ -763,7 +702,7 @@ expect_action "impl spec-compliance + tool exit -> INSPECT"  "$IM_TOOLEXIT"    "
 # stdout is parsed REGARDLESS of exit code: a findings Summary delivered with a NONZERO rc still
 # decides FIX_AND_REREVIEW from stdout (the rc must not override the stdout verdict). This proves
 # the caller does not branch on exit code alone.
-expect_action "findings stdout with nonzero rc still FIX_AND_REREVIEW" "$PL_FIND" 7 "FIX_AND_REREVIEW"
+expect_action "findings stdout with nonzero rc still FIX_AND_REREVIEW" "$IM_FIND" 7 "FIX_AND_REREVIEW"
 
 # The parser extracts a reviewer's status line from the Summary block.
 printf '%s\n' "$IM_OK" | sed -n '/^=== Summary ===$/,$p' | grep -q '^- spec-compliance: Status: OKAY$' \

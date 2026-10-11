@@ -24,7 +24,7 @@
 
 ### 非目標
 
-- **不改 brainstorming 的設計與 spec 審查流程**，只改其終點（§6.1）。
+- **不改 brainstorming 的設計流程與 spec 審查的 reviewer 組成**，只改其終點，並在 spec 審查迴圈加入 §5.5 的 finding 查證（§6.1）。
 - **不在動工前審查 Task 清單、也不設使用者確認關卡。** 使用者已核准 spec；清單產生後直接開始實作。清單品質由 per-Task 的四個 reviewer、controller 的歸屬判斷（§5.3）與 final gate 的 spec-coverage 在事後把關。
 - **不提供 plan 與免 plan 兩條路徑並存。** 本設計完全取代 `writing-plans`。
 - **不持久化執行狀態。** Task 清單與 `IMPL_BASE` / `TASK_BASE` 只存在 session 內，不寫入任何檔案或外部儲存。跨 session 接續改由 §4.4 從 git 歷史重建，不另設狀態檔。
@@ -196,7 +196,7 @@ Task: <N> <name>
 
 刪除原 plan reviewer 的 Spec Coverage（移交 `spec-compliance` 與 `task-coverage`）、Type Consistency 中針對 plan 文字的 sibling 比對（改為上面第 1 項對實際程式碼的比對）、Code Completeness、Command Accuracy、Pre-Implementation Research Task Leak（Task 不再含程式碼與指令，這三項不再適用）。最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 
-**通過條件**：同一輪、沒有中途修改的情況下，每個 `Status:` reviewer 要嘛是 `Status: OKAY`，要嘛其所有 findings 都已依 §5.3 被 controller 判定為「屬於後面的 Task」；且 code-quality 沒有 blocking finding。任一 reviewer `ERROR` 即重跑整個 wrapper（沿用既有 caller control-flow）。
+**通過條件**：同一輪、沒有中途修改的情況下，每個 `Status:` reviewer 要嘛是 `Status: OKAY`，要嘛其所有 findings 都已依 §5.3 被 controller 判定為「屬於後面的 Task」，或依 §5.5 查證後駁回；且 code-quality 沒有成立的 blocking finding。任一 reviewer `ERROR` 即重跑整個 wrapper（沿用既有 caller control-flow）。
 
 ### 5.2 Final gate：`review-final.sh`
 
@@ -222,7 +222,7 @@ Task: <N> <name>
 - 輸出分兩段：Coverage Gaps 與 Intent Drift。任一段有項目即為 `Status: Issues Found`。
 - 最後一行 `Status: OKAY` 或 `Status: Issues Found`。
 
-**Final gate 通過條件**：同一輪中，`spec-coverage` 為 `Status: OKAY`，且 `final-adversarial` 為 `Verdict: approve`（或其剩餘 findings 全部符合既有的 spec-adjudicated carve-out）。此時所有 Task 都已完成，§5.3 的「屬於後面的 Task」不再適用：spec-coverage 的每一項缺漏都是 blocking。
+**Final gate 通過條件**：同一輪中，`spec-coverage` 為 `Status: OKAY`（或其剩餘 findings 全部依 §5.5 查證後駁回），且 `final-adversarial` 為 `Verdict: approve`（或其剩餘 findings 全部符合既有的 spec-adjudicated carve-out，或依 §5.5 查證後駁回）。此時所有 Task 都已完成，§5.3 的「屬於後面的 Task」不再適用：spec-coverage 每一項**成立**的缺漏都是 blocking。
 
 **缺漏與 blocking findings 的處理**：spec-coverage 的缺漏與 final-adversarial 的 blocking findings 採同一條路徑：controller 在 Task 清單末尾追加新 Task（新的編號與名稱、依 §4.2 寫出 `Spec:` 與 `Acceptance:`，修正 final-adversarial finding 的 Task 其 `Spec:` 為該 finding 涉及的章節），新 Task 走完整 Phase 1 流程（捕捉 `TASK_BASE`、帶自己的 `Task:` trailer、四個 reviewer），全部完成後以同一個 `IMPL_BASE` 重跑整個 `review-final.sh`。這取代既有「直接派 implementer 修正 final-adversarial findings」的做法，確保每個 commit 都屬於唯一一個 Task，接續模式不需要任何特例（不會出現「已完成的 Task 之後又出現它的 commit」這種交錯）。
 
@@ -258,6 +258,39 @@ spec-compliance、task-coverage、spec-coverage 依共用證據規則（§5.1）
 - final gate 通過後、呼叫 `finishing-a-development-branch` 之前，若清單不為空，controller 把清單列給使用者，以 `AskUserQuestion` 請使用者逐項確認已驗證，或明確豁免。使用者回報某項未通過時，視同 final gate 的缺漏：追加 Task 修正後重跑 `review-final.sh`。
 - 清單為空時不打斷，直接進入 finishing。這是 continuous execution 原則的唯一新增停點。
 
+### 5.5 Finding 查證：先懷疑、查證過才修改
+
+reviewer 的結果與建議不一定正確。本節適用於所有 reviewer finding：SDD 的 per-task 四個 reviewer、final gate 的兩個 reviewer，以及 brainstorming spec 雙審查的 structural-completeness 與 design-soundness（§6.1）。
+
+**查證義務**：controller 對每一項 finding，在採取任何行動（修改程式碼、修改 spec、修改 Task 定義、派 implementer）之前，必須先以實際來源查證，不得只憑 reviewer 的描述行事：
+
+- 讀取 finding 指出的檔案與行號，確認描述的內容確實存在、行為確實如此；
+- 對照 spec 原文，確認 reviewer 引用或轉述的需求確實如此；
+- 需要時實際執行指令（測試、grep、`git diff`、`git log` 等）取得證據。
+
+reviewer 附帶的修正建議（patch、替換程式碼、建議做法）同樣不一定正確，只能當參考：controller 自行判斷正確的修法，並在派給 implementer 前確認修法本身成立。
+
+**查證結果分三類**：
+
+| 結果 | 處理 |
+|---|---|
+| **成立**：實際來源支持該 finding | 依原有流程處理（SDD：§5.3 歸屬判斷與修正路徑；final gate：§5.2；brainstorming：修正 spec 或依 escape valve 詢問使用者） |
+| **不成立（駁回）**：實際來源與 finding 矛盾 | 不修改。controller 在回覆中寫出**可驗證的反證**（具體的 `file:line` 內容、spec 原文引文或指令輸出），將該 finding 標為「已駁回」 |
+| **無法判定**：既無法證實也無法否定 | 保守處理，視為成立 |
+
+**駁回的限制（防止濫用）**：
+
+- 駁回只適用於「finding 與事實不符」：指出的程式碼不存在、宣稱缺少的測試其實存在、描述的行為與實際執行結果不同、轉述的 spec 需求與原文不符等。「看起來沒問題」「應該不會發生」不構成反證。
+- 「finding 成立，但不值得修」不屬於駁回，仍走既有機制：brainstorming 的 escape valve（詢問使用者後記入 Accepted limitations）、final gate 的 spec-adjudicated carve-out。
+- 同一項 finding 被駁回後，reviewer 在下一輪若未提出新證據而重提，沿用駁回，不重複修改；若提出新證據，重新查證。
+- **連續三輪重提的回退**：同一項已駁回的 finding 在連續三輪審查中都被重提時，controller 不得再自行沿用駁回，必須以 `AskUserQuestion` 把 finding、反證與 reviewer 的論點一起交給使用者裁決，避免 controller 的誤判被無限期維持。
+
+**對通過條件的影響**：已駁回（附反證）的 finding 不阻擋通過。
+
+- per-task（§5.1）：每個 `Status:` reviewer 要嘛 `Status: OKAY`，要嘛其剩餘 findings 全部屬於「屬於後面的 Task」（§5.3）或「已駁回」；code-quality 沒有成立的 blocking finding。
+- final gate（§5.2）：`spec-coverage` 為 `Status: OKAY` 或其剩餘 findings 全部已駁回；`final-adversarial` 為 `Verdict: approve`，或其剩餘 findings 全部符合 spec-adjudicated carve-out 或已駁回。
+- brainstorming spec 審查（§6.1）：structural-completeness 為 `Status: OKAY` 或其剩餘 findings 全部已駁回；design-soundness 為 `Verdict: approve`，或其剩餘 findings 全部屬於 `adjudicated-reject` 或已駁回。
+
 ## 6. 其他檔案變更
 
 ### 6.1 `skills/brainstorming/SKILL.md`
@@ -266,13 +299,14 @@ spec-compliance、task-coverage、spec-coverage 依共用證據規則（§5.1）
 - 強制順序改為 `brainstorming → spec document → subagent-driven-development`。
 - User Review Gate 的提示語從「before we start writing out the implementation plan」改為「before we start implementation」。
 - fail-closed 規則保留，對象改為 SDD。
+- Spec Review Loop 加入 §5.5 的 finding 查證：每一輪解析 `=== Summary ===` 並讀完各 reviewer 全文後，先逐項查證 finding 再修改 spec；structural-completeness 的「zero-tolerance」改為對**成立**的 finding 零容忍；已駁回的 finding 不阻擋，駁回需在回覆中寫出反證。per-round ledger 新增狀態 `refuted`（已駁回，附反證），並套用 §5.5 的「連續三輪重提即詢問使用者」回退。Checklist 第 6 項、流程圖、Round loop 步驟與 loop 結束條件，以及 User Review Gate 中重述的結束條件，都依 §5.5 的 brainstorming 通過條件更新。
 
 ### 6.2 `skills/subagent-driven-development/SKILL.md`
 
 - 新增 Phase 0（§4），並在流程圖加入對應節點。
 - When to Use 的判斷從「Have implementation plan?」改為「Have an approved spec?」。
 - `review-impl.sh`、`review-final.sh` 的呼叫範例與 caller control-flow 改為 §5 的新介面與四個 / 兩個 reviewer。
-- 新增 §5.3 的歸屬判斷規則、修正路徑與範圍同步通則，以及 §5.4 的人工確認收尾；Continuous execution 段落的停止理由加上「§5.4 的人工確認清單不為空」。
+- 新增 §5.3 的歸屬判斷規則、修正路徑與範圍同步通則，§5.4 的人工確認收尾，以及 §5.5 的 finding 查證（查證義務、三類結果、駁回限制、連續三輪重提即詢問使用者、更新後的 per-task 與 final gate 通過條件）；Continuous execution 段落的停止理由加上「§5.4 的人工確認清單不為空」與「§5.5 的駁回 finding 連續三輪被重提」。Red Flags 新增：未查證就依 reviewer 的描述或附帶 patch 修改；沒有可驗證反證就駁回 finding；用駁回處理「成立但不想修」的 finding。
 - 「Read plan, extract all tasks」改為「Derive the task list from the spec and list it in full in your reply (mirror into the task-tracking tool if available)」；Red Flags 中「Make subagent read plan file」改為「Make subagent derive its own task from the spec (provide the full task definition instead)」。
 - 新增接續模式（§4.4）、commit trailer（§4.5）、實作期間修改 spec（§4.6）三段。
 - 新增 Red Flags：把 finding 判定為「屬於後面的 Task」卻無法指出明確涵蓋它的 Task 與 Acceptance 條目；為了讓 reviewer 通過而放寬 Task 定義；把 Task 清單寫成檔案或簽入 git；implementer commit 缺少 `Task:` trailer；未經使用者同意修改 spec，或把 spec 修改與實作混在同一個 commit；接續模式遇到 fail closed 條件仍自行猜測繼續。

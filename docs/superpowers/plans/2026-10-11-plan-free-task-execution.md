@@ -2108,12 +2108,14 @@ Task 2: Recovery modes   (Spec: §3.2, §3.3)
 Implementer: verify/repair modes, 8/8 tests passing, committed with "Task: 2 Recovery modes"
 
 [review-impl.sh ... --task-summary "Task 2: Recovery modes (spec §3.2, §3.3)" --task-base def5678]
-- task-coverage: Status: Issues Found
-    - §3.3 "report progress every 100 items" — no implementation
-    - §3.3 "--json output" — no implementation
-- code-quality: src/recovery.ts:47 repair mode swallows write errors and still reports success
+=== Summary ===
 - spec-compliance: Status: OKAY
+- code-quality: (prose — 見全文)
+- task-coverage: Status: Issues Found
 - task-seam: Status: OKAY
+[Read the full ## task-coverage and ## code-quality sections above:
+  task-coverage: §3.3 "report progress every 100 items" and §3.3 "--json output" not met
+  code-quality: src/recovery.ts:47 repair mode swallows write errors and still reports success]
 
 [Attribution:
   - "--json output": Task 4 (not complete) has Acceptance "- recovery supports --json output",
@@ -2122,15 +2124,24 @@ Implementer: verify/repair modes, 8/8 tests passing, committed with "Task: 2 Rec
     "- reports progress every 100 items" to Task 2's Acceptance (§3.3 already in Spec:)
   - swallowed write errors -> broken error handling, blocking implementation fix]
 [Implementer fixes both blocking items in one pass, commits with "Task: 2 Recovery modes"]
-[Re-run review-impl.sh, same summary, same TASK_BASE -> all OKAY, no blocking code-quality finding]
-[Task 2 passes; mark complete]
+
+[Re-run review-impl.sh, same summary, same TASK_BASE]
+=== Summary ===
+- spec-compliance: Status: OKAY
+- code-quality: (prose — 見全文)      [no blocking finding]
+- task-coverage: Status: Issues Found
+- task-seam: Status: OKAY
+[Full ## task-coverage section: only §3.3 "--json output" remains -> still attributed to Task 4]
+[Every remaining finding belongs to a later task -> Task 2 passes; mark complete]
 
 ... Tasks 3-5 ...
 
 [review-final.sh --base abc1234 --spec docs/superpowers/specs/2026-05-02-hooks-design.md]
+=== Summary ===
 - final-adversarial: Verdict: approve
 - spec-coverage: Status: Issues Found
-    Coverage Gaps: §3.4 "uninstall removes the hook directory when empty" — no implementation
+[Full ## spec-coverage section: Coverage Gaps lists §3.4 "uninstall removes the hook directory
+  when empty" with no implementation]
 [Append Task 6: Empty hook directory cleanup (Spec: §3.4) and run the full Per-Task Flow]
 [Re-run review-final.sh, same IMPL_BASE -> Verdict: approve, Status: OKAY]
 

@@ -2014,10 +2014,10 @@ spec. The normal flow (handoff from brainstorming) never probes git history.
    to keep the edit (you commit it on its own per **Mid-Implementation Spec Edits**, no `Task:`
    trailer) or discard it. Settle the spec first, then rebuild the task list from the committed
    spec and handle the remaining implementation changes.
-1. **Locate the start.** `S` = the commit that added the spec:
+1. **Locate the start.** `<S>` = the SHA of the commit that added the spec, printed by
    `git log --diff-filter=A --format=%H -- <SPEC>`.
-2. **Rebuild `IMPL_BASE`.** List the trailers in order:
-   `git log --reverse --format='%H %(trailers:key=Task,valueonly)' S..HEAD`.
+2. **Rebuild `IMPL_BASE`.** List the trailers in order, substituting the SHA for `<S>`:
+   `git log --reverse --format='%H %(trailers:key=Task,valueonly)' <S>..HEAD`.
    `IMPL_BASE` = the parent of the first commit carrying a `Task:` trailer. Spec-edit commits carry
    no trailer and do not affect this.
 3. **Group** the trailer-carrying commits in `IMPL_BASE..HEAD` by trailer.
@@ -2043,9 +2043,9 @@ spec. The normal flow (handoff from brainstorming) never probes git history.
 and confirm with your human partner via `AskUserQuestion` before continuing — never guess:
 
 - Interrupted work remains in the worktree (step 0) — the question is revert-and-redo or keep-and-continue.
-- The commit that added the spec cannot be found, or no commit in `S..HEAD` carries a `Task:`
+- The commit that added the spec cannot be found, or no commit in `<S>..HEAD` carries a `Task:`
   trailer.
-- Anywhere in **all of `S..HEAD`** (including before the first trailer-carrying commit) there is a
+- Anywhere in **all of `<S>..HEAD`** (including before the first trailer-carrying commit) there is a
   commit without a trailer that changes anything other than the spec file
   (check with `git show --name-only --format= <sha>`). It may belong to an unknown task, be
   unrelated to this spec, or be implementation started without trailers; in the last case your

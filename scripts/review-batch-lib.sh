@@ -49,6 +49,22 @@ _batch_validate_max_parallel() {
   return 0
 }
 
+# _batch_guard_output: refuse to run when stdout or stderr is /dev/null — the caller would never
+# see the reviewers' findings, so dispatching them would only waste a full review round. `-ef`
+# compares device+inode, so a pipe or a regular file never matches; only a real /dev/null does.
+# Returns 3 (a code no other batch_run path uses). The diagnostic goes to whichever stream is
+# still visible; when both are /dev/null there is nowhere to write it.
+_batch_guard_output() {
+  local out_null=0 err_null=0
+  [ /dev/stdout -ef /dev/null ] && out_null=1
+  [ /dev/stderr -ef /dev/null ] && err_null=1
+  [ "$out_null" -eq 0 ] && [ "$err_null" -eq 0 ] && return 0
+  local msg='review-batch: wrapper output is redirected to /dev/null; remove ALL redirections and pipes from the command and re-run it'
+  if [ "$err_null" -eq 0 ]; then printf '%s\n' "$msg" >&2
+  elif [ "$out_null" -eq 0 ]; then printf '%s\n' "$msg"; fi
+  return 3
+}
+
 # _batch_classify <out-file> <err-file> <rc> : print the Summary status fragment.
 _batch_classify() {
   local out="$1" err="$2" rc="$3" verdict
@@ -132,6 +148,8 @@ _batch_on_signal() {
 # A reviewer tool returning nonzero is the EXPECTED error case, so each dispatch call
 # and the `wait` are wrapped so errexit can never abort the batch.
 batch_run() {
+  # Output guard FIRST: before validation, temp dir, traps, or any dispatch.
+  _batch_guard_output || return 3
   _batch_validate_max_parallel || return 1
 
   _BATCH_PIDS=()

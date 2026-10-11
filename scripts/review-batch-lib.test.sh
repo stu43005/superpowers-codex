@@ -31,14 +31,27 @@ write_stub() {
 ECHO_STUB="$ROOT/echo/dispatch.sh"
 write_stub "$ECHO_STUB" 'for a in "$@"; do printf "ARG:%s\n" "$a"; done'
 
+# A PATH shim for mktemp that records every path it creates in $MKTEMP_LOG, so a test can tell
+# exactly which temp dir a batch run created (or that it created none) without globbing.
+# Runs set PATH="$SHIM_PATH" inside their own subshell so the shim never leaks into the suite.
+MKTEMP_SHIM_DIR="$ROOT/shim"
+SHIM_PATH="$MKTEMP_SHIM_DIR:$PATH"
+REAL_MKTEMP="$(command -v mktemp)"
+# The stub body is deliberately single-quoted: it must expand at stub run time, not here.
+# shellcheck disable=SC2016
+write_stub "$MKTEMP_SHIM_DIR/mktemp" \
+  'p="$("'"$REAL_MKTEMP"'" "$@")" || exit $?' \
+  'printf "%s\n" "$p" >> "${MKTEMP_LOG:?}"' \
+  'printf "%s\n" "$p"'
+
 # argv round-trip: a value containing a space survives intact through %q encoding.
 ( set -e
   BATCH_DISPATCH_SH="$ECHO_STUB"
   . "$LIB"
   batch_init
   batch_add "only" task --prompt /tmp/p.md --set "TASK_ID=Task 1"
-  OUT="$(batch_run 2>/dev/null)"; printf '%s' "$OUT"
-) > "$ROOT/t1.out" 2>/dev/null
+  OUT="$(batch_run 2>"$ROOT/t1.err")"; printf '%s' "$OUT"
+) > "$ROOT/t1.out" 2>"$ROOT/t1.outer.err"
 T1="$(cat "$ROOT/t1.out")"
 if printf '%s' "$T1" | grep -qx 'ARG:task' \
    && printf '%s' "$T1" | grep -qx 'ARG:--prompt' \
@@ -53,12 +66,99 @@ fi
 # Empty, zero, leading-zero (0*, e.g. 01/03), and non-numeric --max-parallel values all
 # fail fast. MAX_PARALLEL is set BEFORE batch_init so an explicit "" survives (batch_init
 # only defaults when UNSET) and reaches validation.
+# The run's output is captured (never sent to /dev/null, which the output guard rejects with exit
+# 3 before validation): the rc must be a validation failure (nonzero, not 3) and the captured
+# stderr must carry the validation diagnostic, proving validation actually ran.
 for bad_mp in 0 "" abc 3x 03; do
   ( BATCH_DISPATCH_SH="$ECHO_STUB"; . "$LIB"; MAX_PARALLEL="$bad_mp"; batch_init
-    batch_add j task --base HEAD; batch_run ) >/dev/null 2>&1
-  if [ "$?" -ne 0 ]; then ok "invalid --max-parallel '$bad_mp' fails fast"
-  else bad "invalid --max-parallel '$bad_mp' fails fast" "rc=0"; fi
+    batch_add j task --base HEAD; batch_run ) > "$ROOT/mp.out" 2> "$ROOT/mp.err"
+  MP_RC=$?
+  if [ "$MP_RC" -ne 0 ] && [ "$MP_RC" -ne 3 ] \
+     && grep -q 'review-batch: --max-parallel must be a positive integer' "$ROOT/mp.err"; then
+    ok "invalid --max-parallel '$bad_mp' fails fast"
+  else bad "invalid --max-parallel '$bad_mp' fails fast" "rc=$MP_RC err=$(cat "$ROOT/mp.err")"; fi
 done
+
+# Output guard: batch_run refuses to run (exit 3) when its stdout and/or stderr is /dev/null,
+# BEFORE validation, temp-dir creation, trap install, or any dispatch. A marker stub records
+# whether a job was dispatched; the mktemp shim records whether a temp dir was created; the EXIT
+# trap state is read back after batch_run returns.
+GUARD_MARK="$ROOT/guard.marker"
+GUARD_STUB="$ROOT/guard/dispatch.sh"
+write_stub "$GUARD_STUB" ': > "'"$GUARD_MARK"'"' 'echo "Status: OKAY"'
+# guard_body <base> <redirection-mode> : (run inside a subshell) source the lib and run a one-job
+# batch with the given output redirection; returns batch_run's rc.
+guard_body() {
+  local base="$1" mode="$2"
+  BATCH_DISPATCH_SH="$GUARD_STUB"; PATH="$SHIM_PATH"
+  MKTEMP_LOG="$base.mktemp"; export MKTEMP_LOG
+  # shellcheck disable=SC1090
+  . "$LIB"; MAX_PARALLEL="${GUARD_MP:-2}"; batch_init
+  batch_add g task --base HEAD
+  case "$mode" in
+    stdout-null) batch_run >/dev/null 2> "$base.err" ;;
+    stderr-null) batch_run > "$base.out" 2>/dev/null ;;
+    both-null)   batch_run >/dev/null 2>&1 ;;
+    pipe)        batch_run 2> "$base.err" | cat > "$base.out"; return "${PIPESTATUS[0]}" ;;
+    file)        batch_run > "$base.out" 2> "$base.err" ;;
+  esac
+}
+# guard_run <tag> <redirection-mode> : run guard_body in a subshell and leave rc / EXIT trap state /
+# captured output under $ROOT/guard-<tag>.*.
+guard_run() {
+  local base="$ROOT/guard-$1"
+  rm -f "$GUARD_MARK" "$base".*
+  : > "$base.mktemp"
+  ( trap - EXIT
+    guard_body "$base" "$2"; printf '%s' "$?" > "$base.rc"; trap -p EXIT > "$base.trap" )
+}
+# guard_rejected <tag> : rc is 3, no dispatch, no temp dir, no EXIT trap left armed.
+guard_rejected() {
+  local base="$ROOT/guard-$1"
+  [ "$(cat "$base.rc")" = "3" ] && [ ! -e "$GUARD_MARK" ] \
+    && [ ! -s "$base.mktemp" ] && [ ! -s "$base.trap" ]
+}
+
+guard_run g1 stdout-null
+if guard_rejected g1 && grep -q '^review-batch: .*/dev/null' "$ROOT/guard-g1.err"; then
+  ok "guard: stdout to /dev/null -> exit 3, no dispatch/temp dir, diagnostic on stderr"
+else bad "guard: stdout to /dev/null -> exit 3, no dispatch/temp dir, diagnostic on stderr" \
+  "rc=$(cat "$ROOT/guard-g1.rc") marker=$([ -e "$GUARD_MARK" ] && echo yes || echo no) mktemp=$(cat "$ROOT/guard-g1.mktemp") err=$(cat "$ROOT/guard-g1.err" 2>/dev/null)"; fi
+
+guard_run g2 stderr-null
+if guard_rejected g2 && grep -q '^review-batch: .*/dev/null' "$ROOT/guard-g2.out" \
+   && ! grep -q '^=== Summary ===$' "$ROOT/guard-g2.out"; then
+  ok "guard: stderr to /dev/null -> exit 3, no dispatch/temp dir, diagnostic on stdout"
+else bad "guard: stderr to /dev/null -> exit 3, no dispatch/temp dir, diagnostic on stdout" \
+  "rc=$(cat "$ROOT/guard-g2.rc") marker=$([ -e "$GUARD_MARK" ] && echo yes || echo no) mktemp=$(cat "$ROOT/guard-g2.mktemp") out=$(cat "$ROOT/guard-g2.out" 2>/dev/null)"; fi
+
+guard_run g3 both-null
+if guard_rejected g3; then
+  ok "guard: stdout and stderr to /dev/null -> exit 3, no dispatch/temp dir"
+else bad "guard: stdout and stderr to /dev/null -> exit 3, no dispatch/temp dir" \
+  "rc=$(cat "$ROOT/guard-g3.rc") marker=$([ -e "$GUARD_MARK" ] && echo yes || echo no) mktemp=$(cat "$ROOT/guard-g3.mktemp")"; fi
+
+# The guard runs BEFORE max-parallel validation: an invalid value with stdout to /dev/null still
+# exits 3 (not the validation failure) and emits no validation diagnostic.
+GUARD_MP=0 guard_run g4 stdout-null
+if guard_rejected g4 && ! grep -q -- '--max-parallel' "$ROOT/guard-g4.err"; then
+  ok "guard: runs before max-parallel validation"
+else bad "guard: runs before max-parallel validation" \
+  "rc=$(cat "$ROOT/guard-g4.rc") err=$(cat "$ROOT/guard-g4.err" 2>/dev/null)"; fi
+
+# Not /dev/null: a pipe or a regular file is accepted and the batch runs normally.
+guard_run g5 pipe
+if [ "$(cat "$ROOT/guard-g5.rc")" = "0" ] && [ -e "$GUARD_MARK" ] \
+   && grep -q '^=== Summary ===$' "$ROOT/guard-g5.out"; then
+  ok "guard: stdout as a pipe runs normally"
+else bad "guard: stdout as a pipe runs normally" \
+  "rc=$(cat "$ROOT/guard-g5.rc") out=$(cat "$ROOT/guard-g5.out" 2>/dev/null) err=$(cat "$ROOT/guard-g5.err" 2>/dev/null)"; fi
+guard_run g6 file
+if [ "$(cat "$ROOT/guard-g6.rc")" = "0" ] && [ -e "$GUARD_MARK" ] \
+   && grep -q '^=== Summary ===$' "$ROOT/guard-g6.out"; then
+  ok "guard: stdout as a regular file runs normally"
+else bad "guard: stdout as a regular file runs normally" \
+  "rc=$(cat "$ROOT/guard-g6.rc") out=$(cat "$ROOT/guard-g6.out" 2>/dev/null) err=$(cat "$ROOT/guard-g6.err" 2>/dev/null)"; fi
 
 # A huge, all-digit but out-of-range --max-parallel must NOT bypass the cap. The `-gt` numeric
 # comparison errors ("integer expression expected") on values beyond the shell integer range; if
@@ -82,7 +182,7 @@ write_stub "$CONC_STUB" \
 : > "$CONC_LOG"
 ( BATCH_DISPATCH_SH="$CONC_STUB"; . "$LIB"; MAX_PARALLEL=2; batch_init
   i=0; while [ "$i" -lt 6 ]; do batch_add "j$i" task --base HEAD; i=$((i+1)); done
-  batch_run ) >/dev/null 2>&1
+  batch_run ) > "$ROOT/conc.out" 2> "$ROOT/conc.err"
 peak=0; cur=0
 while IFS= read -r line; do
   case "$line" in
@@ -120,7 +220,7 @@ T3="$( BATCH_DISPATCH_SH="$MUX_STUB"; . "$LIB"; MAX_PARALLEL=4; batch_init
   batch_add "B-issues" issues
   batch_add "C-err"    err
   batch_add "D-prose"  prose
-  batch_run 2>/dev/null )"
+  batch_run 2>"$ROOT/t3.err" )"
 
 # headings present and in registration order
 order="$(printf '%s\n' "$T3" | grep -n '^## ' | sed 's/:.*//' | tr '\n' ' ')"
@@ -158,7 +258,7 @@ EE_OUT="$ROOT/ee.out"
   . "$LIB"
   batch_init
   batch_add "E-err" err
-  batch_run > "$EE_OUT" 2>/dev/null
+  batch_run > "$EE_OUT" 2>"$ROOT/ee.err"
 ) ; EE_RC=$?
 if grep -q '^=== Summary ===$' "$EE_OUT"; then
   ok "errexit: Summary still emitted under set -e with a nonzero no-verdict job"
@@ -173,19 +273,21 @@ printf '%s\n' "$EE_RC" | grep -qx '[0-9][0-9]*' \
 ( BATCH_DISPATCH_SH="$MUX_STUB"; . "$LIB"; MAX_PARALLEL=4; batch_init
   batch_add "A-okay"   okay
   batch_add "B-issues" issues
-  batch_run ) >/dev/null 2>&1
+  batch_run ) > "$ROOT/allverdict.out" 2> "$ROOT/allverdict.err"
 RC_ALLVERDICT=$?
 [ "$RC_ALLVERDICT" -eq 0 ] && ok "all-verdict batch (incl Issues Found) exits 0" \
   || bad "all-verdict batch exits 0" "rc=$RC_ALLVERDICT"
 
-# One job is ERROR (no verdict + nonzero) -> batch exits nonzero.
+# One job is ERROR (no verdict + nonzero) -> batch exits nonzero. The captured Summary proves the
+# batch actually ran (a nonzero rc alone would also be satisfied by an early rejection).
 ( BATCH_DISPATCH_SH="$MUX_STUB"; . "$LIB"; MAX_PARALLEL=4; batch_init
   batch_add "A-okay" okay
   batch_add "C-err"  err
-  batch_run ) >/dev/null 2>&1
+  batch_run ) > "$ROOT/rcerr.out" 2> "$ROOT/rcerr.err"
 RC_ERR=$?
-[ "$RC_ERR" -ne 0 ] && ok "batch with an ERROR job exits nonzero" \
-  || bad "batch with an ERROR job exits nonzero" "rc=$RC_ERR"
+[ "$RC_ERR" -ne 0 ] && grep -q '^=== Summary ===$' "$ROOT/rcerr.out" \
+  && ok "batch with an ERROR job exits nonzero" \
+  || bad "batch with an ERROR job exits nonzero" "rc=$RC_ERR out=$(cat "$ROOT/rcerr.out")"
 
 # Errexit: the same ERROR case sourced under `set -euo pipefail` returns nonzero (does not
 # abort early) — proving the ERROR exit code survives the errexit-safe wait/return path.
@@ -194,11 +296,11 @@ RC_ERR=$?
   . "$LIB"
   batch_init
   batch_add "C-err" err
-  batch_run >/dev/null 2>&1
+  batch_run > "$ROOT/rcerr-ee.out" 2> "$ROOT/rcerr-ee.err"
 ) ; RC_ERR_EE=$?
-[ "$RC_ERR_EE" -ne 0 ] \
+[ "$RC_ERR_EE" -ne 0 ] && grep -q '^=== Summary ===$' "$ROOT/rcerr-ee.out" \
   && ok "errexit: ERROR batch returns nonzero under set -e" \
-  || bad "errexit: ERROR batch returns nonzero under set -e" "rc=$RC_ERR_EE"
+  || bad "errexit: ERROR batch returns nonzero under set -e" "rc=$RC_ERR_EE out=$(cat "$ROOT/rcerr-ee.out")"
 
 # A job that emits a verdict THEN exits nonzero (e.g. a teardown/streaming crash) is a tool
 # failure (dispatch.sh exits nonzero only on a real tool error, never to signal findings). The
@@ -207,7 +309,7 @@ RC_ERR=$?
 VEXIT_STUB="$ROOT/vexit/dispatch.sh"
 write_stub "$VEXIT_STUB" 'echo "Verdict: approve"' 'echo "late boom on stderr" >&2' 'exit 3'
 TVE="$( BATCH_DISPATCH_SH="$VEXIT_STUB"; . "$LIB"; MAX_PARALLEL=2; batch_init
-  batch_add "V-exit" ; batch_run 2>/dev/null )"
+  batch_add "V-exit" ; batch_run 2>"$ROOT/tve.err" )"
 printf '%s\n' "$TVE" | sed -n '/^=== Summary ===$/,$p' | grep -q 'V-exit:.*Verdict: approve (tool exit 3)' \
   && ok "verdict + nonzero keeps verdict, annotates (tool exit N)" \
   || bad "verdict + nonzero keeps verdict, annotates (tool exit N)" "$TVE"
@@ -215,10 +317,11 @@ printf '%s\n' "$TVE" | grep -q 'late boom on stderr' \
   && ok "verdict + nonzero shows stderr excerpt (caller can judge incompleteness)" \
   || bad "verdict + nonzero shows stderr excerpt" "$TVE"
 ( BATCH_DISPATCH_SH="$VEXIT_STUB"; . "$LIB"; MAX_PARALLEL=2; batch_init
-  batch_add "V-exit" ; batch_run ) >/dev/null 2>&1
+  batch_add "V-exit" ; batch_run ) > "$ROOT/vexit.out" 2> "$ROOT/vexit.err"
 RC_VEXIT=$?
-[ "$RC_VEXIT" -ne 0 ] && ok "verdict + nonzero marks batch nonzero (tool failure surfaced)" \
-  || bad "verdict + nonzero marks batch nonzero" "rc=$RC_VEXIT"
+[ "$RC_VEXIT" -ne 0 ] && grep -q '^=== Summary ===$' "$ROOT/vexit.out" \
+  && ok "verdict + nonzero marks batch nonzero (tool failure surfaced)" \
+  || bad "verdict + nonzero marks batch nonzero" "rc=$RC_VEXIT out=$(cat "$ROOT/vexit.out")"
 
 # _batch_classify must be errexit-safe even when called DIRECTLY (not via command substitution)
 # under `set -euo pipefail`. A prose-only stdout (no Status/Verdict line) makes the internal grep
@@ -238,16 +341,22 @@ else bad "_batch_classify errexit-safe on prose-only input" "rc=$PC_RC out=$(cat
 
 # A normal run leaves no review-batch.* temp dir behind, and writes nothing under the
 # project/repo dir (no .claude/superpowers/review is ever created).
+# The mktemp shim records the run's temp dir, so the assertion first establishes that a temp dir
+# was really created (and jobs dispatched, per the captured output) before checking it is gone.
 before_dirs="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
 PROJDIR="$ROOT/proj"; mkdir -p "$PROJDIR"
+NORMAL_MKTEMP="$ROOT/normal.mktemp"; : > "$NORMAL_MKTEMP"
 ( cd "$PROJDIR"
+  PATH="$SHIM_PATH"; MKTEMP_LOG="$NORMAL_MKTEMP"; export MKTEMP_LOG
   BATCH_DISPATCH_SH="$OKAY_STUB"; . "$LIB"; MAX_PARALLEL=2; batch_init
   batch_add "A" ; batch_add "B"
-  batch_run ) >/dev/null 2>&1
+  batch_run ) > "$ROOT/normal.out" 2> "$ROOT/normal.err"
 after_dirs="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
-[ "$after_dirs" -le "$before_dirs" ] \
+NORMAL_RUN_DIR="$(head -1 "$NORMAL_MKTEMP")"
+[ -n "$NORMAL_RUN_DIR" ] && grep -q 'looks complete' "$ROOT/normal.out" \
+  && [ ! -e "$NORMAL_RUN_DIR" ] && [ "$after_dirs" -le "$before_dirs" ] \
   && ok "temp dir removed after normal run" \
-  || bad "temp dir removed after normal run" "before=$before_dirs after=$after_dirs"
+  || bad "temp dir removed after normal run" "run_dir=$NORMAL_RUN_DIR before=$before_dirs after=$after_dirs out=$(cat "$ROOT/normal.out")"
 [ ! -e "$PROJDIR/.claude/superpowers/review" ] && [ -z "$(ls -A "$PROJDIR" 2>/dev/null)" ] \
   && ok "run writes nothing under the project dir" \
   || bad "run writes nothing under the project dir" "$(ls -A "$PROJDIR" 2>/dev/null)"
@@ -272,9 +381,11 @@ write_stub "$GC_STUB" \
   'sleep 2' \
   'echo "Status: OKAY"'
 gc_before="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
-( BATCH_DISPATCH_SH="$GC_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
+INT_MKTEMP="$ROOT/int.mktemp"; : > "$INT_MKTEMP"
+( PATH="$SHIM_PATH"; MKTEMP_LOG="$INT_MKTEMP"; export MKTEMP_LOG
+  BATCH_DISPATCH_SH="$GC_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
   batch_add "slow" task --prompt /tmp/p.md
-  batch_run ) >/dev/null 2>&1 &
+  batch_run ) > "$ROOT/int.out" 2> "$ROOT/int.err" &
 BATCH_PID=$!
 # Capture the live run's temp dir (the only review-batch.* dir) while the slow job runs, so the
 # assertion can read the exact marker location the grandchild targets.
@@ -284,9 +395,13 @@ kill -INT "$BATCH_PID" 2>/dev/null
 wait "$BATCH_PID" 2>/dev/null
 sleep 1.2   # past the grandchild's 1s timer
 gc_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
-[ "$gc_after" -le "$gc_before" ] \
+# Establish first that the run really created its temp dir (the one live during the INT), then
+# assert that exact dir is gone.
+INT_RUN_DIR="$(head -1 "$INT_MKTEMP")"
+[ -n "$INT_RUN_DIR" ] && [ "$INT_RUN_DIR" = "$GC_RUN_DIR" ] && [ ! -e "$INT_RUN_DIR" ] \
+  && [ "$gc_after" -le "$gc_before" ] \
   && ok "INT removes the run's temp dir (stale grandchild output can only land in it)" \
-  || bad "INT removes the run's temp dir" "before=$gc_before after=$gc_after"
+  || bad "INT removes the run's temp dir" "run_dir=$INT_RUN_DIR live=$GC_RUN_DIR before=$gc_before after=$gc_after"
 # Read the marker location directly: after cleanup the batch temp dir is gone, so the marker the
 # grandchild targeted (inside that dir) is absent — either it was killed before writing (strong)
 # or the dir holding it was removed (weak fallback). Both satisfy the reliable guarantee.
@@ -298,7 +413,7 @@ fi
 # A fresh retry after the INT runs cleanly into its own brand-new temp dir, unaffected by any
 # stale grandchild (this proves the reliable no-cross-contamination guarantee).
 RETRY="$( BATCH_DISPATCH_SH="$OKAY_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
-  batch_add "retry" ; batch_run 2>/dev/null )"
+  batch_add "retry" ; batch_run 2>"$ROOT/retry.err" )"
 printf '%s\n' "$RETRY" | grep -q '^=== Summary ===$' \
   && ok "fresh retry after INT is unaffected by any stale grandchild" \
   || bad "fresh retry after INT is unaffected" "$RETRY"
@@ -324,7 +439,7 @@ if [ "$PG_SUPPORTED" -eq 1 ]; then
   ( BATCH_DISPATCH_SH="$GC_STUB"; GC_MARK_DIR="$GC_MARK"; export GC_MARK_DIR
     . "$LIB"; MAX_PARALLEL=1; batch_init
     batch_add "slow" task --prompt /tmp/p.md
-    batch_run ) >/dev/null 2>&1 &
+    batch_run ) > "$ROOT/pg.out" 2> "$ROOT/pg.err" &
   PG_PID=$!
   sleep 0.4
   kill -INT "$PG_PID" 2>/dev/null
@@ -341,18 +456,23 @@ fi
 
 # TERM (alongside INT) also reaps and removes the run's temp dir.
 term_before="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
-( BATCH_DISPATCH_SH="$GC_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
+TERM_MKTEMP="$ROOT/term.mktemp"; : > "$TERM_MKTEMP"
+( PATH="$SHIM_PATH"; MKTEMP_LOG="$TERM_MKTEMP"; export MKTEMP_LOG
+  BATCH_DISPATCH_SH="$GC_STUB"; . "$LIB"; MAX_PARALLEL=1; batch_init
   batch_add "slow" task --prompt /tmp/p.md
-  batch_run ) >/dev/null 2>&1 &
+  batch_run ) > "$ROOT/term.out" 2> "$ROOT/term.err" &
 TERM_PID=$!
 sleep 0.4
+# Establish that the run's temp dir was really created and is live before signalling.
+TERM_RUN_DIR="$(head -1 "$TERM_MKTEMP")"
+TERM_LIVE=no; [ -n "$TERM_RUN_DIR" ] && [ -d "$TERM_RUN_DIR" ] && TERM_LIVE=yes
 kill -TERM "$TERM_PID" 2>/dev/null
 wait "$TERM_PID" 2>/dev/null
 sleep 1.2
 term_after="$(ls -d "${TMPDIR:-/tmp}"/review-batch.* 2>/dev/null | wc -l | tr -d ' ')"
-[ "$term_after" -le "$term_before" ] \
+[ "$TERM_LIVE" = yes ] && [ ! -e "$TERM_RUN_DIR" ] && [ "$term_after" -le "$term_before" ] \
   && ok "TERM removes the run's temp dir" \
-  || bad "TERM removes the run's temp dir" "before=$term_before after=$term_after"
+  || bad "TERM removes the run's temp dir" "run_dir=$TERM_RUN_DIR live=$TERM_LIVE before=$term_before after=$term_after"
 
 # review-brainstorm.sh assembles the two reviewers' dispatch argv from its CLI.
 BRAINSTORM="$HERE/review-brainstorm.sh"
@@ -361,7 +481,7 @@ mkdir -p "$PROOT/skills/brainstorming"
 : > "$PROOT/skills/brainstorming/spec-document-reviewer-prompt.md"
 : > "$PROOT/skills/brainstorming/adversarial-spec-review-focus.md"
 T6="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
-       bash "$BRAINSTORM" --spec docs/specs/x-design.md --base SPECBASE 2>/dev/null )"
+       bash "$BRAINSTORM" --spec docs/specs/x-design.md --base SPECBASE 2>"$ROOT/t6.err" )"
 # structural-completeness: task --prompt <root>/.../spec-document-reviewer-prompt.md --set SPEC_FILE_PATH=<spec>
 if printf '%s\n' "$T6" | grep -q '^## structural-completeness$' \
    && printf '%s\n' "$T6" | grep -qx 'ARG:task' \
@@ -407,7 +527,7 @@ mkdir -p "$SDD_DIR"
 IMPL_SUMMARY='Task 2: Retry policy (spec §4.2)'
 T8="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
        bash "$IMPL_W" --spec docs/specs/x.md --task-summary "$IMPL_SUMMARY" \
-         --task-base TBASE 2>/dev/null )"
+         --task-base TBASE 2>"$ROOT/t8.err" )"
 # exactly four jobs, labels in registration order
 IMPL_LABELS="$(printf '%s\n' "$T8" | grep '^## ' | tr '\n' '|')"
 [ "$IMPL_LABELS" = '## spec-compliance|## code-quality|## task-coverage|## task-seam|' ] \
@@ -477,7 +597,7 @@ mkdir -p "$SDD_DIR"
 : > "$SDD_DIR/final-code-reviewer-focus.md"
 : > "$SDD_DIR/spec-coverage-prompt.md"
 T_FINAL="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
-       bash "$FINAL_W" --base IMPLBASE --spec docs/specs/x.md 2>/dev/null )"
+       bash "$FINAL_W" --base IMPLBASE --spec docs/specs/x.md 2>"$ROOT/tfinal.err" )"
 # exactly two jobs, labels in registration order
 FINAL_LABELS="$(printf '%s\n' "$T_FINAL" | grep '^## ' | tr '\n' '|')"
 [ "$FINAL_LABELS" = '## final-adversarial|## spec-coverage|' ] \

@@ -285,7 +285,7 @@ reviewer 附帶的修正建議（patch、替換程式碼、建議做法）同樣
 - 同一項 finding 被駁回後，reviewer 在下一輪若未提出新證據而重提，沿用駁回，不重複修改；若提出新證據，重新查證。
 - **連續三輪重提的回退**：同一項已駁回的 finding 在連續三輪審查中都被重提時，controller 不得再自行沿用駁回，必須以 `AskUserQuestion` 把 finding、反證與 reviewer 的論點一起交給使用者裁決，避免 controller 的誤判被無限期維持。
 
-**對通過條件的影響**：已駁回（附反證）的 finding 不阻擋通過。
+**對通過條件的影響**：已駁回（附反證）的 finding 不阻擋通過，但以下每一項通過條件都另外要求**沒有待處理的升級**：已連續三輪被重提的駁回 finding，必須先經使用者裁決，才能判斷是否通過。
 
 - per-task（§5.1）：每個 `Status:` reviewer 要嘛 `Status: OKAY`，要嘛其剩餘 findings 全部屬於「屬於後面的 Task」（§5.3）或「已駁回」；code-quality 沒有成立的 blocking finding。
 - final gate（§5.2）：`spec-coverage` 為 `Status: OKAY` 或其剩餘 findings 全部已駁回；`final-adversarial` 為 `Verdict: approve`，或其剩餘 findings 全部符合 spec-adjudicated carve-out 或已駁回。

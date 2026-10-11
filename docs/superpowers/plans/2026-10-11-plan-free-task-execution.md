@@ -527,7 +527,15 @@ Expected: no `FAIL` lines; last line `68 passed, 0 failed`; exit status 0.
 Run: `bash scripts/dispatch.test.sh` — expected last line `17 passed, 0 failed`.
 Run: `bash scripts/preflight.test.sh` — expected last line `6 passed, 0 failed`.
 Run: `bash -n scripts/review-batch-lib.test.sh` — expected no output, exit status 0.
-Run: `(cd scripts && shellcheck -x -S error review-batch-lib.test.sh)` — expected no output, exit status 0. (The test harness already carries style/info/warning-level findings such as SC1090 and SC2015 that predate this plan; they are out of scope, so the gate for this modified file is error severity.)
+Run the no-new-findings ShellCheck gate for the test harness. It already carries info/warning findings (SC1090, SC2015, and others) that predate this plan and are out of scope, so the gate compares the set of findings — with the `file:line:col:` prefix stripped — against commit `6925f86f76679588dc8fbaf4948a8011d4575609`, the last commit that touched the harness before this plan; this check covers all harness changes from Tasks 1–3:
+
+```bash
+cd scripts && comm -13 \
+  <(git show 6925f86f76679588dc8fbaf4948a8011d4575609:scripts/review-batch-lib.test.sh | shellcheck -x -f gcc - | sed -E 's/^[^:]*:[0-9]+:[0-9]+: //' | sort -u) \
+  <(shellcheck -x -f gcc review-batch-lib.test.sh | sed -E 's/^[^:]*:[0-9]+:[0-9]+: //' | sort -u); cd ..
+```
+
+Expected: no output (no finding that was absent before this plan). Any printed line is a newly introduced finding; fix it in the test harness and re-run.
 
 - [ ] **Step 5: Commit**
 
@@ -1598,17 +1606,17 @@ spec-coverage) gates the merge.
 ```dot
 digraph when_to_use {
     "Have an approved spec?" [shape=diamond];
-    "Tasks mostly independent?" [shape=diamond];
     "subagent-driven-development" [shape=box];
     "Brainstorm first (superpowers-codex:brainstorming)" [shape=box];
-    "Manual execution" [shape=box];
 
-    "Have an approved spec?" -> "Tasks mostly independent?" [label="yes"];
+    "Have an approved spec?" -> "subagent-driven-development" [label="yes"];
     "Have an approved spec?" -> "Brainstorm first (superpowers-codex:brainstorming)" [label="no"];
-    "Tasks mostly independent?" -> "subagent-driven-development" [label="yes"];
-    "Tasks mostly independent?" -> "Manual execution" [label="no - tightly coupled"];
 }
 ```
+
+There is no alternative execution path for an approved spec. Tightly coupled work is handled in
+Phase 0: order the tasks by dependency and merge tightly coupled pieces (including any dependency
+cycle) into one task, per `./task-list-format.md`.
 
 An approved spec is a committed design spec under `docs/superpowers/specs/` that your human
 partner explicitly approved (normally handed off by `superpowers-codex:brainstorming`). Its path is
@@ -1951,9 +1959,9 @@ If a serious problem means the spec itself must change:
 Enter Resume Mode **only** when your human partner explicitly asks you to resume implementing a
 spec. The normal flow (handoff from brainstorming) never probes git history.
 
-0. **Clean worktree check.** Run `git status --porcelain`. Any output (staged, unstaged, or
-   untracked changes) is a fail-closed condition — usually implementation interrupted before
-   commit. Do not ignore or attribute it yourself; your human partner decides which task to commit
+0. **Clean worktree check.** Run `git status --porcelain --untracked-files=no`. Any output (staged
+   or unstaged changes to tracked files) is a fail-closed condition — usually implementation
+   interrupted before commit. Untracked files (for example `.DS_Store`) are not checked. Do not ignore or attribute it yourself; your human partner decides which task to commit
    it to, or to stash or discard it. Start rebuilding only once the worktree is clean.
 1. **Locate the start.** `S` = the commit that added the spec:
    `git log --diff-filter=A --format=%H -- <SPEC>`.
@@ -2090,7 +2098,7 @@ Implementer: verify/repair modes, 8/8 tests passing, committed with "Task: 2 Rec
 - task-coverage: Status: Issues Found
     - §3.3 "report progress every 100 items" — no implementation
     - §3.3 "--json output" — no implementation
-- code-quality: src/recovery.ts:47 magic number 100 should be a named constant
+- code-quality: src/recovery.ts:47 repair mode swallows write errors and still reports success
 - spec-compliance: Status: OKAY
 - task-seam: Status: OKAY
 
@@ -2099,7 +2107,7 @@ Implementer: verify/repair modes, 8/8 tests passing, committed with "Task: 2 Rec
     its Spec includes §3.3, and Task 2 neither needs it nor tests it -> belongs to Task 4
   - "progress every 100 items": no task covers it -> blocking; add
     "- reports progress every 100 items" to Task 2's Acceptance (§3.3 already in Spec:)
-  - magic number -> blocking implementation fix]
+  - swallowed write errors -> broken error handling, blocking implementation fix]
 [Implementer fixes both blocking items in one pass, commits with "Task: 2 Recovery modes"]
 [Re-run review-impl.sh, same summary, same TASK_BASE -> all OKAY, no blocking code-quality finding]
 [Task 2 passes; mark complete]
@@ -2121,7 +2129,7 @@ Done — proceed to superpowers-codex:finishing-a-development-branch
 
 ## Advantages
 
-**vs. Manual execution:**
+**vs. Implementing everything in the controller session:**
 - Subagents follow TDD naturally
 - Fresh context per task (no confusion)
 - Subagent can ask questions (before AND during work)

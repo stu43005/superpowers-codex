@@ -507,30 +507,53 @@ impl_expect_err "review-impl: removed --task fails as unknown arg" \
   'review-impl: unknown arg: --task' \
   --task "Task 2" --spec docs/specs/x.md --task-summary "$IMPL_SUMMARY" --task-base TBASE
 
-# review-final.sh assembles the final adversarial reviewer's dispatch argv from its CLI.
+# review-final.sh assembles the final-adversarial + spec-coverage dispatch argv from its CLI.
 FINAL_W="$HERE/review-final.sh"
 PROOT="${PROOT:-$ROOT/plugin}"   # fixture plugin root (defined locally)
-mkdir -p "$PROOT/skills/subagent-driven-development"
-: > "$PROOT/skills/subagent-driven-development/final-code-reviewer-focus.md"
+SDD_DIR="$PROOT/skills/subagent-driven-development"
+mkdir -p "$SDD_DIR"
+: > "$SDD_DIR/final-code-reviewer-focus.md"
+: > "$SDD_DIR/spec-coverage-prompt.md"
 T_FINAL="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
-       bash "$FINAL_W" --base IMPLBASE 2>/dev/null )"
+       bash "$FINAL_W" --base IMPLBASE --spec docs/specs/x.md 2>/dev/null )"
+# exactly two jobs, labels in registration order
+FINAL_LABELS="$(printf '%s\n' "$T_FINAL" | grep '^## ' | tr '\n' '|')"
+[ "$FINAL_LABELS" = '## final-adversarial|## spec-coverage|' ] \
+  && ok "review-final: two jobs registered in order" \
+  || bad "review-final: two jobs registered in order" "labels=$FINAL_LABELS"
 # final-adversarial: adversarial --base <IMPL_BASE> --focus <root>/.../final-code-reviewer-focus.md
-if printf '%s\n' "$T_FINAL" | grep -q '^## final-adversarial$' \
-   && printf '%s\n' "$T_FINAL" | grep -qx 'ARG:adversarial' \
-   && printf '%s\n' "$T_FINAL" | grep -qx 'ARG:--base' \
-   && printf '%s\n' "$T_FINAL" | grep -qx 'ARG:IMPLBASE' \
-   && printf '%s\n' "$T_FINAL" | grep -qx 'ARG:--focus' \
-   && printf '%s\n' "$T_FINAL" | grep -qx "ARG:$PROOT/skills/subagent-driven-development/final-code-reviewer-focus.md"; then
-  ok "review-final: final-adversarial argv matches expected wrapper contract"
-else bad "review-final: final-adversarial argv" "$T_FINAL"; fi
-# require --base; missing value fails with a clear wrapper error, not a set -u crash
-FINAL_ERR="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" bash "$FINAL_W" --base 2>&1 )"
-RC_FINAL=$?
-if [ "$RC_FINAL" -ne 0 ] \
-   && printf '%s\n' "$FINAL_ERR" | grep -q 'review-final: --base requires a value' \
-   && ! printf '%s\n' "$FINAL_ERR" | grep -qi 'unbound variable'; then
-  ok "review-final: missing --base value fails with a clear wrapper error"
-else bad "review-final: missing --base value fails with a clear wrapper error" "rc=$RC_FINAL out=$FINAL_ERR"; fi
+# (unchanged; it never receives the spec)
+FINAL_ADV="$(section_args "$T_FINAL" final-adversarial)"
+[ "$FINAL_ADV" = "ARG:adversarial|ARG:--base|ARG:IMPLBASE|ARG:--focus|ARG:$SDD_DIR/final-code-reviewer-focus.md|" ] \
+  && ok "review-final: final-adversarial argv matches expected wrapper contract" \
+  || bad "review-final: final-adversarial argv" "$FINAL_ADV"
+# spec-coverage: task --prompt <root>/.../spec-coverage-prompt.md + SPEC_FILE_PATH, IMPL_BASE
+FINAL_SCOV="$(section_args "$T_FINAL" spec-coverage)"
+[ "$FINAL_SCOV" = "ARG:task|ARG:--prompt|ARG:$SDD_DIR/spec-coverage-prompt.md|ARG:--set|ARG:SPEC_FILE_PATH=docs/specs/x.md|ARG:--set|ARG:IMPL_BASE=IMPLBASE|" ] \
+  && ok "review-final: spec-coverage argv matches expected wrapper contract" \
+  || bad "review-final: spec-coverage argv" "$FINAL_SCOV"
+# final_expect_err <name> <expected-stderr-fragment> <wrapper-args...> : the wrapper must exit
+# nonzero with the given wrapper error, never crash on `set -u`, and dispatch no job.
+final_expect_err() {
+  local name="$1" want="$2" out rc; shift 2
+  out="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" bash "$FINAL_W" "$@" 2>&1 )"
+  rc=$?
+  if [ "$rc" -ne 0 ] \
+     && printf '%s\n' "$out" | grep -qF "$want" \
+     && ! printf '%s\n' "$out" | grep -qi 'unbound variable' \
+     && ! printf '%s\n' "$out" | grep -q '^## '; then
+    ok "$name"
+  else bad "$name" "rc=$rc out=$out"; fi
+}
+final_expect_err "review-final: missing --base fails fast with a clear error" \
+  'review-final: --base is required' \
+  --spec docs/specs/x.md
+final_expect_err "review-final: missing --spec fails fast with a clear error" \
+  'review-final: --spec is required' \
+  --base IMPLBASE
+final_expect_err "review-final: missing --base value fails with a clear wrapper error" \
+  'review-final: --base requires a value' \
+  --spec docs/specs/x.md --base
 
 # decide_action <stdout-blob> <exit-code> : print PROCEED | RERUN_WRAPPER | FIX_AND_REREVIEW | INSPECT.
 # The exit code is accepted but NOT used to decide — the decision is read from the stdout, which

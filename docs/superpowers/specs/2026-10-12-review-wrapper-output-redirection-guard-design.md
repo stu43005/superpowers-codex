@@ -70,7 +70,11 @@ output.」，措辭抽象，未列出 agent 實際會犯的寫法。agent 仍可
   reviewer 也無從判讀；輸出過長或逾時時，Claude Code 會自動將完整輸出存檔，之後分段讀取
   該檔即可，不需要自行過濾。
 - **Exit 3**：wrapper 以 exit 3 結束代表其 stdout 或 stderr 被導向 `/dev/null`，此時沒有
-  任何 reviewer 被執行；移除所有重新導向後以相同參數重跑。
+  任何 reviewer 被執行，stdout 也不會有 `=== Summary ===`；移除所有重新導向後以相同參數重跑。
+
+同時在兩份 SKILL.md 的 **Caller control-flow** 第 1 步（「Regardless of the wrapper's exit code,
+read and parse its entire stdout」）加註例外：exit 3 不產生 Summary，依上述 exit 3 規則處理，
+不進入 Summary 解析流程。
 
 原有的 `run_in_background`、exit-code probe、逾時處理三條維持不變。
 
@@ -88,6 +92,20 @@ output.」，措辭抽象，未列出 agent 實際會犯的寫法。agent 仍可
 
 測試須依 TDD 順序：先寫測試並在未修改的 `review-batch-lib.sh` 上看到案例 1–3 失敗，再實作。
 
+**既有測試遷移：** 現有 `review-batch-lib.test.sh` 中許多呼叫 `batch_run` 或 wrapper 的案例把
+stdout 及/或 stderr 導向 `/dev/null`（例如 `batch_run ) >/dev/null 2>&1`、`batch_run 2>/dev/null`）。
+guard 生效後這些呼叫會在驗證、派出 job 與建立 temp dir 之前即回傳 3，使原本要驗證的行為
+（max-parallel 驗證、並行、errexit 安全、temp dir 清理、INT/TERM 清理）根本沒被執行；只檢查
+「非零 exit」或「沒有殘留 temp dir」的斷言會因此假性通過。遷移要求：
+
+- 所有會到達 `batch_run` 的既有呼叫，將導向 `/dev/null` 的 stdout / stderr 改為導向
+  `$ROOT` 下的擷取檔。`/dev/null` 重新導向僅保留給新增的 guard 案例，以及不會呼叫
+  `batch_run` 的輔助指令（如 `ls`、`kill`、`wait`、`_batch_classify` 的參數）。
+- 遷移後，原本只斷言「非零 exit」的驗證案例（如 max-parallel 非法值）須改為斷言其 exit
+  不是 3，且擷取到的 stderr 含該驗證的診斷訊息。
+- 清理類案例（正常清理、INT、TERM）須先確認 temp dir 確實曾被建立或 dispatch 確實曾被呼叫，
+  再斷言清理結果，避免 guard 提早返回造成的假性通過。
+
 ## 非目標 / Non-goals / Accepted limitations
 
 - 不偵測 pipe、一般檔案重新導向或 `tee`（原因見上）；這些僅靠文字規範。
@@ -99,5 +117,6 @@ output.」，措辭抽象，未列出 agent 實際會犯的寫法。agent 仍可
 - 三支 wrapper 在 `>/dev/null`、`2>/dev/null`、`&>/dev/null` 下皆以 exit 3 結束且不派出
   reviewer。
 - 正常呼叫（含 Claude Code 以 pipe 或檔案承接輸出）行為不變。
-- `review-batch-lib.test.sh` 全數通過，`shellcheck` 對修改過的腳本無新增警告。
+- `review-batch-lib.test.sh` 全數通過，且既有測試已依「既有測試遷移」改寫，不再以
+  `/dev/null` 承接會到達 `batch_run` 的輸出；`shellcheck` 對修改過的腳本無新增警告。
 - 兩份 SKILL.md 的 Invocation discipline 含上述硬性規則、反例清單與 exit 3 說明。

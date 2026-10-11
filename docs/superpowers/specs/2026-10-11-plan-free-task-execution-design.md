@@ -210,7 +210,7 @@ Task: <N> <name>
 
 `--base`、`--spec` 皆為必填。wrapper 並行註冊兩個 job：
 
-- `final-adversarial`：不變（`adversarial --focus final-code-reviewer-focus.md`）。focus 中「drift from the plan's overall intent」改為「drift from the spec's overall intent」。
+- `final-adversarial`：`adversarial --focus <產生的 focus 檔>`。focus 中「drift from the plan's overall intent」改為「drift from the spec's overall intent」。由於 spec 通常早於 `IMPL_BASE`、不在 diff 中，reviewer 需要被明確告知以哪份 spec 為準：`review-final.sh` 以 `mktemp` 建立暫存 focus 檔，內容為 `final-code-reviewer-focus.md` 全文，後面接一行 `Source spec: <--spec 的路徑> — read it in full; it is the authoritative statement of intended behavior for this change set.`，把暫存檔路徑傳給 `--focus`，並以 `trap` 在 wrapper 結束時刪除。`dispatch.sh` 與 `review-batch-lib.sh` 不變（`dispatch.sh adversarial` 原本就是讀取 focus 檔的文字內容）。
 - `spec-coverage`：`task`，prompt `spec-coverage-prompt.md`，placeholder `[SPEC_FILE_PATH]`、`[IMPL_BASE]`。
 
 **`spec-coverage-prompt.md`（新增）**
@@ -330,7 +330,7 @@ spec-compliance、task-coverage、spec-coverage 依共用證據規則（§5.1）
 更新 `scripts/review-batch-lib.test.sh`（以既有的 `BATCH_DISPATCH_SH` echo stub 驗證 argv 契約）：
 
 - `review-impl.sh`：註冊四個 job，label 依序為 `spec-compliance`、`code-quality`、`task-coverage`、`task-seam`；`spec-compliance` 與 `task-coverage` 的 prompt 路徑與 `SPEC_FILE_PATH`、`TASK_SUMMARY`、`TASK_BASE` 的 `--set` 值正確；`task-seam` 的 prompt 路徑正確且只帶 `TASK_BASE`（不帶 `SPEC_FILE_PATH`）；code-quality 為 `review --base <TASK_BASE>`；缺少 `--spec`、`--task-summary`、`--task-base` 任一者時 fail fast 並輸出清楚的錯誤；傳入已移除的 `--plan` 或 `--task` 時以 unknown arg 失敗。
-- `review-final.sh`：註冊兩個 job（`final-adversarial`、`spec-coverage`），`spec-coverage` 的 prompt 路徑與 `SPEC_FILE_PATH`、`IMPL_BASE` 的 `--set` 值正確；缺少 `--base`、`--spec` 任一者時 fail fast。
+- `review-final.sh`：註冊兩個 job（`final-adversarial`、`spec-coverage`），`spec-coverage` 的 prompt 路徑與 `SPEC_FILE_PATH`、`IMPL_BASE` 的 `--set` 值正確；`final-adversarial` 收到的 `--focus` 檔內容包含 `final-code-reviewer-focus.md` 全文以及帶 `--spec` 路徑的 `Source spec:` 行（以 stub 在執行期間讀取 focus 檔內容驗證）；wrapper 結束後暫存 focus 檔已被刪除；缺少 `--base`、`--spec` 任一者時 fail fast。
 - 刪除 review-plan 的所有測試與 plan caller shape 測試。
 - `bash scripts/review-batch-lib.test.sh`、`bash scripts/dispatch.test.sh`、`bash scripts/preflight.test.sh` 全部通過；所有修改過的 `.sh` 通過 `shellcheck` 與 `bash -n`。
 

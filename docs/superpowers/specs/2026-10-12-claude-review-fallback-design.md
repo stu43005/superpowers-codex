@@ -48,8 +48,8 @@ review-*.sh ──> review-batch-lib.sh: batch_run
 2. `primary`、`secondary` 中任一非 `null` 視窗 `usedPercent >= 95` → `claude`，reason：`auto-downgraded: codex <label> usage <U>% reached 95% cap`，其中 `<label>` 為 `weekly`（`windowDurationMins == 10080`）、`5h-window`（`== 300`），其他長度寫 `<N>m-window`。
 3. 取 `windowDurationMins == 10080` 的視窗為週視窗（依 `primary`、`secondary` 順序取第一個符合者），令 `W = 10080 × 60`：
    - `elapsed = clamp((now − (resetsAt − W)) / W, 0, 1)`
-   - `pace = elapsed × 100 + 5`
-   - `usedPercent > pace` → `claude`，reason：`auto-downgraded: codex weekly usage <U>% exceeds even-pace limit <P>%`（`<P>` 取整數，四捨五入）
+   - `pace = elapsed × 100 + 5`，`P = round(pace)`（四捨五入為整數）
+   - `usedPercent > P` → `claude`，reason：`auto-downgraded: codex weekly usage <U>% exceeds even-pace limit <P>%`。判斷與顯示使用同一個整數 `P`，使 reason 中的「超過」永遠與顯示的數字一致（例如 pace 5.6 → `P = 6`，用量 6% 不降級）
 4. 規則 1、2 不成立且回應中不存在週視窗 → `codex`，reason：`codex quota unavailable: no weekly (10080m) window in response`。以 `unavailable` 歸類，使 batch 層照常在 stderr 印出警告，避免 codex 改版改變視窗長度時節奏線規則無聲失效。
 5. 以上皆不成立 → `codex`，reason：`codex quota ok`。
 

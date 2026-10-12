@@ -18,8 +18,9 @@ const BIN = process.env.CODEX_QUOTA_CODEX_BIN || 'codex';
 const isObject = (v) => typeof v === 'object' && v !== null && !Array.isArray(v);
 const isFiniteNum = (v) => typeof v === 'number' && Number.isFinite(v);
 
-// Integers as-is, otherwise at most one decimal place.
-const fmt = (n) => String(Math.round(n * 10) / 10);
+// usedPercent is reported exactly as the server gave it; rounding could hide
+// why the 95% cap did or did not trigger.
+const fmt = (n) => String(n);
 
 function windowLabel(mins) {
   if (mins === WEEK_MINS) return 'weekly';

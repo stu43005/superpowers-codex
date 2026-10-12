@@ -218,6 +218,18 @@ expect "pace 38.7 rounds up" 'claude\tauto-downgraded: codex weekly usage 40% ex
 run "$(resp null "$(win 40 10080 $((NOW + W - W * 332 / 1000)))" null)"
 expect "pace 38.2 rounds down" 'claude\tauto-downgraded: codex weekly usage 40% exceeds even-pace limit 38%'
 
+# usedPercent is printed exactly as given (no rounding)
+run "$(resp null "$(win 95.125 300 $((NOW+3600)))" null)"
+expect "5h window 95.125% printed unrounded" 'claude\tauto-downgraded: codex 5h-window usage 95.125% reached 95% cap'
+run "$(resp null "$(win 60.125 10080 "$(resets_for 50)")" null)"
+expect "weekly 60.125% printed unrounded in pace reason" 'claude\tauto-downgraded: codex weekly usage 60.125% exceeds even-pace limit 55%'
+run "$(resp null "$(win 94.96 10080 "$(resets_for 50)")" null)"
+expect "94.96% (below cap) printed as 94.96" 'claude\tauto-downgraded: codex weekly usage 94.96% exceeds even-pace limit 55%'
+
+# Cap rule does not need a valid resetsAt
+run "$(resp null '{"usedPercent":96,"windowDurationMins":300,"resetsAt":null}' null)"
+expect "cap rule fires with invalid resetsAt" 'claude\tauto-downgraded: codex 5h-window usage 96% reached 95% cap'
+
 # Weekly window exactly at the cap
 run "$(resp null "$(win 95 10080 "$(resets_for 99)")" null)"
 expect "weekly window at exactly 95% -> claude" 'claude\tauto-downgraded: codex weekly usage 95% reached 95% cap'

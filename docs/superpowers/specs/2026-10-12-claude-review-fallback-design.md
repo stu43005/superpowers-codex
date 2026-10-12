@@ -73,11 +73,18 @@ review-*.sh ──> review-batch-lib.sh: batch_run
 **執行**：渲染後的 prompt 以 stdin 餵入：
 
 ```
-claude -p --permission-mode plan --tools "Read,Grep,Glob,Bash" \
-  --disallowedTools "mcp__*" --disable-slash-commands \
-  --no-session-persistence --output-format text
+claude -p --permission-mode plan --strict-mcp-config \
+  --tools "Read,Grep,Glob,Bash" --disallowedTools "mcp__*" \
+  --disable-slash-commands --no-session-persistence --output-format text \
+  --append-system-prompt "<REVIEWER_SYSTEM_NOTE>"
 ```
 
+`<REVIEWER_SYSTEM_NOTE>` 為 `dispatch-claude.sh` 內的固定字串：
+
+> You are a single-turn, read-only reviewer invoked non-interactively. Ignore any plan-mode workflow instructions (do not write plan files, do not call ExitPlanMode or AskUserQuestion, do not launch subagents). Perform the review requested in the user prompt and end your reply exactly as the prompt's output contract requires.
+
+- `--permission-mode plan` 會在 reviewer 的 context 注入 plan-mode 工作流程指示（寫 plan 檔、以 ExitPlanMode 結束等），`<REVIEWER_SYSTEM_NOTE>` 用來覆蓋這些指示，使輸出遵守 prompt 的 `Status:` / `Verdict:` 契約（以此組 flags 實測，最後一行正確輸出 `Status: OKAY`）。
+- `--strict-mcp-config` 且不帶 `--mcp-config`：實測 stream-json init 事件的 `mcp_servers` 由 12 個變為 0 個，reviewer 不啟動任何 MCP server，也不注入其 instructions。
 - `--permission-mode plan` 是唯讀保證的來源：即使使用者的 `permissions.allow` 放行了寫入類指令或 `review-*.sh`（可能造成遞迴審查），reviewer 也無法執行。不得改用 `dontAsk` 或 `bypassPermissions`。
 - 不傳 `--model`，沿用使用者的 Claude Code 預設模型。
 - `claude` 執行檔預設由 PATH 解析，可由 `DISPATCH_CLAUDE_BIN` 覆寫（測試接點）。找不到時 `die`（exit ≠ 0），不回頭改走 codex。
@@ -105,7 +112,7 @@ claude -p --permission-mode plan --tools "Read,Grep,Glob,Bash" \
 
 ### 單元五：SKILL.md 與 README
 
-- `skills/brainstorming/SKILL.md` 與 `skills/subagent-driven-development/SKILL.md` 解讀 `=== Summary ===` 的段落各加一句：`- backend:` 列為資訊列，不是 reviewer，不參與迴圈的 ERROR / verdict 判斷。agent 呼叫方式不變。
+- 每一處解讀 `=== Summary ===` 的 caller control-flow 段落各加一句——`skills/brainstorming/SKILL.md` 的 spec review 段落，以及 `skills/subagent-driven-development/SKILL.md` 的 per-task review（`review-impl.sh`）與 final review（`review-final.sh`）兩處段落：`- backend:` 列為資訊列，不是 reviewer，不參與迴圈的 ERROR / verdict 判斷。agent 呼叫方式不變。
 - `README.md` 新增一節說明自動降級規則、`SUPERPOWERS_REVIEW_BACKEND` 開關、`ANTHROPIC_API_KEY` 計費注意事項。
 
 ## 錯誤處理
@@ -122,7 +129,7 @@ claude -p --permission-mode plan --tools "Read,Grep,Glob,Bash" \
 所有自動化測試皆不需網路，不呼叫真實的 codex 或 claude。
 
 - **`scripts/codex-quota.test.sh`**：以 `CODEX_QUOTA_CODEX_BIN` 注入假 `codex`，依情境輸出預先準備的 JSON-RPC 回應；`resetsAt` 依當下時間計算以控制 `elapsed`。案例：低於節奏線 → `codex`；高於節奏線 → `claude`（reason 全字串比對）；5h 視窗 95% → `claude`；週視窗 95% → `claude`；`rateLimitReachedType` 非 null → `claude`；僅有非週視窗且未達上限 → `codex`；回應含 `error`、欄位缺失、假 codex 不回應（逾時）、執行檔不存在 → `codex` 且 reason 以 `codex quota unavailable:` 開頭；exit code 恆為 0。
-- **`scripts/dispatch-claude.test.sh`**：以 `DISPATCH_CLAUDE_BIN` 注入假 `claude`，記錄 argv 與 stdin。驗證三個子命令渲染的 prompt、唯讀 flags 齊全（含 `--permission-mode plan`）、未傳 `--model`、`ANTHROPIC_API_KEY` 警告、`claude` 不存在時 exit ≠ 0、`--dry-run` 不執行 `claude`、focus 文字含方括號時不觸發殘留檢查。
+- **`scripts/dispatch-claude.test.sh`**：以 `DISPATCH_CLAUDE_BIN` 注入假 `claude`，記錄 argv 與 stdin。驗證三個子命令渲染的 prompt、唯讀與隔離 flags 齊全（含 `--permission-mode plan`、`--strict-mcp-config`、`--append-system-prompt` 帶 `<REVIEWER_SYSTEM_NOTE>` 全文）、未傳 `--model`、`ANTHROPIC_API_KEY` 警告、`claude` 不存在時 exit ≠ 0、`--dry-run` 不執行 `claude`、focus 文字含方括號時不觸發殘留檢查。
 - **`scripts/review-batch-lib.test.sh` 擴充**：`SUPERPOWERS_REVIEW_BACKEND` 為 `codex` / `claude` / 不合法值；`auto` 降級時以 `BATCH_DISPATCH_CLAUDE_SH` 派工且出現 `backend:` 列、未降級時以 `BATCH_DISPATCH_SH` 派工且沒有該列（以 `BATCH_QUOTA_PROBE` 注入假額度腳本）；額度腳本失敗或輸出不符契約時回退 codex 並警告。既有案例的共用 setup 設定 `SUPERPOWERS_REVIEW_BACKEND=codex`，使其不查詢真實額度。
 - **`scripts/dispatch.test.sh`**：抽出共用 lib 後維持全綠。
 - **端到端手動驗證**：以 `SUPERPOWERS_REVIEW_BACKEND=claude` 實際執行一次 `review-brainstorm.sh`，確認兩個 reviewer 均產出可解析的 Summary 列。
@@ -135,4 +142,5 @@ claude -p --permission-mode plan --tools "Read,Grep,Glob,Bash" \
 - 不支援以 API key 登入 codex 的額度查詢（查不到即回退 codex）。
 - **Concern**：降級為 claude 後，若 `claude -p` 持續失敗（例如 Claude 訂閱被限流），每輪 reviewer 皆為 `ERROR`，SKILL 的「ERROR 即重跑」規則可能無限重跑；在節奏線（規則 3）降級時 codex 其實仍有額度。**Decision**：不實作 batch 內自動回退 codex 重跑。**Rationale**（使用者裁定）：ERROR 訊息與 stderr 摘錄本來就會輸出，agent 一定會讀取輸出，本身就有能力判斷要直接重跑或詢問使用者；必要時可設 `SUPERPOWERS_REVIEW_BACKEND=codex` 手動改回。
 - **Concern**：每輪各自判斷後端且無遲滯，用量貼近門檻時同一審查迴圈內可能在 codex 與 claude 之間交替，不同模型的 finding 集合不同，可能影響 brainstorming ledger 的連續輪數計數與迴圈收斂。**Decision**：不實作 sticky 後端或遲滯。**Rationale**（使用者裁定）：節奏線每小時僅上升約 0.6%，只有用量剛好貼著門檻時才會切換，實際影響有限，不值得引入跨輪次狀態。
-- Claude 後端未使用 `--bare`（訂閱登入下無法使用），因此 reviewer 會載入使用者的 CLAUDE.md 等設定，可能影響其回覆語言或風格；`Status:` / `Verdict:` 行由各 prompt 的輸出契約約束。
+- **Concern**：額度查詢失敗（例如 codex 升版後 schema 漂移）時會回退 codex，訊號只寫在 stderr，Summary 無對應列；週額度耗盡時可能每輪 ERROR 而看不出是降級機制失效。**Decision**：不在 Summary 加列，維持僅自動降級時輸出 `backend:` 列。**Rationale**（使用者裁定）：查詢失敗時 wrapper 已在 stderr 印出 `review-batch: codex quota unavailable: …; using codex`，agent 讀取輸出時一樣看得到，Summary 再加一列是重複。
+- Claude 後端未使用 `--bare`（訂閱登入下無法使用），因此 reviewer 仍會載入使用者的 CLAUDE.md、hooks 等設定，可能影響其回覆語言或風格；MCP 由 `--strict-mcp-config` 排除，`Status:` / `Verdict:` 行由各 prompt 的輸出契約與 `<REVIEWER_SYSTEM_NOTE>` 約束。模型是否每次都遵守輸出契約無法以封閉測試保證，由端到端手動驗證確認；若某輪輸出缺少 verdict 行，Summary 會呈現 `(prose — 見全文)`，由 agent 依現有規則讀全文判斷。

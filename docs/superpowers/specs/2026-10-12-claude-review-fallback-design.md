@@ -13,6 +13,8 @@
 - 自動降級時 Summary 明確標示降級原因，且原因文字清楚指出是 **codex** 的額度。
 - 額度查詢失敗不阻斷審查（回退 codex 並警告）。
 
+另併入一項與降級功能無相依的流程約束（單元六）：審查迴圈中逐條向使用者揭露新 finding，以及任何需要使用者決策時先以文字詳述問題再發問。
+
 ## 已驗證的外部行為
 
 - `codex app-server`（codex-cli 0.153.4）以 stdio JSON-RPC 提供 `account/rateLimits/read`；實測回應 `result.rateLimits` 含 `primary` / `secondary`（各自 `usedPercent`、`windowDurationMins`、`resetsAt`（Unix 秒））與 `rateLimitReachedType`。視窗位置不固定：曾觀察到 `primary` 為 300 分鐘、`secondary` 為 10080 分鐘，也曾觀察到僅有 `primary` 為 10080 分鐘、`secondary` 為 `null`。呼叫順序為 `initialize`（`params.clientInfo` 含 `name`、`version`）→ `initialized` notification → `account/rateLimits/read`。
@@ -120,6 +122,24 @@ claude -p --permission-mode plan --strict-mcp-config \
 
 - 每一處解讀 `=== Summary ===` 的 caller control-flow 段落各加一句——`skills/brainstorming/SKILL.md` 的 spec review 段落，以及 `skills/subagent-driven-development/SKILL.md` 的 per-task review（`review-impl.sh`）與 final review（`review-final.sh`）兩處段落：`- backend:` 列為資訊列，不是 reviewer，不參與迴圈的 ERROR / verdict 判斷。agent 呼叫方式不變。
 - `README.md` 新增一節說明自動降級規則、`SUPERPOWERS_REVIEW_BACKEND` 開關、`ANTHROPIC_API_KEY` 計費注意事項。
+
+### 單元六：審查結果揭露與決策前詳述規則（SKILL.md）
+
+此單元與降級功能無相依，為使用者於本 spec 審查期間提出、併入本 spec 一併實作的獨立流程約束；實作時為獨立 commit（類型 `feat:`，因其新增 skill 的行為約束）。
+
+**規則一：逐條揭露新 finding。** 每一輪拿到審查結果、完成 finding 驗證後，在修正、跳過或升級任何 finding 之前，agent 必須在回覆中為**每一條新的** finding 各給使用者**一句**問題描述（每條 finding 一句，說明它指出什麼問題）。不得把多條 finding 合併成一句簡短帶過。「新的」指本輪首次出現、或雖屬既有 ledger topic 但提出了新論點或新證據的 finding；與既有 topic 完全相同且無新證據的重複 finding 可只在 ledger 中呈現。直接修正、判定 `refuted`、或因 `adjudicated-reject` 而跳過的 finding 同樣要揭露。
+
+**規則二：決策前先以文字詳述。** 任何需要使用者決策的 `AskUserQuestion` 呼叫之前，agent 必須先在回覆文字中詳細描述該問題：發生的情境、影響、各選項的做法與代價（以及 agent 的建議，若有）。`AskUserQuestion` 的選項說明不得是使用者第一次看到該問題的地方。
+
+**套用位置**（描述目標狀態，措辭由實作決定）：
+
+- `skills/brainstorming/SKILL.md`：
+  - 規則一加入 spec review 迴圈——**Verify findings before acting** 段落與 **Round loop** 中「讀取並驗證每條 finding、更新 ledger」的步驟之後、修正 finding 之前。
+  - 規則二加入 escape valve 的 escalation 說明（**At escalation, present …** 段落），並以一句通則涵蓋本 skill 內所有 `AskUserQuestion` 使用處。
+- `skills/subagent-driven-development/SKILL.md`：
+  - 規則一加入 **Verify Findings Before Acting** 段落，使其同時涵蓋 per-task review（`review-impl.sh`）與 final review（`review-final.sh`）兩處迴圈。
+  - 規則二以一句通則涵蓋本 skill 內所有 `AskUserQuestion` 使用處（含 refuted 升級、Manual-Check Disposition、Mid-Implementation Spec Edits、Resume Mode 等）。
+- Checklist / Process Flow 中與審查迴圈相關的摘要句，若列出迴圈步驟，同步補上「逐條揭露新 finding」一項，使摘要與正文一致。
 
 ## 錯誤處理
 

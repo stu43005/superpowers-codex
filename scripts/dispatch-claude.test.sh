@@ -197,5 +197,27 @@ run frobnicate
 run
 [ "$RC" -ne 0 ] && ok "no subcommand -> non-zero" || bad "no subcommand" "rc=$RC"
 
+# 12. With DISPATCH_CLAUDE_BIN unset, `claude` is resolved from PATH (fake one placed first).
+PBIN="$tmp/pathbin"; mkdir -p "$PBIN"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'printf "path-claude\n" > "$FAKE_LOG/path-invoked"' \
+  'printf "%s" "${ANTHROPIC_API_KEY-__UNSET__}" > "$FAKE_LOG/seen-key"' \
+  'cat > /dev/null' \
+  'printf "PATH CLAUDE REPLY\n"' > "$PBIN/claude"
+chmod +x "$PBIN/claude"
+rm -f "$FAKE_LOG/path-invoked" "$FAKE_LOG/argv"
+OUT="$(env -u DISPATCH_CLAUDE_BIN PATH="$PBIN:$PATH" "$D" review --base feature-base 2>"$tmp/stderr")"; RC=$?
+[ "$RC" -eq 0 ] && [ "$OUT" = "PATH CLAUDE REPLY" ] && [ "$(cat "$FAKE_LOG/path-invoked" 2>/dev/null)" = "path-claude" ] \
+  && [ ! -f "$FAKE_LOG/argv" ] \
+  && ok "DISPATCH_CLAUDE_BIN unset -> claude resolved from PATH" \
+  || bad "DISPATCH_CLAUDE_BIN unset -> claude resolved from PATH" "rc=$RC out=$OUT err=$(cat "$tmp/stderr")"
+
+# 13. ANTHROPIC_API_KEY is passed through unchanged to the claude child (not unset).
+rm -f "$FAKE_LOG/seen-key"
+OUT="$(env -u DISPATCH_CLAUDE_BIN ANTHROPIC_API_KEY=sk-passthrough-123 PATH="$PBIN:$PATH" "$D" review --base feature-base 2>"$tmp/stderr")"; RC=$?
+[ "$RC" -eq 0 ] && [ "$(cat "$FAKE_LOG/seen-key" 2>/dev/null)" = "sk-passthrough-123" ] \
+  && ok "ANTHROPIC_API_KEY passed through unchanged to claude" \
+  || bad "ANTHROPIC_API_KEY passed through unchanged to claude" "rc=$RC seen=$(cat "$FAKE_LOG/seen-key" 2>/dev/null) err=$(cat "$tmp/stderr")"
+
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [ "$FAIL" -eq 0 ]

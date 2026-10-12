@@ -214,7 +214,8 @@ rewrite it as one line and re-run.
    incomplete: read that reviewer's full `## <label>` section and use judgment — re-run the whole
    `review-impl.sh` call if the output looks truncated, otherwise act on the result shown. Neither
    an automatic pass nor a forced rerun.
-5. **Otherwise**, verify every finding (see **Verify Findings Before Acting**), attribute every
+5. **Otherwise**, verify every finding (see **Verify Findings Before Acting**), disclose every new
+   finding to your human partner (see **Disclose Findings to the User**), attribute every
    confirmed finding (see **Finding Attribution**), record any manual-check items (see
    **Manual-Check Items**), and repair every confirmed blocking finding in one pass. Then re-run
    the whole `review-impl.sh` call with the same `<TASK_BASE>` and the task's current summary line.
@@ -257,6 +258,22 @@ Limits on refutation (so it never becomes a loophole):
 - If the same refuted finding is raised in **three consecutive runs** of the same wrapper, stop
   relying on your refutation: use `AskUserQuestion` to give your human partner the finding, your
   counter-evidence, and the reviewer's argument, and act on their decision.
+
+**Disclose Findings to the User:** this applies to every reviewer, per-task (`review-impl.sh`) and
+final gate (`review-final.sh`). After the round's results are received and verified, and BEFORE
+repairing, attributing, skipping, or escalating any finding, tell your human partner about every NEW
+finding in your reply: at least one sentence per finding, each describing the problem that finding
+points out. One sentence is a minimum, not a maximum; never merge several findings into one brief
+sentence. "New" means first raised this round, or belonging to an existing topic but raising a new
+argument or new evidence; an exact repeat with no new evidence may be omitted. Findings you will fix
+directly, refuted, or skip as a spec-adjudicated rejection are disclosed too. This is a disclosure,
+not a question: do not wait for a reply.
+
+**Describe the problem before asking:** before ANY `AskUserQuestion` call in this skill (refuted-finding
+escalation, Manual-Check Disposition, Mid-Implementation Spec Edits, Resume Mode), first describe the
+problem in detail in your reply text: the scenario, the impact, each option's approach and cost, and
+your recommendation if you have one. The `AskUserQuestion` option descriptions must not be the first
+place the user sees the problem.
 
 **Code-quality severity calibration:** "blocking" = what a senior engineer would require fixed
 before merge — bugs, data-loss risks, broken error handling, security issues, missing critical
@@ -352,7 +369,7 @@ an informational line, not a reviewer, and takes no part in the ERROR / verdict 
 **Final gate pass condition:** in a single run, `spec-coverage` is `Status: OKAY` (or its only
 remaining findings are refuted with recorded counter-evidence) and `final-adversarial` is
 `Verdict: approve` (or its only remaining findings are non-blocking spec-adjudicated rejections,
-below, or refuted), with no escalation pending. Verify every final-gate finding first (**Verify Findings Before Acting**). All
+below, or refuted), with no escalation pending. Verify every final-gate finding first (**Verify Findings Before Acting**), then disclose every new one (**Disclose Findings to the User**). All
 tasks are complete, so "belongs to a later task" no longer applies: every confirmed spec-coverage
 gap or drift item is blocking.
 
@@ -663,6 +680,7 @@ Done — proceed to superpowers-codex:finishing-a-development-branch
 - Fix final-gate findings outside an appended task
 - Continue past a Resume Mode fail-closed condition by guessing
 - Act on a reviewer finding, or apply a reviewer's suggested patch, without first verifying it against the actual code, spec, or command output
+- Fix, skip, or escalate findings without first disclosing each new finding to your human partner, or call `AskUserQuestion` without first describing the problem in prose
 - Refute a finding without recorded, verifiable counter-evidence, or refute a correct finding because it seems not worth fixing
 - Keep relying on your refutation after the same finding was raised in three consecutive runs
 - Skip review loops (reviewer found issues = fix = review again)
@@ -681,6 +699,7 @@ Done — proceed to superpowers-codex:finishing-a-development-branch
 
 **If reviewer finds issues:**
 - Verify each finding first; refute the false ones with counter-evidence
+- Disclose each new finding to your human partner before acting
 - Attribute each confirmed finding; repair every confirmed blocking one
 - Implementer (same subagent) fixes implementation errors
 - Re-run the whole review

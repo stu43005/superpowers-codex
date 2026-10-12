@@ -66,7 +66,9 @@ function finish(backend, reason) {
   if (child && child.pid) {
     try { process.kill(-child.pid, 'SIGKILL'); } catch { /* already gone */ }
   }
-  process.stdout.write(`${backend}\t${reason}\n`, () => process.exit(0));
+  // Server-provided text may hold control whitespace; keep the output one line.
+  const oneLine = reason.replace(/[\s\x00-\x1f\x7f]+/g, ' ').trim();
+  process.stdout.write(`${backend}\t${oneLine}\n`, () => process.exit(0));
   // Do not wait on pipes or child exit: a grandchild may keep them open.
   setTimeout(() => process.exit(0), 500).unref();
 }

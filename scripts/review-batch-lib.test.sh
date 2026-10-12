@@ -531,30 +531,28 @@ section_args() {
     | grep "^${3:-ARG}:" | tr '\n' '|'
 }
 
-# review-impl.sh assembles the four per-Task reviewers' dispatch argv (no report file).
+# review-impl.sh assembles the two per-Task reviewers' dispatch argv (no report file).
 IMPL_W="$HERE/review-impl.sh"
 PROOT="${PROOT:-$ROOT/plugin}"   # fixture plugin root (defined locally)
 SDD_DIR="$PROOT/skills/subagent-driven-development"
 mkdir -p "$SDD_DIR"
-: > "$SDD_DIR/spec-reviewer-prompt.md"
-: > "$SDD_DIR/task-coverage-prompt.md"
-: > "$SDD_DIR/task-seam-prompt.md"
+: > "$SDD_DIR/task-acceptance-prompt.md"
 # The task summary carries spaces, a colon, parentheses and a non-ASCII "§": it must reach
 # dispatch.sh as ONE intact --set value.
 IMPL_SUMMARY='Task 2: Retry policy (spec §4.2)'
 T8="$( BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
        bash "$IMPL_W" --spec docs/specs/x.md --task-summary "$IMPL_SUMMARY" \
          --task-base TBASE 2>"$ROOT/t8.err" )"
-# exactly four jobs, labels in registration order
+# exactly two jobs, labels in registration order
 IMPL_LABELS="$(printf '%s\n' "$T8" | grep '^## ' | tr '\n' '|')"
-[ "$IMPL_LABELS" = '## spec-compliance|## code-quality|## task-coverage|## task-seam|' ] \
-  && ok "review-impl: four jobs registered in order" \
-  || bad "review-impl: four jobs registered in order" "labels=$IMPL_LABELS"
-# spec-compliance: task --prompt <root>/.../spec-reviewer-prompt.md + SPEC_FILE_PATH, TASK_SUMMARY, TASK_BASE
-IMPL_SC="$(section_args "$T8" spec-compliance)"
-[ "$IMPL_SC" = "ARG:task|ARG:--prompt|ARG:$SDD_DIR/spec-reviewer-prompt.md|ARG:--set|ARG:SPEC_FILE_PATH=docs/specs/x.md|ARG:--set|ARG:TASK_SUMMARY=$IMPL_SUMMARY|ARG:--set|ARG:TASK_BASE=TBASE|" ] \
-  && ok "review-impl: spec-compliance argv matches expected wrapper contract" \
-  || bad "review-impl: spec-compliance argv" "$IMPL_SC"
+[ "$IMPL_LABELS" = '## task-acceptance|## code-quality|' ] \
+  && ok "review-impl: two jobs registered in order" \
+  || bad "review-impl: two jobs registered in order" "labels=$IMPL_LABELS"
+# task-acceptance: task --prompt <root>/.../task-acceptance-prompt.md + SPEC_FILE_PATH, TASK_SUMMARY, TASK_BASE
+IMPL_TA="$(section_args "$T8" task-acceptance)"
+[ "$IMPL_TA" = "ARG:task|ARG:--prompt|ARG:$SDD_DIR/task-acceptance-prompt.md|ARG:--set|ARG:SPEC_FILE_PATH=docs/specs/x.md|ARG:--set|ARG:TASK_SUMMARY=$IMPL_SUMMARY|ARG:--set|ARG:TASK_BASE=TBASE|" ] \
+  && ok "review-impl: task-acceptance argv matches expected wrapper contract" \
+  || bad "review-impl: task-acceptance argv" "$IMPL_TA"
 # NO --report-file anywhere
 printf '%s\n' "$T8" | grep -q -- '--report-file' \
   && bad "review-impl: no --report-file passed" "$T8" \
@@ -564,16 +562,6 @@ IMPL_CQ="$(section_args "$T8" code-quality)"
 [ "$IMPL_CQ" = 'ARG:review|ARG:--base|ARG:TBASE|' ] \
   && ok "review-impl: code-quality argv matches expected wrapper contract" \
   || bad "review-impl: code-quality argv" "$IMPL_CQ"
-# task-coverage: task --prompt <root>/.../task-coverage-prompt.md + SPEC_FILE_PATH, TASK_SUMMARY, TASK_BASE
-IMPL_TC="$(section_args "$T8" task-coverage)"
-[ "$IMPL_TC" = "ARG:task|ARG:--prompt|ARG:$SDD_DIR/task-coverage-prompt.md|ARG:--set|ARG:SPEC_FILE_PATH=docs/specs/x.md|ARG:--set|ARG:TASK_SUMMARY=$IMPL_SUMMARY|ARG:--set|ARG:TASK_BASE=TBASE|" ] \
-  && ok "review-impl: task-coverage argv matches expected wrapper contract" \
-  || bad "review-impl: task-coverage argv" "$IMPL_TC"
-# task-seam: task --prompt <root>/.../task-seam-prompt.md + TASK_BASE only (never reads the spec)
-IMPL_TS="$(section_args "$T8" task-seam)"
-[ "$IMPL_TS" = "ARG:task|ARG:--prompt|ARG:$SDD_DIR/task-seam-prompt.md|ARG:--set|ARG:TASK_BASE=TBASE|" ] \
-  && ok "review-impl: task-seam argv carries only TASK_BASE (no SPEC_FILE_PATH)" \
-  || bad "review-impl: task-seam argv carries only TASK_BASE (no SPEC_FILE_PATH)" "$IMPL_TS"
 # impl_expect_err <name> <expected-stderr-fragment> <wrapper-args...> : the wrapper must exit
 # nonzero with the given wrapper error, never crash on `set -u`, and dispatch no job.
 impl_expect_err() {
@@ -908,7 +896,7 @@ expect_peak "parallelism: claude with explicit --max-parallel 3 runs 3 jobs" 3 c
 expect_peak "parallelism: claude with an over-cap explicit value keeps the clamped value" 6 claude 20
 expect_peak "parallelism: codex without --max-parallel keeps the default 5" 5 codex
 
-# Wrappers end to end: review-impl.sh (four jobs) under claude defaults to 2 in flight, respects
+# Wrappers end to end: review-impl.sh (two jobs) under claude defaults to 2 in flight, respects
 # --max-parallel, and treats an inherited MAX_PARALLEL environment value as explicit.
 # impl_peak [VAR=value...] <command...> : run the command through env with both dispatchers set to
 # CONC_STUB under the claude backend; print the peak overlap.
@@ -923,12 +911,12 @@ IPEAK_ARGS="--spec docs/specs/x.md --task-summary T --task-base TBASE"
 # shellcheck disable=SC2086
 IP_DEFAULT="$(impl_peak bash "$IMPL_W" $IPEAK_ARGS)"
 # shellcheck disable=SC2086
-IP_FLAG="$(impl_peak bash "$IMPL_W" $IPEAK_ARGS --max-parallel 3)"
+IP_FLAG="$(impl_peak bash "$IMPL_W" $IPEAK_ARGS --max-parallel 1)"
 # shellcheck disable=SC2086
-IP_ENV="$(impl_peak MAX_PARALLEL=4 bash "$IMPL_W" $IPEAK_ARGS)"
-if [ "$IP_DEFAULT" = 2 ] && [ "$IP_FLAG" = 3 ] && [ "$IP_ENV" = 4 ]; then
-  ok "review-impl under claude: default 2, --max-parallel 3 respected, inherited MAX_PARALLEL=4 respected"
-else bad "review-impl under claude: default 2, --max-parallel 3 respected, inherited MAX_PARALLEL=4 respected" \
+IP_ENV="$(impl_peak MAX_PARALLEL=1 bash "$IMPL_W" $IPEAK_ARGS)"
+if [ "$IP_DEFAULT" = 2 ] && [ "$IP_FLAG" = 1 ] && [ "$IP_ENV" = 1 ]; then
+  ok "review-impl under claude: default 2, --max-parallel 1 respected, inherited MAX_PARALLEL=1 respected"
+else bad "review-impl under claude: default 2, --max-parallel 1 respected, inherited MAX_PARALLEL=1 respected" \
   "default=$IP_DEFAULT flag=$IP_FLAG env=$IP_ENV err=$(cat "$ROOT/ipeak.err")"; fi
 
 # Each wrapper assigns every reviewer its claude model: the claude dispatcher's argv ends with
@@ -949,8 +937,7 @@ WM_FINAL="$( SUPERPOWERS_REVIEW_BACKEND=claude BATCH_DISPATCH_CLAUDE_SH="$CLAUDE
   BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
   bash "$FINAL_W" --base IMPLBASE --spec docs/specs/x.md 2>"$ROOT/wm-final.err" )"
 for wm in "BRAIN structural-completeness sonnet" "BRAIN design-soundness opus" \
-          "IMPL spec-compliance sonnet" "IMPL code-quality sonnet" "IMPL task-coverage sonnet" \
-          "IMPL task-seam sonnet" "FINAL final-adversarial opus" "FINAL spec-coverage sonnet"; do
+          "IMPL task-acceptance sonnet" "IMPL code-quality sonnet" "FINAL final-adversarial opus" "FINAL spec-coverage sonnet"; do
   # shellcheck disable=SC2086
   set -- $wm
   case "$1" in

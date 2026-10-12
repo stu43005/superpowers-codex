@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Subagent-driven-development per-task review wrapper: dispatch the spec-compliance,
-# code-quality, task-coverage and task-seam reviewers in parallel for one Task.
+# Subagent-driven-development per-task review wrapper: dispatch the task-acceptance
+# reviewer (task acceptance against the spec, plus seams with existing code) and the
+# code-quality reviewer in parallel for one Task.
 # Usage: review-impl.sh --spec <design.md> --task-summary "Task N: <name> (spec §X)" \
 #          --task-base <TASK_BASE> [--max-parallel N]
 # --task-summary must be a single line: dispatch.sh rejects a --set value containing a newline.
@@ -39,23 +40,12 @@ SDD_DIR="$PLUGIN_ROOT/skills/subagent-driven-development"
 # shellcheck source=./review-batch-lib.sh
 . "$SCRIPT_DIR/review-batch-lib.sh"
 batch_init
-batch_add "spec-compliance" task \
-  --prompt "$SDD_DIR/spec-reviewer-prompt.md" \
+batch_add "task-acceptance" task \
+  --prompt "$SDD_DIR/task-acceptance-prompt.md" \
   --set "SPEC_FILE_PATH=$SPEC" \
   --set "TASK_SUMMARY=$TASK_SUMMARY" \
   --set "TASK_BASE=$TASK_BASE"
 batch_claude_model sonnet
 batch_add "code-quality" review --base "$TASK_BASE"
-batch_claude_model sonnet
-batch_add "task-coverage" task \
-  --prompt "$SDD_DIR/task-coverage-prompt.md" \
-  --set "SPEC_FILE_PATH=$SPEC" \
-  --set "TASK_SUMMARY=$TASK_SUMMARY" \
-  --set "TASK_BASE=$TASK_BASE"
-batch_claude_model sonnet
-# task-seam never reads the spec: it checks the diff against the existing code only.
-batch_add "task-seam" task \
-  --prompt "$SDD_DIR/task-seam-prompt.md" \
-  --set "TASK_BASE=$TASK_BASE"
 batch_claude_model sonnet
 batch_run

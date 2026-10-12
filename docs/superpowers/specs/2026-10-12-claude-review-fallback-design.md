@@ -17,7 +17,7 @@
 
 ## 已驗證的外部行為
 
-- `codex app-server`（codex-cli 0.153.4）以 stdio JSON-RPC 提供 `account/rateLimits/read`；實測回應 `result.rateLimits` 含 `primary` / `secondary`（各自 `usedPercent`、`windowDurationMins`、`resetsAt`（Unix 秒））與 `rateLimitReachedType`。視窗位置不固定：曾觀察到 `primary` 為 300 分鐘、`secondary` 為 10080 分鐘，也曾觀察到僅有 `primary` 為 10080 分鐘、`secondary` 為 `null`。呼叫順序為 `initialize`（`params.clientInfo` 含 `name`、`version`）→ `initialized` notification → `account/rateLimits/read`。
+- `codex app-server`（codex-cli 0.153.4）以 stdio JSON-RPC 提供 `account/rateLimits/read`；實測回應 `result.rateLimits` 含 `primary` / `secondary`（各自 `usedPercent`、`windowDurationMins`、`resetsAt`（Unix 秒））與 `rateLimitReachedType`。視窗位置不固定：曾觀察到 `primary` 為 300 分鐘、`secondary` 為 10080 分鐘，也曾觀察到僅有 `primary` 為 10080 分鐘、`secondary` 為 `null`。呼叫順序為 `initialize`（`params.clientInfo` 含 `name`、`version`）→ `initialized` notification → `account/rateLimits/read`。此請求每次都即時向 ChatGPT 後端查詢，而非回傳本機快取（openai/codex `codex-rs/app-server/src/request_processors/account_processor.rs` 的 `get_account_rate_limits_response` 呼叫 `BackendClient::get_rate_limits_with_reset_credits()`；讀取的是 main 分支原始碼），因此降級期間 codex 無請求也不會讀到過期快照。以 API key 登入 codex 時此請求回傳錯誤 `chatgpt authentication required to read rate limits`。
 - `claude -p`（Claude Code 2.1.296）可由 stdin 讀入 prompt（已實測）。
 - 唯讀保證的權限模式（皆已實測）：`--permission-mode dontAsk` 會放行符合使用者 `permissions.allow` 規則的指令——以 `--settings '{"permissions":{"allow":["Bash(touch:*)"]}}'` 測試時 `touch` 確實被執行，因此 `dontAsk` 下 reviewer 能否寫入取決於使用者設定，不採用。`--permission-mode plan` 在同一條 allow 規則下仍拒絕 `touch`，同時放行唯讀 Bash（`git diff --stat`、`git log`），且輸出為一般審查文字（不會改成產出計畫），故採用 `plan`。
 - `claude -p` 在訂閱登入下扣用與互動 session 相同的訂閱額度；環境中存在 `ANTHROPIC_API_KEY` 時 `-p` 模式一律改用 API key 計費。
@@ -53,7 +53,14 @@ review-*.sh ──> review-batch-lib.sh: batch_run
 4. 規則 1、2 不成立且回應中不存在週視窗 → `codex`，reason：`codex quota unavailable: no weekly (10080m) window in response`。以 `unavailable` 歸類，使 batch 層照常在 stderr 印出警告，避免 codex 改版改變視窗長度時節奏線規則無聲失效。
 5. 以上皆不成立 → `codex`，reason：`codex quota ok`。
 
-**查詢失敗**（找不到 codex、子程序異常結束、逾時、回應含 `error`、`result.rateLimits` 缺失或欄位型別不符）→ `codex`，reason：`codex quota unavailable: <簡短原因>`。
+**欄位驗證（每條規則只驗證自己用到的欄位）**：
+
+- 規則 1 只需 `rateLimitReachedType`：值為非空字串即成立；`null` 或缺失視為不成立；其他型別視為不成立並繼續後續規則。它不受任何視窗欄位是否合法影響。
+- 規則 2 逐一檢查 `primary`、`secondary`：視窗為 `null` 或缺失則略過；`usedPercent` 不是有限數值的視窗略過；`windowDurationMins` 只用於產生 `<label>`，不是正整數時 label 寫 `unknown-window`。
+- 規則 3 只有在找到 `windowDurationMins == 10080` 的視窗時套用，且該視窗的 `usedPercent` 與 `resetsAt` 皆須為有限數值；任一不合法則跳過規則 3，改以規則 4 的 reason 回報 `codex quota unavailable: weekly window has invalid usedPercent/resetsAt`。
+- 規則 4「不存在週視窗」包含 `primary`、`secondary` 皆為 `null` 或缺失的情況。
+
+**查詢失敗**（找不到 codex、子程序異常結束、逾時、回應含 `error`、`result` 或 `result.rateLimits` 不是物件）→ `codex`，reason：`codex quota unavailable: <簡短原因>`。個別欄位不合法不屬於整體查詢失敗，依上述逐條規則處理。
 
 **輸出契約**：stdout 恰好一行 `<codex|claude>\t<reason>`；exit code 恆為 0（失敗已在內部回退為 `codex`）。
 
@@ -170,7 +177,7 @@ claude -p --permission-mode plan --strict-mcp-config \
 
 所有自動化測試皆不需網路，不呼叫真實的 codex 或 claude。
 
-- **`scripts/codex-quota.test.sh`**：以 `CODEX_QUOTA_CODEX_BIN` 注入假 `codex`，依情境輸出預先準備的 JSON-RPC 回應；`resetsAt` 依當下時間計算以控制 `elapsed`。案例：低於節奏線 → `codex`；高於節奏線 → `claude`（reason 全字串比對）；5h 視窗 95% → `claude`；週視窗 95% → `claude`；`rateLimitReachedType` 非 null → `claude`；僅有非週視窗（含未知長度視窗）且未達上限 → `codex` 且 reason 為 `codex quota unavailable: no weekly (10080m) window in response`；兩個視窗皆為 10080 分鐘時取 `primary`；回應含 `error`、欄位缺失、假 codex 不回應（逾時）、假 codex 回應後衍生一個持有 stdout pipe 的長時間孫程序（腳本仍須在逾時內印出結果並結束，且孫程序被終止）、執行檔不存在 → `codex` 且 reason 以 `codex quota unavailable:` 開頭；exit code 恆為 0。
+- **`scripts/codex-quota.test.sh`**：以 `CODEX_QUOTA_CODEX_BIN` 注入假 `codex`，依情境輸出預先準備的 JSON-RPC 回應；`resetsAt` 依當下時間計算以控制 `elapsed`。案例：低於節奏線 → `codex`；高於節奏線 → `claude`（reason 全字串比對）；5h 視窗 95% → `claude`；週視窗 95% → `claude`；`rateLimitReachedType` 非 null → `claude`；僅有非週視窗（含未知長度視窗）且未達上限 → `codex` 且 reason 為 `codex quota unavailable: no weekly (10080m) window in response`；兩個視窗皆為 10080 分鐘時取 `primary`；回應含 `error`、欄位缺失、`rateLimitReachedType` 非 null 但視窗欄位不合法（例如 `resetsAt` 為 null）→ 仍為 `claude`；週視窗 `resetsAt` 為 null 且未達上限 → `codex` 且 reason 為 `codex quota unavailable: weekly window has invalid usedPercent/resetsAt`；假 codex 不回應（逾時）、假 codex 回應後衍生一個持有 stdout pipe 的長時間孫程序（腳本仍須在逾時內印出結果並結束，且孫程序被終止）、執行檔不存在 → `codex` 且 reason 以 `codex quota unavailable:` 開頭；exit code 恆為 0。
 - **`scripts/dispatch-claude.test.sh`**：以 `DISPATCH_CLAUDE_BIN` 注入假 `claude`，記錄 argv 與 stdin。驗證三個子命令渲染的 prompt、唯讀與隔離 flags 齊全（含 `--permission-mode plan`、`--strict-mcp-config`、`--settings '{"disableAllHooks":true}'`、`--max-turns 200`、`--append-system-prompt` 帶 `<REVIEWER_SYSTEM_NOTE>` 全文）、給 `--model <alias>` 時原樣轉傳而未給時不傳 `--model`、`ANTHROPIC_API_KEY` 警告、`claude` 不存在時 exit ≠ 0、`--dry-run` 不執行 `claude`、focus 文字含方括號時不觸發殘留檢查。
 - **`scripts/review-batch-lib.test.sh` 擴充**：`SUPERPOWERS_REVIEW_BACKEND` 為 `codex` / `claude` / 不合法值；`auto` 降級時以 `BATCH_DISPATCH_CLAUDE_SH` 派工且出現 `backend:` 列、未降級時以 `BATCH_DISPATCH_SH` 派工且沒有該列（以 `BATCH_QUOTA_PROBE` 注入假額度腳本）；額度腳本失敗或輸出不符契約時回退 codex 並警告；後端為 `claude` 且 `ANTHROPIC_API_KEY` 非空時 batch stderr 含計費警告（job 成功時仍可見）、為空或後端為 `codex` 時不含；後端為 `claude` 時各 job 的 argv 帶有該 reviewer 以 `batch_claude_model` 指定的 `--model`、後端為 `codex` 時 argv 不含 `--model`；三支 wrapper 的每個 reviewer 皆依分配表指定模型；後端為 `claude` 且未指定 `--max-parallel` 時同時執行的 job 不超過 2 個、明確指定時依指定值、後端為 `codex` 時預設仍為 5；stderr 訊息依情境比對：降級時印 reason、查詢失敗時印 `…; using codex`、額度正常與手動指定時 stderr 不含 `review-batch:` 訊息。既有案例的共用 setup 設定 `SUPERPOWERS_REVIEW_BACKEND=codex`，使其不查詢真實額度。
 - **`scripts/dispatch.test.sh`**：抽出共用 lib 後維持全綠。
@@ -187,4 +194,5 @@ claude -p --permission-mode plan --strict-mcp-config \
 - **Concern**：額度查詢失敗（例如 codex 升版後 schema 漂移）時會回退 codex，訊號只寫在 stderr，Summary 無對應列；週額度耗盡時可能每輪 ERROR 而看不出是降級機制失效。**Decision**：不在 Summary 加列，維持僅自動降級時輸出 `backend:` 列。**Rationale**（使用者裁定）：查詢失敗時 wrapper 已在 stderr 印出 `review-batch: codex quota unavailable: …; using codex`，agent 讀取輸出時一樣看得到，Summary 再加一列是重複。
 - **Concern**：節奏線 `elapsed × 100 + 5` 在週期剛重置時僅約 5%，且對集中於工作日使用的使用者，正常節奏必然快於 7 天均分，可能使降級成為常態，週末剩餘的 codex 額度在重置時浪費。**Decision**：不調整節奏線公式。**Rationale**（使用者裁定）：「依週重置時間均勻分配、允許超用 5%」即為需求本身——用量超前進度時讓出 codex 正是預期行為。
 - **Concern**：batch 層同步執行 `codex-quota.mjs` 時沒有外層逾時；若 node 程序本身卡死（連腳本內的計時器都不觸發），wrapper 會在派工前無限期阻塞。**Decision**：不在 batch 層加外層 watchdog。**Rationale**（使用者裁定）：腳本內已有 15 秒逾時、process group 終止與立即 `process.exit`，孫程序持有 pipe 的情境已排除；node 本身卡死屬極低機率，而 bash 3.2 無 `timeout` 指令，自寫 watchdog 的成本不成比例。
+- **Concern**：`design-soundness` 與 `final-adversarial` 固定使用 `--model opus`，無覆寫開關也無替代路徑；若使用者的 Claude 方案無法使用 Opus 或 Opus 用量耗盡，這兩個 reviewer 每次皆 `ERROR`，而規則 1、2 觸發的降級下改回 codex 也無法恢復。**Decision**：不新增模型覆寫開關或自動改用預設模型重試。**Rationale**（使用者裁定）：使用者環境中 `--model opus` 已實測可用；模型不可用時錯誤訊息會出現在 reviewer 段落中，agent 可據此停下來詢問使用者。
 - Claude 後端未使用 `--bare`（訂閱登入下無法使用），因此 reviewer 仍會載入使用者的 CLAUDE.md 等設定（hooks 已由 `disableAllHooks` 關閉），可能影響其回覆語言或風格；MCP 由 `--strict-mcp-config` 排除，`Status:` / `Verdict:` 行由各 prompt 的輸出契約與 `<REVIEWER_SYSTEM_NOTE>` 約束。模型是否每次都遵守輸出契約無法以封閉測試保證，由端到端手動驗證確認；若某輪輸出缺少 verdict 行，Summary 會呈現 `(prose — 見全文)`，由 agent 依現有規則讀全文判斷。

@@ -70,7 +70,7 @@ review-*.sh ──> review-batch-lib.sh: batch_run
 | 子命令 | prompt |
 |---|---|
 | `task` | 與 `dispatch.sh` 相同的渲染結果（共用單元二） |
-| `review` | `scripts/claude-prompts/code-review.md`，代入 `[BASE]`；指示審查 `git diff [BASE]...HEAD` 的程式品質問題，輸出散文，不輸出 `Status:` / `Verdict:` 行（與 codex 內建 review 一致，Summary 為 `(prose — 見全文)`） |
+| `review` | `scripts/claude-prompts/code-review.md`，代入 `[BASE]`；指示審查 `git diff [BASE]...HEAD` 的程式品質問題（正確性、錯誤處理、可維護性、測試覆蓋），並採與 adversarial prompt 相同的 finding 門檻與 grounding 規則：只回報有證據的實質問題、每個 finding 附檔案與行號與嚴重度（blocking / non-blocking）、不得臆造檔案或行為、不回報純風格偏好；輸出散文，不輸出 `Status:` / `Verdict:` 行（與 codex 內建 review 一致，Summary 為 `(prose — 見全文)`） |
 | `adversarial` | `scripts/claude-prompts/adversarial-review.md`：參照 codex companion 1.0.6 的 `prompts/adversarial-review.md`（位於 `~/.claude/plugins/cache/openai-codex/codex/1.0.6/`）**改寫**而非複製——原模板依賴 companion 組裝的 `{{REVIEW_INPUT}}` 與 JSON schema 輸出，無法直接沿用；保留其立場、攻擊面、finding 門檻與 grounding 規則，改為由 reviewer 自行執行 `git diff [BASE]..HEAD` 取得變更，改為 Markdown 輸出，每個 finding 含檔案與行號、信心度、建議，最後一行恰為 `Verdict: approve` 或 `Verdict: needs-attention`。先代入 `[BASE]`，再執行殘留 placeholder 檢查——此檢查**將 `[USER_FOCUS]` 視為唯一允許的保留 placeholder**（其他任何 `[A-Z_][A-Z0-9_]*` 形式的殘留仍 `die`）；檢查通過**之後**才把 focus 檔內容代入 `[USER_FOCUS]`，代入後不再做殘留檢查，避免 focus 文字中的方括號被誤判為殘留 placeholder |
 
 **執行**：渲染後的 prompt 以 stdin 餵入：
@@ -79,7 +79,7 @@ review-*.sh ──> review-batch-lib.sh: batch_run
 claude -p --permission-mode plan --strict-mcp-config \
   --tools "Read,Grep,Glob,Bash" --disallowedTools "mcp__*" \
   --disable-slash-commands --no-session-persistence --output-format text \
-  --settings '{"disableAllHooks":true}' --max-turns 50 \
+  --settings '{"disableAllHooks":true}' --max-turns 200 \
   --append-system-prompt "<REVIEWER_SYSTEM_NOTE>"
 ```
 
@@ -92,7 +92,8 @@ claude -p --permission-mode plan --strict-mcp-config \
 - 唯讀保證由兩部分組成：
   - **工具呼叫**由 `--permission-mode plan` 擋下：即使使用者的 `permissions.allow` 放行了寫入類指令或 `review-*.sh`（可能造成遞迴審查），reviewer 也無法執行。不得改用 `dontAsk` 或 `bypassPermissions`。
   - **hooks** 由 `--settings '{"disableAllHooks":true}'` 關閉：hooks 不受 permission mode 管控，會在 reviewer 程序內執行使用者設定的任意指令。實測以 `--settings` 注入會寫檔的 SessionStart / Stop hook 時，未關閉則兩者皆執行，`disableAllHooks:true` 則兩者皆不執行。必須關閉的具體理由之一：codex plugin 帶有 Stop hook `stop-review-gate`（逾時 900 秒），使用者若以 `/codex:setup` 啟用，每個 claude reviewer 結束時都會觸發一次 codex review，與降級目的相反。plugin 自帶 hooks 是否同樣被關閉，列入端到端手動驗證。
-- `--max-turns 50`：限制單一 reviewer 的 agentic 輪數，避免 reviewer 無限探索而使 batch 無限期阻塞、持續消耗與主 session 共用的 Claude 額度。達到上限時 `claude -p` 以非零 exit 結束，Summary 呈現 `ERROR`（或帶 `(tool exit N)` 註記），由 agent 依現有規則處理。50 為寬鬆值，正常審查不應觸及。
+- `--max-turns 200`：限制單一 reviewer 的 agentic 輪數，避免 reviewer 無限探索而使 batch 無限期阻塞、持續消耗與主 session 共用的 Claude 額度。實測達到上限時 `claude -p` 以 exit 1 結束，並在 **stdout** 輸出 `Error: Reached max turns (<N>)`；因此 Summary 呈現 `ERROR (tool failed, exit 1)`，且該行原因出現在該 reviewer 的 `## <label>` 段落中，agent 可據此判斷這不是偶發失敗。取 200 而非較小值，是因為 `spec-coverage` / `task-coverage` 要求讀完每個變更檔，大型實作的 final review 在 50 輪內可能完成不了。
+- `--tools "Read,Grep,Glob,Bash"` 已限制內建工具，`--disallowedTools "mcp__*"` 與 `--strict-mcp-config` 再排除 MCP 工具與 server：三者刻意重疊作為多層防護，任何一層失效時其餘仍有效。
 - 不傳 `--model`，沿用使用者的 Claude Code 預設模型。
 - `claude` 執行檔預設由 PATH 解析，可由 `DISPATCH_CLAUDE_BIN` 覆寫（測試接點）。找不到時 `die`（exit ≠ 0），不回頭改走 codex。
 - 環境存在非空 `ANTHROPIC_API_KEY` 時，於 stderr 印出警告 `dispatch-claude: ANTHROPIC_API_KEY is set; claude -p will bill the API key`，不主動 unset。
@@ -155,10 +156,10 @@ claude -p --permission-mode plan --strict-mcp-config \
 所有自動化測試皆不需網路，不呼叫真實的 codex 或 claude。
 
 - **`scripts/codex-quota.test.sh`**：以 `CODEX_QUOTA_CODEX_BIN` 注入假 `codex`，依情境輸出預先準備的 JSON-RPC 回應；`resetsAt` 依當下時間計算以控制 `elapsed`。案例：低於節奏線 → `codex`；高於節奏線 → `claude`（reason 全字串比對）；5h 視窗 95% → `claude`；週視窗 95% → `claude`；`rateLimitReachedType` 非 null → `claude`；僅有非週視窗（含未知長度視窗）且未達上限 → `codex` 且 reason 為 `codex quota unavailable: no weekly (10080m) window in response`；兩個視窗皆為 10080 分鐘時取 `primary`；回應含 `error`、欄位缺失、假 codex 不回應（逾時）、執行檔不存在 → `codex` 且 reason 以 `codex quota unavailable:` 開頭；exit code 恆為 0。
-- **`scripts/dispatch-claude.test.sh`**：以 `DISPATCH_CLAUDE_BIN` 注入假 `claude`，記錄 argv 與 stdin。驗證三個子命令渲染的 prompt、唯讀與隔離 flags 齊全（含 `--permission-mode plan`、`--strict-mcp-config`、`--settings '{"disableAllHooks":true}'`、`--max-turns 50`、`--append-system-prompt` 帶 `<REVIEWER_SYSTEM_NOTE>` 全文）、未傳 `--model`、`ANTHROPIC_API_KEY` 警告、`claude` 不存在時 exit ≠ 0、`--dry-run` 不執行 `claude`、focus 文字含方括號時不觸發殘留檢查。
+- **`scripts/dispatch-claude.test.sh`**：以 `DISPATCH_CLAUDE_BIN` 注入假 `claude`，記錄 argv 與 stdin。驗證三個子命令渲染的 prompt、唯讀與隔離 flags 齊全（含 `--permission-mode plan`、`--strict-mcp-config`、`--settings '{"disableAllHooks":true}'`、`--max-turns 200`、`--append-system-prompt` 帶 `<REVIEWER_SYSTEM_NOTE>` 全文）、未傳 `--model`、`ANTHROPIC_API_KEY` 警告、`claude` 不存在時 exit ≠ 0、`--dry-run` 不執行 `claude`、focus 文字含方括號時不觸發殘留檢查。
 - **`scripts/review-batch-lib.test.sh` 擴充**：`SUPERPOWERS_REVIEW_BACKEND` 為 `codex` / `claude` / 不合法值；`auto` 降級時以 `BATCH_DISPATCH_CLAUDE_SH` 派工且出現 `backend:` 列、未降級時以 `BATCH_DISPATCH_SH` 派工且沒有該列（以 `BATCH_QUOTA_PROBE` 注入假額度腳本）；額度腳本失敗或輸出不符契約時回退 codex 並警告；後端為 `claude` 且未指定 `--max-parallel` 時同時執行的 job 不超過 2 個、明確指定時依指定值、後端為 `codex` 時預設仍為 5；stderr 訊息依情境比對：降級時印 reason、查詢失敗時印 `…; using codex`、額度正常與手動指定時 stderr 不含 `review-batch:` 訊息。既有案例的共用 setup 設定 `SUPERPOWERS_REVIEW_BACKEND=codex`，使其不查詢真實額度。
 - **`scripts/dispatch.test.sh`**：抽出共用 lib 後維持全綠。
-- **端到端手動驗證**：以 `SUPERPOWERS_REVIEW_BACKEND=claude` 實際執行一次 `review-brainstorm.sh`，確認兩個 reviewer 均產出可解析的 Summary 列；並在此執行期間確認 plugin 自帶 hooks 未被觸發（例如 codex plugin 的 SessionStart / Stop hook 未產生其 job 狀態紀錄）。
+- **端到端手動驗證**：以 `SUPERPOWERS_REVIEW_BACKEND=claude` 實際執行一次 `review-brainstorm.sh`，確認兩個 reviewer 均產出可解析的 Summary 列；並在此執行期間確認 plugin 自帶 hooks 未被觸發（例如 codex plugin 的 SessionStart / Stop hook 未產生其 job 狀態紀錄）。另以 `SUPERPOWERS_REVIEW_BACKEND=codex` 實際執行一次 `review-brainstorm.sh`（codex 額度可用時），確認 reviewer prompt 開頭措辭變更後，codex 後端仍產出可解析的 Summary 列。
 
 ## Non-goals / Accepted limitations
 

@@ -16,7 +16,8 @@
 ## 已驗證的外部行為
 
 - `codex app-server`（codex-cli 0.153.4）以 stdio JSON-RPC 提供 `account/rateLimits/read`；實測回應 `result.rateLimits` 含 `primary` / `secondary`（各自 `usedPercent`、`windowDurationMins`、`resetsAt`（Unix 秒））與 `rateLimitReachedType`。視窗位置不固定：曾觀察到 `primary` 為 300 分鐘、`secondary` 為 10080 分鐘，也曾觀察到僅有 `primary` 為 10080 分鐘、`secondary` 為 `null`。呼叫順序為 `initialize`（`params.clientInfo` 含 `name`、`version`）→ `initialized` notification → `account/rateLimits/read`。
-- `claude -p`（Claude Code 2.1.296）可由 stdin 讀入 prompt；搭配 `--permission-mode dontAsk --tools "Read,Grep,Glob,Bash"` 時，唯讀 Bash（`git rev-parse`）被放行、寫入操作（`touch`）被拒絕（皆已實測）。
+- `claude -p`（Claude Code 2.1.296）可由 stdin 讀入 prompt（已實測）。
+- 唯讀保證的權限模式（皆已實測）：`--permission-mode dontAsk` 會放行符合使用者 `permissions.allow` 規則的指令——以 `--settings '{"permissions":{"allow":["Bash(touch:*)"]}}'` 測試時 `touch` 確實被執行，因此 `dontAsk` 下 reviewer 能否寫入取決於使用者設定，不採用。`--permission-mode plan` 在同一條 allow 規則下仍拒絕 `touch`，同時放行唯讀 Bash（`git diff --stat`、`git log`），且輸出為一般審查文字（不會改成產出計畫），故採用 `plan`。
 - `claude -p` 在訂閱登入下扣用與互動 session 相同的訂閱額度；環境中存在 `ANTHROPIC_API_KEY` 時 `-p` 模式一律改用 API key 計費。
 
 ## 架構
@@ -67,16 +68,17 @@ review-*.sh ──> review-batch-lib.sh: batch_run
 |---|---|
 | `task` | 與 `dispatch.sh` 相同的渲染結果（共用單元二） |
 | `review` | `scripts/claude-prompts/code-review.md`，代入 `[BASE]`；指示審查 `git diff [BASE]...HEAD` 的程式品質問題，輸出散文，不輸出 `Status:` / `Verdict:` 行（與 codex 內建 review 一致，Summary 為 `(prose — 見全文)`） |
-| `adversarial` | `scripts/claude-prompts/adversarial-review.md`：沿用 codex companion `adversarial-review` 模板的立場、攻擊面、finding 門檻與 grounding 規則，改為 Markdown 輸出，每個 finding 含檔案與行號、信心度、建議，最後一行恰為 `Verdict: approve` 或 `Verdict: needs-attention`。先代入 `[BASE]` 並執行殘留 placeholder 檢查，**之後**才把 focus 檔內容代入 `[USER_FOCUS]`，避免 focus 文字中的方括號被誤判為殘留 placeholder |
+| `adversarial` | `scripts/claude-prompts/adversarial-review.md`：沿用 codex companion `adversarial-review` 模板的立場、攻擊面、finding 門檻與 grounding 規則，改為 Markdown 輸出，每個 finding 含檔案與行號、信心度、建議，最後一行恰為 `Verdict: approve` 或 `Verdict: needs-attention`。先代入 `[BASE]`，再執行殘留 placeholder 檢查——此檢查**將 `[USER_FOCUS]` 視為唯一允許的保留 placeholder**（其他任何 `[A-Z_][A-Z0-9_]*` 形式的殘留仍 `die`）；檢查通過**之後**才把 focus 檔內容代入 `[USER_FOCUS]`，代入後不再做殘留檢查，避免 focus 文字中的方括號被誤判為殘留 placeholder |
 
 **執行**：渲染後的 prompt 以 stdin 餵入：
 
 ```
-claude -p --permission-mode dontAsk --tools "Read,Grep,Glob,Bash" \
+claude -p --permission-mode plan --tools "Read,Grep,Glob,Bash" \
   --disallowedTools "mcp__*" --disable-slash-commands \
   --no-session-persistence --output-format text
 ```
 
+- `--permission-mode plan` 是唯讀保證的來源：即使使用者的 `permissions.allow` 放行了寫入類指令或 `review-*.sh`（可能造成遞迴審查），reviewer 也無法執行。不得改用 `dontAsk` 或 `bypassPermissions`。
 - 不傳 `--model`，沿用使用者的 Claude Code 預設模型。
 - `claude` 執行檔預設由 PATH 解析，可由 `DISPATCH_CLAUDE_BIN` 覆寫（測試接點）。找不到時 `die`（exit ≠ 0），不回頭改走 codex。
 - 環境存在非空 `ANTHROPIC_API_KEY` 時，於 stderr 印出警告 `dispatch-claude: ANTHROPIC_API_KEY is set; claude -p will bill the API key`，不主動 unset。
@@ -120,7 +122,7 @@ claude -p --permission-mode dontAsk --tools "Read,Grep,Glob,Bash" \
 所有自動化測試皆不需網路，不呼叫真實的 codex 或 claude。
 
 - **`scripts/codex-quota.test.sh`**：以 `CODEX_QUOTA_CODEX_BIN` 注入假 `codex`，依情境輸出預先準備的 JSON-RPC 回應；`resetsAt` 依當下時間計算以控制 `elapsed`。案例：低於節奏線 → `codex`；高於節奏線 → `claude`（reason 全字串比對）；5h 視窗 95% → `claude`；週視窗 95% → `claude`；`rateLimitReachedType` 非 null → `claude`；僅有非週視窗且未達上限 → `codex`；回應含 `error`、欄位缺失、假 codex 不回應（逾時）、執行檔不存在 → `codex` 且 reason 以 `codex quota unavailable:` 開頭；exit code 恆為 0。
-- **`scripts/dispatch-claude.test.sh`**：以 `DISPATCH_CLAUDE_BIN` 注入假 `claude`，記錄 argv 與 stdin。驗證三個子命令渲染的 prompt、唯讀 flags 齊全、未傳 `--model`、`ANTHROPIC_API_KEY` 警告、`claude` 不存在時 exit ≠ 0、`--dry-run` 不執行 `claude`、focus 文字含方括號時不觸發殘留檢查。
+- **`scripts/dispatch-claude.test.sh`**：以 `DISPATCH_CLAUDE_BIN` 注入假 `claude`，記錄 argv 與 stdin。驗證三個子命令渲染的 prompt、唯讀 flags 齊全（含 `--permission-mode plan`）、未傳 `--model`、`ANTHROPIC_API_KEY` 警告、`claude` 不存在時 exit ≠ 0、`--dry-run` 不執行 `claude`、focus 文字含方括號時不觸發殘留檢查。
 - **`scripts/review-batch-lib.test.sh` 擴充**：`SUPERPOWERS_REVIEW_BACKEND` 為 `codex` / `claude` / 不合法值；`auto` 降級時以 `BATCH_DISPATCH_CLAUDE_SH` 派工且出現 `backend:` 列、未降級時以 `BATCH_DISPATCH_SH` 派工且沒有該列（以 `BATCH_QUOTA_PROBE` 注入假額度腳本）；額度腳本失敗或輸出不符契約時回退 codex 並警告。既有案例的共用 setup 設定 `SUPERPOWERS_REVIEW_BACKEND=codex`，使其不查詢真實額度。
 - **`scripts/dispatch.test.sh`**：抽出共用 lib 後維持全綠。
 - **端到端手動驗證**：以 `SUPERPOWERS_REVIEW_BACKEND=claude` 實際執行一次 `review-brainstorm.sh`，確認兩個 reviewer 均產出可解析的 Summary 列。
@@ -131,3 +133,6 @@ claude -p --permission-mode dontAsk --tools "Read,Grep,Glob,Bash" \
 - 不追蹤或限制 Claude 端的使用額度。
 - 不快取額度查詢結果；每次 `batch_run` 查詢一次（約數秒）。
 - 不支援以 API key 登入 codex 的額度查詢（查不到即回退 codex）。
+- **Concern**：降級為 claude 後，若 `claude -p` 持續失敗（例如 Claude 訂閱被限流），每輪 reviewer 皆為 `ERROR`，SKILL 的「ERROR 即重跑」規則可能無限重跑；在節奏線（規則 3）降級時 codex 其實仍有額度。**Decision**：不實作 batch 內自動回退 codex 重跑。**Rationale**（使用者裁定）：ERROR 訊息與 stderr 摘錄本來就會輸出，agent 一定會讀取輸出，本身就有能力判斷要直接重跑或詢問使用者；必要時可設 `SUPERPOWERS_REVIEW_BACKEND=codex` 手動改回。
+- **Concern**：每輪各自判斷後端且無遲滯，用量貼近門檻時同一審查迴圈內可能在 codex 與 claude 之間交替，不同模型的 finding 集合不同，可能影響 brainstorming ledger 的連續輪數計數與迴圈收斂。**Decision**：不實作 sticky 後端或遲滯。**Rationale**（使用者裁定）：節奏線每小時僅上升約 0.6%，只有用量剛好貼著門檻時才會切換，實際影響有限，不值得引入跨輪次狀態。
+- Claude 後端未使用 `--bare`（訂閱登入下無法使用），因此 reviewer 會載入使用者的 CLAUDE.md 等設定，可能影響其回覆語言或風格；`Status:` / `Verdict:` 行由各 prompt 的輸出契約約束。

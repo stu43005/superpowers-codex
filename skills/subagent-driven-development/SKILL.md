@@ -200,6 +200,8 @@ rewrite it as one line and re-run.
 1. **Regardless of the wrapper's exit code, read and parse its entire stdout** and locate the
    `=== Summary ===` section — stdout is preserved in full even on a nonzero exit. **Exception:**
    exit 3 produces no Summary — handle it by the exit-3 rule above instead of Summary parsing.
+   A `- backend:` line in the Summary is an informational line, not a reviewer, and takes no part
+   in the loop's ERROR / verdict decisions.
 2. Classify each reviewer from its Summary line: spec-compliance, task-coverage, and task-seam as
    `Status: OKAY` / `Status: Issues Found`; code-quality as `(prose — 見全文)` — read its full
    `## code-quality` section and treat any blocking-severity defect as a finding; or
@@ -338,7 +340,8 @@ It runs two reviewers in parallel:
   the spec's architecture, responsibilities, data flow, or design direction). Summary line:
   `Status: OKAY | Issues Found`.
 
-Read the wrapper's stdout `=== Summary ===` on any exit code:
+Read the wrapper's stdout `=== Summary ===` on any exit code. A `- backend:` line in the Summary is
+an informational line, not a reviewer, and takes no part in the ERROR / verdict decisions:
 
 - `ERROR (tool failed, ...)` on either reviewer → a tool failure, not a review result; re-run the
   whole `review-final.sh` call (same `--base`/`--spec`).

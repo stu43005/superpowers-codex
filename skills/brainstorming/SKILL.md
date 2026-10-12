@@ -198,7 +198,8 @@ ALL output on stdout.
 1. **Regardless of the wrapper's exit code, read and parse its entire stdout** and locate the
    `=== Summary ===` section — this is the machine-readable status, and stdout is preserved
    in full even on a nonzero exit. **Exception:** exit 3 produces no Summary — handle it by the
-   exit-3 rule above instead of Summary parsing.
+   exit-3 rule above instead of Summary parsing. A `- backend:` line in the Summary is an
+   informational line, not a reviewer, and takes no part in the loop's ERROR / verdict decisions.
 2. Classify each reviewer from its Summary line: `Status: OKAY` / `Status: Issues Found`
    (structural-completeness) and `Verdict: approve` / `Verdict: needs-attention`
    (design-soundness); `ERROR (tool failed, ...)` for a tool failure; or `(prose — 見全文)`

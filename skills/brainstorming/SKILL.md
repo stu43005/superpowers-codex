@@ -206,7 +206,8 @@ ALL output on stdout.
    for a no-verdict reviewer — for a prose line, read that reviewer's full `## <label>`
    section and treat any blocking finding there the same as `Issues Found`.
 3. **If any reviewer is ERROR** → **re-run the entire `review-brainstorm.sh` call** (same
-   arguments). Do not treat ERROR as a review failure and do not discard stdout.
+   arguments), unless it is an **Unrecoverable ERROR** (below), in which case stop and ask instead.
+   Do not treat ERROR as a review failure and do not discard stdout.
 4. **If any reviewer's Summary line carries a `(tool exit N)` annotation** (a verdict WAS produced
    but the tool then exited nonzero), the result exists but its output may be incomplete: read that
    reviewer's full `## <label>` section and use judgment — re-run the whole wrapper if the output
@@ -240,12 +241,14 @@ not while it runs.
 
 **Describe the problem before asking:** before ANY `AskUserQuestion` call that needs a user decision, first describe the problem in detail in your reply text: the scenario, the impact, each option's approach and cost, and your recommendation if you have one. The `AskUserQuestion` option descriptions must not be the first place the user sees the problem.
 
+**Unrecoverable ERROR:** if an ERROR reviewer's `## <label>` section or `[stderr excerpt]` shows a failure that a rerun cannot fix, do NOT re-run. Typical examples: the `claude` / `codex` executable not found, `Error: Reached max turns`, not logged in / authentication failure, quota exhausted such as `You've hit your usage limit`. Instead stop, describe the failure in prose per **Describe the problem before asking** (include the hint that the user can set `SUPERPOWERS_REVIEW_BACKEND` to switch to the other backend), then ask via `AskUserQuestion`. There is no consecutive-count threshold: judge from the output. Transient failures (network blip, a crash with no deterministic cause) stay on the rerun path.
+
 **Round loop — structural zero-tolerance + design escape valve:**
 
 Each review round, in order:
 
 1. Run `review-brainstorm.sh` once (both reviewers); parse its stdout `=== Summary ===` on any exit code.
-2. If either reviewer is `ERROR (tool failed…)`, re-run the whole wrapper with the same args — a tool failure is not a finding, so fix nothing this round.
+2. If either reviewer is `ERROR (tool failed…)`, re-run the whole wrapper with the same args — a tool failure is not a finding, so fix nothing this round. Exception: an **Unrecoverable ERROR** (see **Unrecoverable ERROR**) is not re-run; stop and ask.
 3. Read every finding in both reviewers' full sections and verify each one (**Verify findings before acting**). Then update the per-round ledger: design-soundness findings by semantic topic (see the ledger above), plus a `refuted` row for every finding you refuted from either reviewer. Do this only after ERROR is ruled out — a failed tool has no real findings. Then, before fixing, skipping, or escalating anything, disclose every new finding to the user (see **Disclose findings to the user**).
 4. First, if any `refuted` topic has now been raised for three consecutive rounds, escalate it (see **Verify findings before acting**) and settle the user's decision before evaluating the exit. Then **exit the loop** when (structural-completeness is `Status: OKAY` OR every remaining structural finding is `refuted`) AND (design-soundness is `Verdict: approve` OR every remaining design-soundness finding maps to an `adjudicated-reject` or `refuted` ledger topic) AND no escalation is pending. The loop may end **even if design-soundness never returns `approve`** or structural-completeness never returns `OKAY`, as long as every remaining finding is user-rejected or refuted with recorded counter-evidence.
 5. Fix every confirmed structural-completeness finding — confirmed structural findings are always zero-tolerance. Do not fix `refuted` ones; escalate a `refuted` topic raised three consecutive rounds.

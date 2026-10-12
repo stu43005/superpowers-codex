@@ -15,7 +15,7 @@ spec-coverage) gates the merge.
 
 **Core principle:** Code-free task list from the spec + fresh subagent per task + one batched four-reviewer review per task + one final gate = high quality, fast iteration
 
-**Continuous execution:** Do not pause to check in with your human partner after Phase 0 or between tasks. There is no task-list review and no approval gate — the user already approved the spec. The only reasons to stop are: BLOCKED status you cannot resolve; ambiguity that genuinely prevents progress (including a spec problem that needs a spec edit, see **Mid-Implementation Spec Edits**); a fail-closed condition in **Resume Mode**; a non-empty manual-check list after the final gate passes (see **Manual-Check Disposition**); a refuted finding raised for three consecutive runs (see **Verify Findings Before Acting**); or all tasks complete with the final gate clear. "Should I continue?" prompts and progress summaries waste their time — they approved the spec, so implement it.
+**Continuous execution:** Do not pause to check in with your human partner after Phase 0 or between tasks. There is no task-list review and no approval gate — the user already approved the spec. The only reasons to stop are: BLOCKED status you cannot resolve; ambiguity that genuinely prevents progress (including a spec problem that needs a spec edit, see **Mid-Implementation Spec Edits**); a fail-closed condition in **Resume Mode**; a non-empty manual-check list after the final gate passes (see **Manual-Check Disposition**); a refuted finding raised for three consecutive runs (see **Verify Findings Before Acting**); a reviewer ERROR that a rerun cannot fix (see **Unrecoverable ERROR**); or all tasks complete with the final gate clear. "Should I continue?" prompts and progress summaries waste their time — they approved the spec, so implement it.
 
 ## When to Use
 
@@ -84,7 +84,7 @@ digraph process {
     "Implementer subagent asks questions?" -> "Implementer subagent implements (TDD), commits with trailer, self-reviews" [label="no"];
     "Implementer subagent implements (TDD), commits with trailer, self-reviews" -> "Dispatch 4 reviewers (review-impl.sh, parallel)";
     "Dispatch 4 reviewers (review-impl.sh, parallel)" -> "Any ERROR?";
-    "Any ERROR?" -> "Dispatch 4 reviewers (review-impl.sh, parallel)" [label="yes — rerun whole wrapper"];
+    "Any ERROR?" -> "Dispatch 4 reviewers (review-impl.sh, parallel)" [label="yes — rerun whole wrapper (unrecoverable: stop and ask)"];
     "Any ERROR?" -> "Attribute findings; any blocking?" [label="no"];
     "Attribute findings; any blocking?" -> "Repair (fix commits and/or task-definition updates)" [label="yes"];
     "Repair (fix commits and/or task-definition updates)" -> "Dispatch 4 reviewers (review-impl.sh, parallel)" [label="re-review (same TASK_BASE)"];
@@ -207,8 +207,8 @@ rewrite it as one line and re-run.
    `## code-quality` section and treat any blocking-severity defect as a finding; or
    `ERROR (tool failed, ...)`.
 3. **If any reviewer is ERROR** → **re-run the entire `review-impl.sh` call** (same
-   `--spec`/`--task-summary`/`--task-base`). Do not treat ERROR as a review failure and do not
-   discard stdout.
+   `--spec`/`--task-summary`/`--task-base`), unless it is an **Unrecoverable ERROR** (below), in
+   which case stop and ask instead. Do not treat ERROR as a review failure and do not discard stdout.
 4. **If a reviewer's Summary line carries a `(tool exit N)` annotation** (a `Status:`/`Verdict:`
    was produced but the tool then exited nonzero), the result exists but its output may be
    incomplete: read that reviewer's full `## <label>` section and use judgment — re-run the whole
@@ -274,6 +274,15 @@ escalation, Manual-Check Disposition, Mid-Implementation Spec Edits, Resume Mode
 problem in detail in your reply text: the scenario, the impact, each option's approach and cost, and
 your recommendation if you have one. The `AskUserQuestion` option descriptions must not be the first
 place the user sees the problem.
+
+**Unrecoverable ERROR:** if an ERROR reviewer's `## <label>` section or `[stderr excerpt]` shows a
+failure that a rerun cannot fix, do NOT re-run. Typical examples: the `claude` / `codex` executable
+not found, `Error: Reached max turns`, not logged in / authentication failure, quota exhausted such
+as `You've hit your usage limit`. Instead stop, describe the failure in prose per **Describe the
+problem before asking** (include the hint that the user can set `SUPERPOWERS_REVIEW_BACKEND` to
+switch to the other backend), then ask via `AskUserQuestion`. There is no consecutive-count
+threshold: judge from the output. Transient failures (network blip, a crash with no deterministic
+cause) stay on the rerun path.
 
 **Code-quality severity calibration:** "blocking" = what a senior engineer would require fixed
 before merge — bugs, data-loss risks, broken error handling, security issues, missing critical
@@ -361,7 +370,8 @@ Read the wrapper's stdout `=== Summary ===` on any exit code. A `- backend:` lin
 an informational line, not a reviewer, and takes no part in the ERROR / verdict decisions:
 
 - `ERROR (tool failed, ...)` on either reviewer → a tool failure, not a review result; re-run the
-  whole `review-final.sh` call (same `--base`/`--spec`).
+  whole `review-final.sh` call (same `--base`/`--spec`), unless it is an **Unrecoverable ERROR**
+  (see **Unrecoverable ERROR**): then stop and ask instead.
 - `... (tool exit N)` → the result was produced but the tool then exited nonzero, so the output may
   be incomplete; read that reviewer's full `## <label>` section and use judgment — re-run
   `review-final.sh` if it looks truncated, otherwise act on the result shown.

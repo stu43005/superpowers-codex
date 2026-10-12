@@ -1069,46 +1069,46 @@ BR_FIND="$(printf '%s\n' \
   '- structural-completeness: Status: OKAY' \
   '- design-soundness: Verdict: needs-attention')"; BR_FIND_RC=0
 
-# --- impl caller shape: spec-compliance (Status:) + code-quality (prose, no verdict line) ---
+# --- impl caller shape: task-acceptance (Status:) + code-quality (prose, no verdict line) ---
 IM_OK="$(printf '%s\n' \
-  '## spec-compliance' 'Status: OKAY' '' \
+  '## task-acceptance' 'Status: OKAY' '' \
   '## code-quality' 'Clean implementation. No blocking issues found.' '' \
   '=== Summary ===' \
-  '- spec-compliance: Status: OKAY' \
+  '- task-acceptance: Status: OKAY' \
   '- code-quality: (prose — 見全文)')"; IM_OK_RC=0
 IM_ERR="$(printf '%s\n' \
-  '## spec-compliance' 'Status: OKAY' '' \
+  '## task-acceptance' 'Status: OKAY' '' \
   '## code-quality' '[stderr excerpt]' 'boom' '' \
   '=== Summary ===' \
-  '- spec-compliance: Status: OKAY' \
+  '- task-acceptance: Status: OKAY' \
   '- code-quality: ERROR (tool failed, exit 2)')"; IM_ERR_RC=2
 IM_FIND="$(printf '%s\n' \
-  '## spec-compliance' 'Status: Issues Found' '' \
+  '## task-acceptance' 'Status: Issues Found' '' \
   '## code-quality' 'src/x.ts:1 magic number' '' \
   '=== Summary ===' \
-  '- spec-compliance: Status: Issues Found' \
+  '- task-acceptance: Status: Issues Found' \
   '- code-quality: (prose — 見全文)')"; IM_FIND_RC=0
 # code-quality is PROSE — a "(prose — 見全文)" Summary line is NOT automatically a pass. Here
-# spec-compliance is OKAY, the Summary shows code-quality as prose, exit 0 — but the
+# task-acceptance is OKAY, the Summary shows code-quality as prose, exit 0 — but the
 # "## code-quality" BODY carries a BLOCKING finding (marked "BLOCKING:" — the senior-engineer
 # must-fix severity the reviewer emits). The caller MUST read the section body, so the decision
 # is FIX_AND_REREVIEW, not PROCEED. This is the case review-impl.sh's contract requires.
 IM_CQ_BLOCK="$(printf '%s\n' \
-  '## spec-compliance' 'Status: OKAY' '' \
+  '## task-acceptance' 'Status: OKAY' '' \
   '## code-quality' 'BLOCKING: src/recovery.ts:47 unhandled error path can drop data' '' \
   '=== Summary ===' \
-  '- spec-compliance: Status: OKAY' \
+  '- task-acceptance: Status: OKAY' \
   '- code-quality: (prose — 見全文)')"; IM_CQ_BLOCK_RC=0
 # Regression: the code-quality PROSE body may contain its own Markdown heading (e.g. "## Notes")
 # BEFORE a BLOCKING line. code-quality is the last "## <label>" section before "=== Summary ===",
 # so the parser must NOT treat an internal heading as the section boundary — it must keep reading
 # to "=== Summary ===" and still find the BLOCKING line. Decision: FIX_AND_REREVIEW, not PROCEED.
 IM_CQ_BLOCK_HEADING="$(printf '%s\n' \
-  '## spec-compliance' 'Status: OKAY' '' \
+  '## task-acceptance' 'Status: OKAY' '' \
   '## code-quality' '## Notes' 'general remarks about the change' \
   'BLOCKING: src/recovery.ts:47 unhandled error path can drop data' '' \
   '=== Summary ===' \
-  '- spec-compliance: Status: OKAY' \
+  '- task-acceptance: Status: OKAY' \
   '- code-quality: (prose — 見全文)')"; IM_CQ_BLOCK_HEADING_RC=0
 
 # --- final caller shape: final-adversarial (Verdict:) — single reviewer (review-final.sh) ---
@@ -1140,12 +1140,12 @@ FN_NA_TOOLEXIT="$(printf '%s\n' \
   '## final-adversarial' 'Verdict: needs-attention' '' \
   '=== Summary ===' \
   '- final-adversarial: Verdict: needs-attention (tool exit 1)')"; FN_NA_TOOLEXIT_RC=1
-# impl shape: spec-compliance Status annotated with a tool exit -> INSPECT.
+# impl shape: task-acceptance Status annotated with a tool exit -> INSPECT.
 IM_TOOLEXIT="$(printf '%s\n' \
-  '## spec-compliance' 'Status: OKAY' '' \
+  '## task-acceptance' 'Status: OKAY' '' \
   '## code-quality' 'looks fine' '' \
   '=== Summary ===' \
-  '- spec-compliance: Status: OKAY (tool exit 2)' \
+  '- task-acceptance: Status: OKAY (tool exit 2)' \
   '- code-quality: (prose — 見全文)')"; IM_TOOLEXIT_RC=2
 
 # expect_action <name> <blob> <rc> <expected-action> : assert decide_action(stdout, rc) matches.
@@ -1175,7 +1175,7 @@ expect_action "final needs-attention (rc 0)"       "$FN_FIND" "$FN_FIND_RC" "FIX
 # failed; output may be incomplete; the caller judges inspect vs re-run — not auto-PROCEED).
 expect_action "final approve + tool exit -> INSPECT"         "$FN_TOOLEXIT"    "$FN_TOOLEXIT_RC"    "INSPECT"
 expect_action "final needs-attention + tool exit -> INSPECT" "$FN_NA_TOOLEXIT" "$FN_NA_TOOLEXIT_RC" "INSPECT"
-expect_action "impl spec-compliance + tool exit -> INSPECT"  "$IM_TOOLEXIT"    "$IM_TOOLEXIT_RC"    "INSPECT"
+expect_action "impl task-acceptance + tool exit -> INSPECT"  "$IM_TOOLEXIT"    "$IM_TOOLEXIT_RC"    "INSPECT"
 
 # stdout is parsed REGARDLESS of exit code: a findings Summary delivered with a NONZERO rc still
 # decides FIX_AND_REREVIEW from stdout (the rc must not override the stdout verdict). This proves
@@ -1183,7 +1183,7 @@ expect_action "impl spec-compliance + tool exit -> INSPECT"  "$IM_TOOLEXIT"    "
 expect_action "findings stdout with nonzero rc still FIX_AND_REREVIEW" "$IM_FIND" 7 "FIX_AND_REREVIEW"
 
 # The parser extracts a reviewer's status line from the Summary block.
-printf '%s\n' "$IM_OK" | sed -n '/^=== Summary ===$/,$p' | grep -q '^- spec-compliance: Status: OKAY$' \
+printf '%s\n' "$IM_OK" | sed -n '/^=== Summary ===$/,$p' | grep -q '^- task-acceptance: Status: OKAY$' \
   && ok "parser extracts a reviewer's status from the Summary block" \
   || bad "parser extracts a reviewer's status from the Summary block" "$IM_OK"
 

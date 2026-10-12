@@ -115,7 +115,7 @@ claude -p --permission-mode plan --strict-mcp-config \
 
 | `SUPERPOWERS_REVIEW_BACKEND` | 行為 |
 |---|---|
-| 未設定或 `auto` | 執行 `node "<scripts>/codex-quota.mjs"` 並解析 `<backend>\t<reason>`；node 不存在、腳本 exit ≠ 0 或輸出不符契約 → `codex`，reason `codex quota unavailable: quota probe failed` |
+| 未設定、空值或 `auto` | 執行 `node "<scripts>/codex-quota.mjs"` 並解析 `<backend>\t<reason>`；node 不存在、腳本 exit ≠ 0 或輸出不符契約 → `codex`，reason `codex quota unavailable: quota probe failed` |
 | `codex` | 走 codex，不查詢額度 |
 | `claude` | 走 claude，不查詢額度 |
 | 其他值 | stderr 印 `review-batch: SUPERPOWERS_REVIEW_BACKEND must be auto|codex|claude, got: <值>`，`batch_run` 回傳 1，不派工 |

@@ -144,7 +144,7 @@ claude -p --permission-mode plan --strict-mcp-config \
 ### 單元五：SKILL.md 與 README
 
 - 每一處解讀 `=== Summary ===` 的 caller control-flow 段落各加一句——`skills/brainstorming/SKILL.md` 的 spec review 段落，以及 `skills/subagent-driven-development/SKILL.md` 的 per-task review（`review-impl.sh`）與 final review（`review-final.sh`）兩處段落：`- backend:` 列為資訊列，不是 reviewer，不參與迴圈的 ERROR / verdict 判斷。agent 呼叫方式不變。
-- `README.md` 新增一節說明自動降級規則、`SUPERPOWERS_REVIEW_BACKEND` 開關、`ANTHROPIC_API_KEY` 計費注意事項。
+- `README.md` 新增一節說明自動降級規則、`SUPERPOWERS_REVIEW_BACKEND` 開關、`ANTHROPIC_API_KEY` 計費注意事項。開關的設定方式須寫明：agent 依 SKILL 呼叫規範不得在 wrapper 指令前加環境變數前綴，因此此開關由**使用者**設定——於啟動 Claude Code 前在 shell 匯出，或寫入 Claude Code `settings.json` 的 `env`（實測：以 `--settings '{"env":{...}}'` 啟動的 session，其 Bash 指令可讀到該變數；新啟動的 session 會套用）。並說明典型使用時機：降級後 claude reviewer 持續失敗而 agent 停下來詢問時，使用者可設為 `codex` 強制改回。
 
 ### 單元六：審查結果揭露與決策前詳述規則（SKILL.md）
 

@@ -23,6 +23,11 @@ trap 'rm -rf "$ROOT"' EXIT
 # owned by another process, such as a real review running concurrently.
 mkdir "$ROOT/tmp" || { printf 'FATAL: cannot create %s/tmp\n' "$ROOT" >&2; exit 1; }
 export TMPDIR="$ROOT/tmp"
+# Pin the review backend to codex for every case that does not choose one itself, so no case ever
+# runs the real quota probe (which would spawn a real codex). Backend-selection cases override it
+# inside their own subshells. Unset the other engine inputs a caller's environment could leak in.
+export SUPERPOWERS_REVIEW_BACKEND=codex
+unset MAX_PARALLEL BATCH_QUOTA_PROBE BATCH_DISPATCH_CLAUDE_SH ANTHROPIC_API_KEY
 
 # write_stub <file> <body-lines...> : create an executable stub dispatch.sh.
 write_stub() {
@@ -516,13 +521,14 @@ else bad "review-brainstorm: design-soundness argv" "$T6"; fi
   && ok "review-plan.sh wrapper is removed" \
   || bad "review-plan.sh wrapper is removed" "still present: $HERE/review-plan.sh"
 
-# section_args <blob> <label> : print the echoed ARG: lines of the "## <label>" section joined
-# by "|" (the section ends at the next "## " heading or the Summary block), so one string
-# comparison pins a job's exact argv, including order and the absence of extra arguments.
+# section_args <blob> <label> [prefix] : print the echoed <prefix>: lines (default ARG:) of the
+# "## <label>" section joined by "|" (the section ends at the next "## " heading or the Summary
+# block), so one string comparison pins a job's exact argv, including order and the absence of
+# extra arguments.
 section_args() {
   printf '%s\n' "$1" \
     | awk -v h="## $2" '$0==h{c=1;next} c&&(/^## /||/^=== Summary ===$/){c=0} c{print}' \
-    | grep '^ARG:' | tr '\n' '|'
+    | grep "^${3:-ARG}:" | tr '\n' '|'
 }
 
 # review-impl.sh assembles the four per-Task reviewers' dispatch argv (no report file).
@@ -684,6 +690,322 @@ for wg_mode in $WRAPPER_GUARD_MODES; do
     else bad "guard: review-$wg_name.sh with $wg_mode exits 3 and dispatches nothing" \
       "rc=$(cat "$wg_base.rc") marker=$([ -e "$GUARD_MARK" ] && echo yes || echo no) mktemp=$(cat "$wg_base.mktemp")"; fi
   done
+done
+
+# ---------------------------------------------------------------------------------------------
+# Backend selection. A fake quota probe (a node script injected via BATCH_QUOTA_PROBE) prints a
+# canned "<backend>\t<reason>" line and touches $PROBE_MARK, so a case can tell whether the probe
+# ran. Codex jobs echo "ARG:" lines (ECHO_STUB); claude jobs echo "CARG:" lines, so the dispatcher
+# that actually ran each job is visible in the batch stdout.
+CLAUDE_ECHO_STUB="$ROOT/claude-echo/dispatch-claude.sh"
+# shellcheck disable=SC2016
+write_stub "$CLAUDE_ECHO_STUB" 'for a in "$@"; do printf "CARG:%s\n" "$a"; done' 'echo "Status: OKAY"'
+PROBE_MARK="$ROOT/probe.marker"
+PROBE_DIR="$ROOT/probes"; mkdir -p "$PROBE_DIR"
+# write_probe <name> <js-statement> : create $PROBE_DIR/<name>.cjs that marks its run, then runs
+# the statement.
+write_probe() {
+  printf 'require("fs").writeFileSync("%s", "");\n%s\n' "$PROBE_MARK" "$2" > "$PROBE_DIR/$1.cjs"
+}
+DOWN_REASON='auto-downgraded: codex weekly usage 62% exceeds even-pace limit 45%'
+write_probe down     'process.stdout.write("claude\t'"$DOWN_REASON"'\n");'
+write_probe ok       'process.stdout.write("codex\tcodex quota ok\n");'
+write_probe unavail  'process.stdout.write("codex\tcodex quota unavailable: no weekly (10080m) window in response\n");'
+write_probe exit2    'process.stdout.write("claude\t'"$DOWN_REASON"'\n"); process.exit(2);'
+write_probe notab    'process.stdout.write("claude '"$DOWN_REASON"'\n");'
+write_probe badword  'process.stdout.write("gemini\tsomething\n");'
+write_probe twolines 'process.stdout.write("claude\tr1\nclaude\tr2\n");'
+write_probe empty    ';'
+write_probe noreason 'process.stdout.write("claude\t\n");'
+PROBE_DOWN="$PROBE_DIR/down.cjs"; PROBE_OK="$PROBE_DIR/ok.cjs"; PROBE_UNAVAIL="$PROBE_DIR/unavail.cjs"
+INVALID_MSG='review-batch: SUPERPOWERS_REVIEW_BACKEND must be auto|codex|claude, got: foo'
+KEY_MSG='review-batch: ANTHROPIC_API_KEY is set; claude reviewers will bill the API key'
+PROBE_FAIL_MSG='review-batch: codex quota unavailable: quota probe failed; using codex'
+
+# backend_run <tag> <backend|UNSET> [probe] : run a three-job batch (model sonnet / no model / model
+# opus) under the given SUPERPOWERS_REVIEW_BACKEND (UNSET removes it) and quota probe, leaving rc /
+# stdout / stderr / mktemp log under $ROOT/be-<tag>.*. BE_KEY sets ANTHROPIC_API_KEY (empty by
+# default); BE_PATH replaces PATH.
+backend_run() {
+  local base="$ROOT/be-$1" backend="$2" probe="${3:-$PROBE_OK}"
+  rm -f "$PROBE_MARK" "$base".*
+  : > "$base.mktemp"
+  ( PATH="${BE_PATH:-$SHIM_PATH}"; MKTEMP_LOG="$base.mktemp"; export MKTEMP_LOG
+    if [ "$backend" = UNSET ]; then unset SUPERPOWERS_REVIEW_BACKEND
+    else SUPERPOWERS_REVIEW_BACKEND="$backend"; fi
+    BATCH_DISPATCH_SH="$ECHO_STUB"; BATCH_DISPATCH_CLAUDE_SH="$CLAUDE_ECHO_STUB"
+    BATCH_QUOTA_PROBE="$probe"
+    ANTHROPIC_API_KEY="${BE_KEY:-}"; export ANTHROPIC_API_KEY
+    # shellcheck disable=SC1090
+    . "$LIB"; MAX_PARALLEL=3; batch_init
+    batch_add "m-sonnet" task --prompt /tmp/p.md; batch_claude_model sonnet
+    batch_add "m-none" review --base B
+    batch_add "m-opus" adversarial --base B --focus /tmp/f.md; batch_claude_model opus
+    batch_run > "$base.out" 2> "$base.err"; printf '%s' "$?" > "$base.rc" )
+}
+be_rc()    { cat "$ROOT/be-$1.rc" 2>/dev/null; }
+be_err()   { cat "$ROOT/be-$1.err" 2>/dev/null; }
+be_codex() { grep -q '^ARG:' "$ROOT/be-$1.out" && ! grep -q '^CARG:' "$ROOT/be-$1.out"; }
+be_claude() { grep -q '^CARG:' "$ROOT/be-$1.out" && ! grep -q '^ARG:' "$ROOT/be-$1.out"; }
+be_probed() { [ -e "$PROBE_MARK" ]; }
+be_no_row() { ! grep -q '^- backend:' "$ROOT/be-$1.out"; }
+be_first_row() { sed -n '/^=== Summary ===$/{n;p;q;}' "$ROOT/be-$1.out"; }
+be_no_model() { ! grep -q -- '--model' "$ROOT/be-$1.out"; }
+# be_claude_models <tag> : each claude job's argv carries exactly the model its batch_claude_model
+# assigned, and the job without one carries no --model.
+be_claude_models() {
+  local out; out="$(cat "$ROOT/be-$1.out")"
+  [ "$(section_args "$out" m-sonnet CARG)" = 'CARG:task|CARG:--prompt|CARG:/tmp/p.md|CARG:--model|CARG:sonnet|' ] \
+    && [ "$(section_args "$out" m-none CARG)" = 'CARG:review|CARG:--base|CARG:B|' ] \
+    && [ "$(section_args "$out" m-opus CARG)" = 'CARG:adversarial|CARG:--base|CARG:B|CARG:--focus|CARG:/tmp/f.md|CARG:--model|CARG:opus|' ]
+}
+be_diag() { printf 'rc=%s probed=%s err=[%s] out=[%s]' "$(be_rc "$1")" \
+  "$([ -e "$PROBE_MARK" ] && echo yes || echo no)" "$(be_err "$1")" "$(cat "$ROOT/be-$1.out" 2>/dev/null)"; }
+
+# Manual codex: dispatched through BATCH_DISPATCH_SH, no quota query, no selection message, no
+# backend row, and the argv is exactly the registered one (no --model).
+backend_run codex codex
+if [ "$(be_rc codex)" = 0 ] && be_codex codex && ! be_probed && [ -z "$(be_err codex)" ] \
+   && be_no_row codex && be_no_model codex \
+   && [ "$(section_args "$(cat "$ROOT/be-codex.out")" m-sonnet)" = 'ARG:task|ARG:--prompt|ARG:/tmp/p.md|' ]; then
+  ok "backend codex: BATCH_DISPATCH_SH, no probe, no message, no backend row, no --model"
+else bad "backend codex: BATCH_DISPATCH_SH, no probe, no message, no backend row, no --model" "$(be_diag codex)"; fi
+
+# Manual claude: dispatched through BATCH_DISPATCH_CLAUDE_SH with per-job models, no quota query,
+# no selection message, no backend row.
+backend_run claude claude
+if [ "$(be_rc claude)" = 0 ] && be_claude claude && ! be_probed && [ -z "$(be_err claude)" ] \
+   && be_no_row claude && be_claude_models claude; then
+  ok "backend claude: BATCH_DISPATCH_CLAUDE_SH with per-job --model, no probe, no message, no backend row"
+else bad "backend claude: BATCH_DISPATCH_CLAUDE_SH with per-job --model, no probe, no message, no backend row" "$(be_diag claude)"; fi
+
+# Invalid value: exact diagnostic, rc 1, nothing dispatched, no temp dir, no quota query.
+backend_run invalid foo
+if [ "$(be_rc invalid)" = 1 ] && [ "$(be_err invalid)" = "$INVALID_MSG" ] \
+   && ! grep -q 'ARG:' "$ROOT/be-invalid.out" && ! grep -q '^=== Summary ===$' "$ROOT/be-invalid.out" \
+   && [ ! -s "$ROOT/be-invalid.mktemp" ] && ! be_probed; then
+  ok "backend invalid: exact diagnostic, rc 1, nothing dispatched, no temp dir, no probe"
+else bad "backend invalid: exact diagnostic, rc 1, nothing dispatched, no temp dir, no probe" "$(be_diag invalid)"; fi
+
+# Auto (unset and explicit "auto") downgraded by the probe: claude dispatcher with models, the
+# reason on stderr, and the backend row as the first Summary line.
+for be_mode in UNSET auto; do
+  backend_run "down-$be_mode" "$be_mode" "$PROBE_DOWN"
+  if [ "$(be_rc "down-$be_mode")" = 0 ] && be_probed && be_claude "down-$be_mode" \
+     && be_claude_models "down-$be_mode" \
+     && [ "$(be_err "down-$be_mode")" = "review-batch: $DOWN_REASON" ] \
+     && [ "$(be_first_row "down-$be_mode")" = "- backend: claude ($DOWN_REASON)" ] \
+     && [ "$(grep -c '^- backend:' "$ROOT/be-down-$be_mode.out")" = 1 ]; then
+    ok "backend auto ($be_mode) downgraded: claude dispatcher, reason on stderr, backend row first in Summary"
+  else bad "backend auto ($be_mode) downgraded: claude dispatcher, reason on stderr, backend row first in Summary" "$(be_diag "down-$be_mode")"; fi
+done
+
+# Auto with a healthy quota (unset, "auto", and an empty value): codex dispatcher, no message, no
+# backend row, no --model.
+for be_mode in UNSET auto ""; do
+  backend_run "ok-$be_mode" "$be_mode" "$PROBE_OK"
+  if [ "$(be_rc "ok-$be_mode")" = 0 ] && be_probed && be_codex "ok-$be_mode" \
+     && [ -z "$(be_err "ok-$be_mode")" ] && be_no_row "ok-$be_mode" && be_no_model "ok-$be_mode"; then
+    ok "backend auto ('$be_mode') quota ok: codex dispatcher, no message, no backend row"
+  else bad "backend auto ('$be_mode') quota ok: codex dispatcher, no message, no backend row" "$(be_diag "ok-$be_mode")"; fi
+done
+
+# The probe itself reports the quota as unavailable: codex, and its reason is warned with "; using codex".
+backend_run unavail UNSET "$PROBE_UNAVAIL"
+if [ "$(be_rc unavail)" = 0 ] && be_probed && be_codex unavail && be_no_row unavail \
+   && [ "$(be_err unavail)" = 'review-batch: codex quota unavailable: no weekly (10080m) window in response; using codex' ]; then
+  ok "backend auto quota unavailable: codex, stderr carries the probe reason with '; using codex'"
+else bad "backend auto quota unavailable: codex, stderr carries the probe reason with '; using codex'" "$(be_diag unavail)"; fi
+
+# The probe fails (exit != 0 even with a valid line, missing script) or breaks the output contract
+# (no tab, unknown backend, two lines, no output, empty reason): codex with the probe-failed warning.
+for be_probe in exit2 notab badword twolines empty noreason missing; do
+  backend_run "pf-$be_probe" UNSET "$PROBE_DIR/$be_probe.cjs"
+  if [ "$(be_rc "pf-$be_probe")" = 0 ] && be_codex "pf-$be_probe" && be_no_row "pf-$be_probe" \
+     && be_no_model "pf-$be_probe" && [ "$(be_err "pf-$be_probe")" = "$PROBE_FAIL_MSG" ]; then
+    ok "backend auto probe failure ($be_probe): codex with the probe-failed warning"
+  else bad "backend auto probe failure ($be_probe): codex with the probe-failed warning" "$(be_diag "pf-$be_probe")"; fi
+done
+
+# node is not on PATH: codex with the probe-failed warning, and the probe never ran.
+if PATH=/usr/bin:/bin command -v node >/dev/null 2>&1; then
+  ok "backend auto without node: skipped (node is installed under /usr/bin or /bin)"
+else
+  BE_PATH="$MKTEMP_SHIM_DIR:/usr/bin:/bin" backend_run nonode UNSET "$PROBE_DOWN"
+  if [ "$(be_rc nonode)" = 0 ] && ! be_probed && be_codex nonode && be_no_row nonode \
+     && [ "$(be_err nonode)" = "$PROBE_FAIL_MSG" ]; then
+    ok "backend auto without node: codex with the probe-failed warning"
+  else bad "backend auto without node: codex with the probe-failed warning" "$(be_diag nonode)"; fi
+fi
+
+# API-key billing warning: printed by the batch itself whenever the backend is claude and
+# ANTHROPIC_API_KEY is non-empty — even though every job succeeds (job stderr stays hidden then).
+BE_KEY=sk-test backend_run key-claude claude
+if [ "$(be_rc key-claude)" = 0 ] && be_claude key-claude && [ "$(be_err key-claude)" = "$KEY_MSG" ]; then
+  ok "API key warning: manual claude with ANTHROPIC_API_KEY set warns on batch stderr (jobs succeed)"
+else bad "API key warning: manual claude with ANTHROPIC_API_KEY set warns on batch stderr (jobs succeed)" "$(be_diag key-claude)"; fi
+BE_KEY=sk-test backend_run key-down UNSET "$PROBE_DOWN"
+if be_claude key-down && grep -qxF "$KEY_MSG" "$ROOT/be-key-down.err" \
+   && grep -qxF "review-batch: $DOWN_REASON" "$ROOT/be-key-down.err"; then
+  ok "API key warning: auto-downgraded claude with ANTHROPIC_API_KEY set warns on batch stderr"
+else bad "API key warning: auto-downgraded claude with ANTHROPIC_API_KEY set warns on batch stderr" "$(be_diag key-down)"; fi
+BE_KEY=sk-test backend_run key-codex codex
+if be_codex key-codex && [ -z "$(be_err key-codex)" ]; then
+  ok "API key warning: absent when the backend is codex"
+else bad "API key warning: absent when the backend is codex" "$(be_diag key-codex)"; fi
+
+# Output guard still wins: with stdout to /dev/null the batch exits 3 before any quota query, and
+# before rejecting an invalid backend value.
+rm -f "$PROBE_MARK"
+SUPERPOWERS_REVIEW_BACKEND=auto BATCH_QUOTA_PROBE="$PROBE_DOWN" guard_run g7 stdout-null
+if guard_rejected g7 && [ ! -e "$PROBE_MARK" ]; then
+  ok "guard: exits 3 before the quota probe runs"
+else bad "guard: exits 3 before the quota probe runs" \
+  "rc=$(cat "$ROOT/guard-g7.rc") probed=$([ -e "$PROBE_MARK" ] && echo yes || echo no)"; fi
+SUPERPOWERS_REVIEW_BACKEND=foo guard_run g8 stdout-null
+if guard_rejected g8 && ! grep -q 'SUPERPOWERS_REVIEW_BACKEND' "$ROOT/guard-g8.err"; then
+  ok "guard: exits 3 before backend validation"
+else bad "guard: exits 3 before backend validation" \
+  "rc=$(cat "$ROOT/guard-g8.rc") err=$(cat "$ROOT/guard-g8.err" 2>/dev/null)"; fi
+
+# conc_log_peak : print the peak overlap recorded in $CONC_LOG ("+" start / "-" finish).
+conc_log_peak() {
+  local line cur=0 peak=0
+  while IFS= read -r line; do
+    case "$line" in
+      "+") cur=$((cur+1)); [ "$cur" -gt "$peak" ] && peak=$cur ;;
+      "-") cur=$((cur-1)) ;;
+    esac
+  done < "$CONC_LOG"
+  printf '%s' "$peak"
+}
+# conc_peak <backend> [max-parallel] : run six 0.3s jobs (both dispatchers are CONC_STUB) under the
+# backend, with MAX_PARALLEL set only when given; print the peak overlap. auto uses PROBE_DOWN.
+conc_peak() {
+  : > "$CONC_LOG"
+  # The engine sourced below reads these variables.
+  # shellcheck disable=SC2034
+  ( SUPERPOWERS_REVIEW_BACKEND="$1"; BATCH_QUOTA_PROBE="$PROBE_DOWN"
+    BATCH_DISPATCH_SH="$CONC_STUB"; BATCH_DISPATCH_CLAUDE_SH="$CONC_STUB"
+    # shellcheck disable=SC1090
+    . "$LIB"
+    if [ $# -ge 2 ]; then MAX_PARALLEL="$2"; fi
+    batch_init
+    i=0; while [ "$i" -lt 6 ]; do batch_add "j$i" task --base B; i=$((i+1)); done
+    batch_run ) > "$ROOT/cpeak.out" 2> "$ROOT/cpeak.err"
+  conc_log_peak
+}
+# expect_peak <name> <want> <backend> [max-parallel]
+expect_peak() {
+  local name="$1" want="$2" got; shift 2
+  got="$(conc_peak "$@")"
+  if [ "$got" = "$want" ]; then ok "$name (peak=$got)"
+  else bad "$name" "peak=$got want=$want err=$(cat "$ROOT/cpeak.err")"; fi
+}
+expect_peak "parallelism: claude without --max-parallel runs at most 2 jobs" 2 claude
+expect_peak "parallelism: auto-downgraded claude without --max-parallel runs at most 2 jobs" 2 auto
+expect_peak "parallelism: claude with explicit --max-parallel 3 runs 3 jobs" 3 claude 3
+expect_peak "parallelism: claude with an over-cap explicit value keeps the clamped value" 6 claude 20
+expect_peak "parallelism: codex without --max-parallel keeps the default 5" 5 codex
+
+# Wrappers end to end: review-impl.sh (four jobs) under claude defaults to 2 in flight, respects
+# --max-parallel, and treats an inherited MAX_PARALLEL environment value as explicit.
+# impl_peak [VAR=value...] <command...> : run the command through env with both dispatchers set to
+# CONC_STUB under the claude backend; print the peak overlap.
+impl_peak() {
+  : > "$CONC_LOG"
+  env SUPERPOWERS_REVIEW_BACKEND=claude BATCH_DISPATCH_CLAUDE_SH="$CONC_STUB" \
+    BATCH_DISPATCH_SH="$CONC_STUB" PLUGIN_ROOT="$PROOT" "$@" \
+    > "$ROOT/ipeak.out" 2> "$ROOT/ipeak.err"
+  conc_log_peak
+}
+IPEAK_ARGS="--spec docs/specs/x.md --task-summary T --task-base TBASE"
+# shellcheck disable=SC2086
+IP_DEFAULT="$(impl_peak bash "$IMPL_W" $IPEAK_ARGS)"
+# shellcheck disable=SC2086
+IP_FLAG="$(impl_peak bash "$IMPL_W" $IPEAK_ARGS --max-parallel 3)"
+# shellcheck disable=SC2086
+IP_ENV="$(impl_peak MAX_PARALLEL=4 bash "$IMPL_W" $IPEAK_ARGS)"
+if [ "$IP_DEFAULT" = 2 ] && [ "$IP_FLAG" = 3 ] && [ "$IP_ENV" = 4 ]; then
+  ok "review-impl under claude: default 2, --max-parallel 3 respected, inherited MAX_PARALLEL=4 respected"
+else bad "review-impl under claude: default 2, --max-parallel 3 respected, inherited MAX_PARALLEL=4 respected" \
+  "default=$IP_DEFAULT flag=$IP_FLAG env=$IP_ENV err=$(cat "$ROOT/ipeak.err")"; fi
+
+# Each wrapper assigns every reviewer its claude model: the claude dispatcher's argv ends with
+# exactly one "--model <alias>".
+# wrapper_model_ok <blob> <label> <model>
+wrapper_model_ok() {
+  local a; a="$(section_args "$1" "$2" CARG)"
+  case "$a" in *"|CARG:--model|CARG:$3|") ;; *) return 1 ;; esac
+  [ "$(printf '%s' "$a" | tr '|' '\n' | grep -cx 'CARG:--model')" = 1 ]
+}
+WM_BRAIN="$( SUPERPOWERS_REVIEW_BACKEND=claude BATCH_DISPATCH_CLAUDE_SH="$CLAUDE_ECHO_STUB" \
+  BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+  bash "$BRAINSTORM" --spec docs/specs/x-design.md --base SPECBASE 2>"$ROOT/wm-brain.err" )"
+WM_IMPL="$( SUPERPOWERS_REVIEW_BACKEND=claude BATCH_DISPATCH_CLAUDE_SH="$CLAUDE_ECHO_STUB" \
+  BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+  bash "$IMPL_W" --spec docs/specs/x.md --task-summary "$IMPL_SUMMARY" --task-base TBASE 2>"$ROOT/wm-impl.err" )"
+WM_FINAL="$( SUPERPOWERS_REVIEW_BACKEND=claude BATCH_DISPATCH_CLAUDE_SH="$CLAUDE_ECHO_STUB" \
+  BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+  bash "$FINAL_W" --base IMPLBASE --spec docs/specs/x.md 2>"$ROOT/wm-final.err" )"
+for wm in "BRAIN structural-completeness sonnet" "BRAIN design-soundness opus" \
+          "IMPL spec-compliance sonnet" "IMPL code-quality sonnet" "IMPL task-coverage sonnet" \
+          "IMPL task-seam sonnet" "FINAL final-adversarial opus" "FINAL spec-coverage sonnet"; do
+  # shellcheck disable=SC2086
+  set -- $wm
+  case "$1" in
+    BRAIN) wm_blob="$WM_BRAIN" ;;
+    IMPL)  wm_blob="$WM_IMPL" ;;
+    FINAL) wm_blob="$WM_FINAL" ;;
+  esac
+  if wrapper_model_ok "$wm_blob" "$2" "$3"; then
+    ok "wrapper model: $2 runs on claude with --model $3"
+  else bad "wrapper model: $2 runs on claude with --model $3" "$(section_args "$wm_blob" "$2" CARG)"; fi
+done
+
+# Wrapper defaults: with no BATCH_DISPATCH_CLAUDE_SH override each wrapper resolves the shipped
+# dispatch-claude.sh (driven here through its DISPATCH_CLAUDE_BIN seam with a fake claude), and with
+# no BATCH_QUOTA_PROBE override it runs the shipped codex-quota.mjs (pointed at a nonexistent codex
+# through CODEX_QUOTA_CODEX_BIN, so it reports its own "unavailable" reason, not the probe-failed one).
+# dispatch-claude.sh validates the spec file and resolves the base ref with git, so these runs
+# happen inside a throwaway one-commit repo holding the spec. BATCH_DISPATCH_SH always stays a stub
+# so a codex job can never reach the real dispatch.sh.
+FAKE_CLAUDE="$ROOT/fake-claude/claude"
+# shellcheck disable=SC2016
+write_stub "$FAKE_CLAUDE" 'cat >/dev/null' 'echo FAKE-CLAUDE' \
+  'for a in "$@"; do printf "FC:%s\n" "$a"; done' 'echo "Status: OKAY"'
+WD_REPO="$ROOT/wd-repo"
+mkdir -p "$WD_REPO"
+git -C "$WD_REPO" init -q
+printf 'spec\n' > "$WD_REPO/spec.md"
+git -C "$WD_REPO" add spec.md
+git -C "$WD_REPO" -c user.name=t -c user.email=t@example.invalid -c commit.gpgsign=false -c core.hooksPath=/dev/null \
+  commit -q -m init
+for wd in "brainstorm $BRAINSTORM --spec spec.md --base HEAD" \
+          "impl $IMPL_W --spec spec.md --task-summary T --task-base HEAD" \
+          "final $FINAL_W --base HEAD --spec spec.md"; do
+  # shellcheck disable=SC2086
+  set -- $wd
+  wd_name="$1"; shift
+  wd_out="$( cd "$WD_REPO" && env -u BATCH_DISPATCH_CLAUDE_SH -u ANTHROPIC_API_KEY \
+    SUPERPOWERS_REVIEW_BACKEND=claude BATCH_DISPATCH_SH="$ECHO_STUB" \
+    DISPATCH_CLAUDE_BIN="$FAKE_CLAUDE" PLUGIN_ROOT="$PROOT" bash "$@" 2>"$ROOT/wd-$wd_name.err" )"
+  wd_jobs="$(printf '%s\n' "$wd_out" | grep -c '^## ')"
+  if [ "$wd_jobs" -gt 0 ] \
+     && [ "$(printf '%s\n' "$wd_out" | grep -c '^FAKE-CLAUDE$')" = "$wd_jobs" ] \
+     && [ "$(printf '%s\n' "$wd_out" | grep -c '^FC:--model$')" = "$wd_jobs" ]; then
+    ok "review-$wd_name.sh: BATCH_DISPATCH_CLAUDE_SH defaults to the shipped dispatch-claude.sh"
+  else bad "review-$wd_name.sh: BATCH_DISPATCH_CLAUDE_SH defaults to the shipped dispatch-claude.sh" \
+    "out=$wd_out err=$(cat "$ROOT/wd-$wd_name.err")"; fi
+  wq_out="$( env -u SUPERPOWERS_REVIEW_BACKEND -u BATCH_QUOTA_PROBE \
+    CODEX_QUOTA_CODEX_BIN="$ROOT/no-such-codex" BATCH_DISPATCH_SH="$ECHO_STUB" PLUGIN_ROOT="$PROOT" \
+    bash "$@" 2>"$ROOT/wq-$wd_name.err" )"
+  if grep -q '^review-batch: codex quota unavailable: .*; using codex$' "$ROOT/wq-$wd_name.err" \
+     && ! grep -qxF "$PROBE_FAIL_MSG" "$ROOT/wq-$wd_name.err" \
+     && printf '%s\n' "$wq_out" | grep -q '^ARG:'; then
+    ok "review-$wd_name.sh: BATCH_QUOTA_PROBE defaults to the shipped codex-quota.mjs"
+  else bad "review-$wd_name.sh: BATCH_QUOTA_PROBE defaults to the shipped codex-quota.mjs" \
+    "err=$(cat "$ROOT/wq-$wd_name.err")"; fi
 done
 
 # decide_action <stdout-blob> <exit-code> : print PROCEED | RERUN_WRAPPER | FIX_AND_REREVIEW | INSPECT.

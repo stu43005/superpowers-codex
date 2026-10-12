@@ -4,11 +4,14 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-# BATCH_DISPATCH_SH is a deliberate TEST SEAM: review-batch-lib.test.sh injects a stub dispatch.sh
-# through it for hermetic testing. With no override it resolves to the real dispatch.sh; keep it.
+# BATCH_DISPATCH_SH, BATCH_DISPATCH_CLAUDE_SH and BATCH_QUOTA_PROBE are deliberate TEST SEAMS:
+# review-batch-lib.test.sh injects stub dispatchers and a fake quota probe through them for
+# hermetic testing. With no override they resolve to the shipped scripts; keep them.
 BATCH_DISPATCH_SH="${BATCH_DISPATCH_SH:-$SCRIPT_DIR/dispatch.sh}"
+BATCH_DISPATCH_CLAUDE_SH="${BATCH_DISPATCH_CLAUDE_SH:-$SCRIPT_DIR/dispatch-claude.sh}"
+BATCH_QUOTA_PROBE="${BATCH_QUOTA_PROBE:-$SCRIPT_DIR/codex-quota.mjs}"
 PLUGIN_ROOT="${PLUGIN_ROOT:-$SCRIPT_DIR/..}"
-export BATCH_DISPATCH_SH
+export BATCH_DISPATCH_SH BATCH_DISPATCH_CLAUDE_SH BATCH_QUOTA_PROBE
 
 # need_val: fail with a clear wrapper error when an option is missing its value, instead
 # of crashing on an unbound `$2` under `set -u`.
@@ -32,7 +35,9 @@ batch_init
 batch_add "structural-completeness" task \
   --prompt "$PLUGIN_ROOT/skills/brainstorming/spec-document-reviewer-prompt.md" \
   --set "SPEC_FILE_PATH=$SPEC"
+batch_claude_model sonnet
 batch_add "design-soundness" adversarial \
   --base "$BASE" \
   --focus "$PLUGIN_ROOT/skills/brainstorming/adversarial-spec-review-focus.md"
+batch_claude_model opus
 batch_run

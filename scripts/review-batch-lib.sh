@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 # Batch reviewer dispatch engine for the superpowers-codex plugin. SOURCED by the
 # review-*.sh wrappers (never executed directly). Provides batch_init / batch_add /
-# batch_run over the existing scripts/dispatch.sh (path read from BATCH_DISPATCH_SH).
+# batch_claude_model / batch_run. One backend serves the whole batch: codex jobs run through
+# scripts/dispatch.sh (path read from BATCH_DISPATCH_SH), claude jobs through
+# scripts/dispatch-claude.sh (path read from BATCH_DISPATCH_CLAUDE_SH). The backend comes from
+# SUPERPOWERS_REVIEW_BACKEND (auto|codex|claude); auto asks the codex quota probe (node script
+# path read from BATCH_QUOTA_PROBE).
 #
 # Portability: bash 3.2 / BSD-safe. No `wait -n`, no `sort -V`, no `setsid`, no `mapfile`.
 
@@ -9,6 +13,10 @@
 batch_init() {
   _BATCH_LABELS=()
   _BATCH_ARGV=()           # each entry = one job's full argv, %q-encoded (subcommand + args)
+  _BATCH_MODELS=()         # each entry = the job's claude model alias, "" when unassigned
+  # Record whether the caller chose MAX_PARALLEL (via --max-parallel or an inherited environment
+  # value) BEFORE the default below fills it in: the claude backend lowers only a defaulted value.
+  if [ -n "${MAX_PARALLEL+x}" ]; then _BATCH_MP_EXPLICIT=1; else _BATCH_MP_EXPLICIT=0; fi
   # Default to 5 only when MAX_PARALLEL is genuinely UNSET. An explicitly EMPTY value
   # (MAX_PARALLEL="") must survive to validation so it can fail fast — do NOT use
   # `: "${MAX_PARALLEL:=5}"`, which would silently rewrite "" to 5.
@@ -25,6 +33,58 @@ batch_add() {
   done
   _BATCH_LABELS+=("$label")
   _BATCH_ARGV+=("$enc")
+  _BATCH_MODELS+=("")
+}
+
+# batch_claude_model <alias> : assign a claude model to the most recently added job. It is passed
+# as `--model <alias>` only when the batch runs on the claude backend; codex jobs ignore it.
+batch_claude_model() {
+  local n="${#_BATCH_LABELS[@]}"
+  if [ "$n" -eq 0 ]; then
+    printf 'review-batch: batch_claude_model called before any batch_add\n' >&2
+    return 1
+  fi
+  _BATCH_MODELS[n-1]="$1"
+}
+
+# _batch_select_backend: decide the backend for the whole batch. Sets _BATCH_BACKEND
+# (codex|claude) and _BATCH_SUMMARY_ROW (the Summary row, non-empty only when auto chose claude).
+# Prints the selection diagnostics on stderr. Returns 1 on an invalid SUPERPOWERS_REVIEW_BACKEND.
+_batch_select_backend() {
+  _BATCH_BACKEND=codex
+  _BATCH_SUMMARY_ROW=""
+  case "${SUPERPOWERS_REVIEW_BACKEND:-auto}" in
+    codex|claude) _BATCH_BACKEND="$SUPERPOWERS_REVIEW_BACKEND"; return 0 ;;
+    auto) ;;
+    *) printf 'review-batch: SUPERPOWERS_REVIEW_BACKEND must be auto|codex|claude, got: %s\n' \
+         "$SUPERPOWERS_REVIEW_BACKEND" >&2
+       return 1 ;;
+  esac
+  local tab out backend reason
+  tab="$(printf '\t')"
+  backend=""; reason=""
+  # The probe's own diagnostics are not part of its contract; only its stdout line is read.
+  if command -v node >/dev/null 2>&1 && out="$(node "${BATCH_QUOTA_PROBE:-}" 2>/dev/null)"; then
+    # Contract: exactly one line "<codex|claude><TAB><non-empty reason>".
+    case "$out" in
+      *"
+"*) ;;
+      codex"$tab"?*|claude"$tab"?*) backend="${out%%"$tab"*}"; reason="${out#*"$tab"}" ;;
+    esac
+  fi
+  if [ -z "$backend" ]; then
+    backend=codex; reason='codex quota unavailable: quota probe failed'
+  fi
+  _BATCH_BACKEND="$backend"
+  if [ "$backend" = claude ]; then
+    printf 'review-batch: %s\n' "$reason" >&2
+    _BATCH_SUMMARY_ROW="- backend: claude ($reason)"
+  else
+    case "$reason" in
+      'codex quota unavailable:'*) printf 'review-batch: %s; using codex\n' "$reason" >&2 ;;
+    esac
+  fi
+  return 0
 }
 
 # _batch_validate_max_parallel: default ONLY when unset (empty must fail), enforce
@@ -151,6 +211,19 @@ batch_run() {
   # Output guard FIRST: before validation, temp dir, traps, or any dispatch.
   _batch_guard_output || return 3
   _batch_validate_max_parallel || return 1
+  _batch_select_backend || return 1
+
+  local dispatcher="${BATCH_DISPATCH_SH:-}"
+  if [ "$_BATCH_BACKEND" = claude ]; then
+    dispatcher="${BATCH_DISPATCH_CLAUDE_SH:-}"
+    # claude reviewers share the caller's Claude quota: lower only a defaulted parallelism, after
+    # validation so an explicit value (already validated and clamped) is never overridden.
+    if [ "${_BATCH_MP_EXPLICIT:-0}" -eq 0 ]; then MAX_PARALLEL=2; fi
+    # A job's stderr is shown only when it fails, so the billing warning must come from here.
+    if [ -n "${ANTHROPIC_API_KEY:-}" ]; then
+      printf 'review-batch: ANTHROPIC_API_KEY is set; claude reviewers will bill the API key\n' >&2
+    fi
+  fi
 
   _BATCH_PIDS=()
   _BATCH_PGIDS=()
@@ -175,16 +248,20 @@ batch_run() {
   local t
   for ((t=0; t<MAX_PARALLEL; t++)); do printf '\n' >&9; done
 
-  local i pid
+  local i pid argv
   for i in "${!_BATCH_LABELS[@]}"; do
+    argv="${_BATCH_ARGV[$i]}"
+    if [ "$_BATCH_BACKEND" = claude ] && [ -n "${_BATCH_MODELS[$i]}" ]; then
+      argv="$argv --model $(printf '%q' "${_BATCH_MODELS[$i]}")"
+    fi
     read -r -u 9 _token
     (
-      eval "set -- ${_BATCH_ARGV[$i]}"
+      eval "set -- $argv"
       # The reviewer tool may exit nonzero (the expected ERROR case); capture its rc
       # explicitly so errexit cannot abort this job, write the rc file BEFORE returning
       # the token.
       set +e
-      "$BATCH_DISPATCH_SH" "$@" > "$tmp/$i.out" 2> "$tmp/$i.err"
+      "$dispatcher" "$@" > "$tmp/$i.out" 2> "$tmp/$i.err"
       _jrc=$?
       set -e
       printf '%s' "$_jrc" > "$tmp/$i.rc"
@@ -236,6 +313,7 @@ batch_run() {
 "
   done
   printf '=== Summary ===\n'
+  if [ -n "$_BATCH_SUMMARY_ROW" ]; then printf '%s\n' "$_BATCH_SUMMARY_ROW"; fi
   printf '%s' "$summary"
 
   # Success path: remove the temp dir and clear _BATCH_TMP so the still-armed EXIT trap's

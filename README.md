@@ -47,11 +47,12 @@ automatic downgrade only, the Summary gets a first line `- backend: claude (<rea
 Any other value makes the wrapper exit 1. The agent must not prefix wrapper commands with
 environment variables, so **you** set this switch: export it in the shell before starting Claude
 Code, or put it in Claude Code `settings.json` under `env` (applies to newly started sessions).
-Typical use: after a downgrade the Claude reviewers keep failing and the agent stops to ask; set
-`SUPERPOWERS_REVIEW_BACKEND=codex` to force codex again.
+Typical use: if, after a downgrade, the Claude reviewers keep failing and the agent stops to ask
+you, set `SUPERPOWERS_REVIEW_BACKEND=codex` to force codex again.
 
 Claude reviewers use per-reviewer models (adversarial reviewers `opus`, the others `sonnet`) and
-default to a parallelism of 2 unless `--max-parallel` is given.
+default to a parallelism of 2 unless `--max-parallel` is given or `MAX_PARALLEL` is set in the
+environment; explicit values are still validated and capped at 16.
 
 Billing: Claude reviewers share your Claude subscription quota. If `ANTHROPIC_API_KEY` is set,
 `claude -p` bills that API key instead of the subscription, and the wrapper prints a warning.

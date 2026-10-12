@@ -6,14 +6,14 @@ description: Use when implementing an approved design spec in the current sessio
 # Subagent-Driven Development
 
 Implement an approved spec in two phases. Phase 0 derives a code-free task list from the spec.
-Phase 1 dispatches a fresh implementer subagent per task, followed by one batched review: four
-reviewers (spec-compliance, code-quality, task-coverage, task-seam) run in parallel via one
+Phase 1 dispatches a fresh implementer subagent per task, followed by one batched review: two
+reviewers (task-acceptance, code-quality) run in parallel via one
 `review-impl.sh` call. After all tasks pass, one `review-final.sh` call (final-adversarial +
 spec-coverage) gates the merge.
 
 **Why subagents:** You delegate tasks to specialized agents with isolated context. By precisely crafting their instructions and context, you ensure they stay focused and succeed at their task. They should never inherit your session's context or history — you construct exactly what they need. This also preserves your own context for coordination work.
 
-**Core principle:** Code-free task list from the spec + fresh subagent per task + one batched four-reviewer review per task + one final gate = high quality, fast iteration
+**Core principle:** Code-free task list from the spec + fresh subagent per task + one batched two-reviewer review per task + one final gate = high quality, fast iteration
 
 **Continuous execution:** Do not pause to check in with your human partner after Phase 0 or between tasks. There is no task-list review and no approval gate — the user already approved the spec. The only reasons to stop are: BLOCKED status you cannot resolve; ambiguity that genuinely prevents progress (including a spec problem that needs a spec edit, see **Mid-Implementation Spec Edits**); a fail-closed condition in **Resume Mode**; a non-empty manual-check list after the final gate passes (see **Manual-Check Disposition**); a refuted finding raised for three consecutive runs (see **Verify Findings Before Acting**); a reviewer ERROR that a rerun cannot fix (see **Unrecoverable ERROR**); or all tasks complete with the final gate clear. "Should I continue?" prompts and progress summaries waste their time — they approved the spec, so implement it.
 
@@ -52,7 +52,7 @@ digraph process {
         "Implementer subagent asks questions?" [shape=diamond];
         "Answer questions, provide context" [shape=box];
         "Implementer subagent implements (TDD), commits with trailer, self-reviews" [shape=box];
-        "Dispatch 4 reviewers (review-impl.sh, parallel)" [shape=box];
+        "Dispatch 2 reviewers (review-impl.sh, parallel)" [shape=box];
         "Any ERROR?" [shape=diamond];
         "Attribute findings; any blocking?" [shape=diamond];
         "Repair (fix commits and/or task-definition updates)" [shape=box];
@@ -82,12 +82,12 @@ digraph process {
     "Implementer subagent asks questions?" -> "Answer questions, provide context" [label="yes"];
     "Answer questions, provide context" -> "Dispatch implementer subagent (./implementer-prompt.md)";
     "Implementer subagent asks questions?" -> "Implementer subagent implements (TDD), commits with trailer, self-reviews" [label="no"];
-    "Implementer subagent implements (TDD), commits with trailer, self-reviews" -> "Dispatch 4 reviewers (review-impl.sh, parallel)";
-    "Dispatch 4 reviewers (review-impl.sh, parallel)" -> "Any ERROR?";
-    "Any ERROR?" -> "Dispatch 4 reviewers (review-impl.sh, parallel)" [label="yes — rerun whole wrapper (unrecoverable: stop and ask)"];
+    "Implementer subagent implements (TDD), commits with trailer, self-reviews" -> "Dispatch 2 reviewers (review-impl.sh, parallel)";
+    "Dispatch 2 reviewers (review-impl.sh, parallel)" -> "Any ERROR?";
+    "Any ERROR?" -> "Dispatch 2 reviewers (review-impl.sh, parallel)" [label="yes — rerun whole wrapper (unrecoverable: stop and ask)"];
     "Any ERROR?" -> "Attribute findings; any blocking?" [label="no"];
     "Attribute findings; any blocking?" -> "Repair (fix commits and/or task-definition updates)" [label="yes"];
-    "Repair (fix commits and/or task-definition updates)" -> "Dispatch 4 reviewers (review-impl.sh, parallel)" [label="re-review (same TASK_BASE)"];
+    "Repair (fix commits and/or task-definition updates)" -> "Dispatch 2 reviewers (review-impl.sh, parallel)" [label="re-review (same TASK_BASE)"];
     "Attribute findings; any blocking?" -> "Mark task complete" [label="no"];
     "Mark task complete" -> "More tasks remain?";
     "More tasks remain?" -> "Restate task definition, build task summary line + Task trailer" [label="yes"];
@@ -173,7 +173,7 @@ greps before dispatching. `${CLAUDE_PLUGIN_ROOT}` is inline-expanded at load tim
 
 ### Per-Task Batched Review
 
-The four per-task reviewers run in parallel through ONE `review-impl.sh` call. Fill `<SPEC>` with
+The two per-task reviewers run in parallel through ONE `review-impl.sh` call. Fill `<SPEC>` with
 the spec path, the summary with the task's current task summary line, and `<TASK_BASE>` with the
 SHA captured before this task's implementer started. Substitute the values; do not run verbatim:
 
@@ -186,10 +186,8 @@ SHA captured before this task's implementer started. Substitute the values; do n
 
 | Label | Question it answers | Summary line |
 |---|---|---|
-| `spec-compliance` | Is what was built right? Spec misunderstandings, approaches that contradict the spec's design decisions, extra work outside the task summary's scope, anything the spec's Non-goals rule out | `Status: OKAY \| Issues Found` |
+| `task-acceptance` | Does it fit the existing code (checked from the diff before reading the spec)? Is it done? Is it right? Does it stay in scope and respect the Non-goals? | `Status: OKAY \| Issues Found` |
 | `code-quality` | Is it built well? (native code review of `<TASK_BASE>`) | `(prose — 見全文)` |
-| `task-coverage` | Is it done? Every requirement in the summary's spec sections, with evidence | `Status: OKAY \| Issues Found` |
-| `task-seam` | Does it fit the existing code? Interface consistency with callers/callees, no spec/task references in code or comments, no leftover placeholders or stubs (does not read the spec) | `Status: OKAY \| Issues Found` |
 
 Reviewers never see the task list; the task summary line is the only scope information they get.
 It must be a single line — a newline makes the dispatcher reject the call and the wrapper fails;
@@ -202,7 +200,7 @@ rewrite it as one line and re-run.
    exit 3 produces no Summary — handle it by the exit-3 rule above instead of Summary parsing.
    A `- backend:` line in the Summary is an informational line, not a reviewer, and takes no part
    in the loop's ERROR / verdict decisions.
-2. Classify each reviewer from its Summary line: spec-compliance, task-coverage, and task-seam as
+2. Classify each reviewer from its Summary line: task-acceptance as
    `Status: OKAY` / `Status: Issues Found`; code-quality as `(prose — 見全文)` — read its full
    `## code-quality` section and treat any blocking-severity defect as a finding; or
    `ERROR (tool failed, ...)`.
@@ -292,7 +290,7 @@ runs automatically until the gate clears.
 
 ### Finding Attribution
 
-Reviewers cannot see the task list, so task-coverage (and spec-compliance) may report requirements
+Reviewers cannot see the task list, so task-acceptance may report requirements
 that a later task owns. You hold the list, so you classify every finding.
 
 **Belongs to a later task** — only when ALL three hold:
@@ -300,7 +298,7 @@ that a later task owns. You hold the list, so you classify every finding.
 1. The task list really contains a not-yet-complete task whose `Acceptance:` **explicitly covers**
    the item;
 2. that task's `Spec:` (and so its task summary line) includes the spec section the item comes
-   from — so that task's task-coverage reviewer will check it;
+   from — so that task's task-acceptance reviewer will check it;
 3. the item is **not a prerequisite** of the current task (the current task's implementation or
    tests do not need it).
 
@@ -328,8 +326,8 @@ including folding work into the current task), add the entry's spec section to t
 and regenerate its task summary line; every later `review-impl.sh` call for that task uses the new
 line. If the entry changes what the task exposes or what it consumes, update `Interface:` and
 `Depends on:` too (`Depends on:` still references only lower-numbered tasks). Reviewers never see
-`Acceptance:`; only the summary line keeps spec-compliance from flagging the folded work as out of
-scope and makes task-coverage check it.
+`Acceptance:`; only the summary line keeps task-acceptance from flagging the folded work as out of
+scope and makes it check that work.
 
 **Re-run after any change:** after any repair, re-run the whole `review-impl.sh` (same
 `<TASK_BASE>`) — including when only a task definition changed and nothing was committed.
@@ -339,7 +337,7 @@ spec more closely, never to accommodate the implementation.
 
 ### Manual-Check Items
 
-spec-compliance, task-coverage, and spec-coverage may mark an item as inherently requiring manual
+task-acceptance and spec-coverage may mark an item as inherently requiring manual
 verification (external side effects, behavior only a human can observe). Such items do not block.
 Record each in your session state with its content, source reviewer, and task; it is handled in
 **Manual-Check Disposition**.
@@ -387,7 +385,7 @@ gap or drift item is blocking.
 blocking final-adversarial finding, append one or more new tasks to the end of the task list: new number and
 name, `Spec:` and `Acceptance:` per `./task-list-format.md` (for a final-adversarial finding,
 `Spec:` is the spec section the finding touches). List the appended tasks in your reply. Each one
-runs the full Per-Task Flow (own `TASK_BASE`, own `Task:` trailer, four reviewers). When all are
+runs the full Per-Task Flow (own `TASK_BASE`, own `Task:` trailer, both per-task reviewers). When all are
 complete, re-run the whole `review-final.sh` with the same `<IMPL_BASE>`. Never dispatch an
 implementer to fix final-gate findings outside a task — every commit belongs to exactly one task.
 
@@ -429,8 +427,8 @@ sits in the message's final paragraph alongside other trailers such as `Co-Autho
 - You give the implementer the exact trailer string; the implementer never invents it.
 - Its only purpose is letting **Resume Mode** group commits by task from `git log`. The normal flow
   does not read it.
-- A trailer is commit metadata, not code: task-seam's "no task references in code or comments" rule
-  does not apply to it.
+- A trailer is commit metadata, not code: task-acceptance's Document Reference Leak check
+  ("no task references in code or comments") does not apply to it.
 
 ## Mid-Implementation Spec Edits
 
@@ -549,9 +547,7 @@ Implementer subagents report one of four statuses. Handle each appropriately:
 
 - `./implementer-prompt.md` — implementer subagent prompt (you fill and dispatch it directly)
 - `./task-list-format.md` — task definition format, task summary line, decomposition guidance
-- `./spec-reviewer-prompt.md` — spec-compliance reviewer prompt (dispatched by `review-impl.sh`)
-- `./task-coverage-prompt.md` — task-coverage reviewer prompt (dispatched by `review-impl.sh`)
-- `./task-seam-prompt.md` — task-seam reviewer prompt (dispatched by `review-impl.sh`)
+- `./task-acceptance-prompt.md` — task-acceptance reviewer prompt (dispatched by `review-impl.sh`)
 - `./spec-coverage-prompt.md` — spec-coverage reviewer prompt (dispatched by `review-final.sh`)
 - `./final-code-reviewer-focus.md` — final-adversarial focus text (passed by `review-final.sh`)
 
@@ -589,10 +585,8 @@ Implementer:
 [review-impl.sh --spec docs/superpowers/specs/2026-05-02-hooks-design.md \
    --task-summary "Task 1: Hook installation script (spec §3.1)" --task-base abc1234]
 === Summary ===
-- spec-compliance: Status: OKAY
+- task-acceptance: Status: OKAY
 - code-quality: (prose — 見全文)      [no blocking finding]
-- task-coverage: Status: OKAY
-- task-seam: Status: OKAY
 [Task 1 passes; mark complete]
 
 Task 2: Recovery modes   (Spec: §3.2, §3.3)
@@ -601,12 +595,10 @@ Implementer: verify/repair modes, 8/8 tests passing, committed with "Task: 2 Rec
 
 [review-impl.sh ... --task-summary "Task 2: Recovery modes (spec §3.2, §3.3)" --task-base def5678]
 === Summary ===
-- spec-compliance: Status: OKAY
+- task-acceptance: Status: Issues Found
 - code-quality: (prose — 見全文)
-- task-coverage: Status: Issues Found
-- task-seam: Status: OKAY
-[Read the full ## task-coverage and ## code-quality sections above:
-  task-coverage: §3.3 "report progress every 100 items" and §3.3 "--json output" not met
+[Read the full ## task-acceptance and ## code-quality sections above:
+  task-acceptance: §3.3 "report progress every 100 items" and §3.3 "--json output" not met
   code-quality: src/recovery.ts:47 repair mode swallows write errors and still reports success]
 
 [Attribution:
@@ -619,11 +611,9 @@ Implementer: verify/repair modes, 8/8 tests passing, committed with "Task: 2 Rec
 
 [Re-run review-impl.sh, same summary, same TASK_BASE]
 === Summary ===
-- spec-compliance: Status: OKAY
+- task-acceptance: Status: Issues Found
 - code-quality: (prose — 見全文)      [no blocking finding]
-- task-coverage: Status: Issues Found
-- task-seam: Status: OKAY
-[Full ## task-coverage section: only §3.3 "--json output" remains -> still attributed to Task 4]
+[Full ## task-acceptance section: only §3.3 "--json output" remains -> still attributed to Task 4]
 [Every remaining finding belongs to a later task -> Task 2 passes; mark complete]
 
 ... Tasks 3-5 ...
@@ -637,7 +627,7 @@ Implementer: verify/repair modes, 8/8 tests passing, committed with "Task: 2 Rec
 [Append Task 6: Empty hook directory cleanup (Spec: §3.4) and run the full Per-Task Flow]
 [Re-run review-final.sh, same IMPL_BASE -> Verdict: approve, Status: OKAY]
 
-[Manual-check list: "hook fires on a real git commit" (task-coverage, Task 1)]
+[Manual-check list: "hook fires on a real git commit" (task-acceptance, Task 1)]
 [AskUserQuestion: confirm verified or waive -> user confirms]
 
 Done — proceed to superpowers-codex:finishing-a-development-branch
@@ -657,12 +647,12 @@ Done — proceed to superpowers-codex:finishing-a-development-branch
 
 **Quality gates:**
 - Self-review catches issues before handoff
-- One batched four-reviewer review per task via `review-impl.sh`, each reviewer answering one question
+- One batched two-reviewer review per task via `review-impl.sh` (task-acceptance and code-quality)
 - Final gate (`review-final.sh`) catches cross-task code problems and spec requirements the task list missed
 - Review loops ensure fixes actually work
 
 **Cost:**
-- More subagent invocations (implementer + 4 reviewers per task + 2 at the final gate)
+- More subagent invocations (implementer + 2 reviewers per task + 2 at the final gate)
 - Controller does more coordination (task list, SHAs, finding attribution)
 - But catches issues early (cheaper than debugging later)
 
@@ -670,7 +660,7 @@ Done — proceed to superpowers-codex:finishing-a-development-branch
 
 **Never:**
 - Start implementation on main/master branch without explicit user consent
-- Skip reviews (any of the four per-task reviewers, or the final gate)
+- Skip reviews (either per-task reviewer, or the final gate)
 - Proceed with unfixed issues
 - Dispatch multiple implementation subagents in parallel (conflicts)
 - Make subagent derive its own task from the spec (provide the full task definition instead)

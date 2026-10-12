@@ -218,6 +218,12 @@ expect "pace 38.7 rounds up" 'claude\tauto-downgraded: codex weekly usage 40% ex
 run "$(resp null "$(win 40 10080 $((NOW + W - W * 332 / 1000)))" null)"
 expect "pace 38.2 rounds down" 'claude\tauto-downgraded: codex weekly usage 40% exceeds even-pace limit 38%'
 
+# Usage is compared against the rounded limit that is displayed (pace 5.6 -> P 6)
+run "$(resp null "$(win 6 10080 $((NOW + W - W * 6 / 1000)))" null)"
+expect "usage equal to rounded limit (above raw pace) -> codex ok" 'codex\tcodex quota ok'
+run "$(resp null "$(win 6.1 10080 $((NOW + W - W * 6 / 1000)))" null)"
+expect "usage just above rounded limit -> claude" 'claude\tauto-downgraded: codex weekly usage 6.1% exceeds even-pace limit 6%'
+
 # usedPercent is printed exactly as given (no rounding)
 run "$(resp null "$(win 95.125 300 $((NOW+3600)))" null)"
 expect "5h window 95.125% printed unrounded" 'claude\tauto-downgraded: codex 5h-window usage 95.125% reached 95% cap'

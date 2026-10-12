@@ -51,9 +51,10 @@ function decide(rl) {
   }
   const now = Date.now() / 1000;
   const elapsed = Math.min(1, Math.max(0, (now - (weekly.resetsAt - WEEK_SECS)) / WEEK_SECS));
-  const pace = elapsed * 100 + PACE_MARGIN;
-  if (weekly.usedPercent > pace) {
-    return ['claude', `auto-downgraded: codex weekly usage ${fmt(weekly.usedPercent)}% exceeds even-pace limit ${Math.round(pace)}%`];
+  // Compare against the same rounded limit that is shown in the reason.
+  const limit = Math.round(elapsed * 100 + PACE_MARGIN);
+  if (weekly.usedPercent > limit) {
+    return ['claude', `auto-downgraded: codex weekly usage ${fmt(weekly.usedPercent)}% exceeds even-pace limit ${limit}%`];
   }
   return ['codex', 'codex quota ok'];
 }

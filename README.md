@@ -23,6 +23,39 @@ Run these inside Claude Code (they are slash commands, not shell commands):
 /plugin install superpowers-codex
 ```
 
+## Review backend: automatic Claude fallback
+
+Reviewers normally run on codex. Before each review batch the wrapper checks codex quota once
+(`scripts/codex-quota.mjs`) and runs the whole batch on Claude reviewers (`claude -p`, read-only)
+when any of these holds:
+
+- codex reports a rate limit reached;
+- any quota window is at least 95% used;
+- weekly usage is above the even-pace line: elapsed share of the week x 100 + 5%.
+
+If the quota cannot be read, the batch stays on codex and a warning is printed to stderr. On an
+automatic downgrade only, the Summary gets a first line `- backend: claude (<reason>)`.
+
+`SUPERPOWERS_REVIEW_BACKEND` overrides the choice:
+
+| Value | Behavior |
+|---|---|
+| `auto` (default; unset or empty also means auto) | Check quota, downgrade per the rules above |
+| `codex` | Always codex, no quota check |
+| `claude` | Always Claude reviewers, no quota check |
+
+Any other value makes the wrapper exit 1. The agent must not prefix wrapper commands with
+environment variables, so **you** set this switch: export it in the shell before starting Claude
+Code, or put it in Claude Code `settings.json` under `env` (applies to newly started sessions).
+Typical use: after a downgrade the Claude reviewers keep failing and the agent stops to ask; set
+`SUPERPOWERS_REVIEW_BACKEND=codex` to force codex again.
+
+Claude reviewers use per-reviewer models (adversarial reviewers `opus`, the others `sonnet`) and
+default to a parallelism of 2 unless `--max-parallel` is given.
+
+Billing: Claude reviewers share your Claude subscription quota. If `ANTHROPIC_API_KEY` is set,
+`claude -p` bills that API key instead of the subscription, and the wrapper prints a warning.
+
 ## Migrating from a skills-collection install
 
 Earlier versions were dropped into `~/.claude/skills/`. A leftover copy can **shadow** the
